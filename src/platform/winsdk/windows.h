@@ -318,7 +318,10 @@ HGLOBAL GlobalFree(HGLOBAL h);
 #endif
 typedef struct _TOKEN_PRIVILEGES { DWORD PrivilegeCount; struct { struct { DWORD LowPart; LONG HighPart; } Luid; DWORD Attributes; } Privileges[1]; } TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
 static inline void ExitProcess(UINT code)            { _exit((int)code); }
-static inline void RaiseException(DWORD, DWORD, DWORD, const void *) { __builtin_trap(); }
+// No-op: the common caller is SetThreadName's magic SEH "name this thread" exception,
+// which is meant to be swallowed when no debugger is attached. Genuine fatal paths go
+// through Sys_Error / assert, not RaiseException.
+static inline void RaiseException(DWORD, DWORD, DWORD, const void *) {}
 static inline BOOL IsDebuggerPresent()               { return FALSE; }
 static inline void GetSystemTimeAsFileTime(FILETIME *ft) { if (ft) { ft->dwLowDateTime = 0; ft->dwHighDateTime = 0; } }
 static inline DWORD SleepEx(DWORD ms, BOOL)          { if (ms) usleep((useconds_t)ms * 1000u); return 0; }
