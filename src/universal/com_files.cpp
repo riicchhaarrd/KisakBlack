@@ -373,7 +373,7 @@ void __cdecl FS_ReplaceSeparators(char *path)
             if ( !wasSep )
             {
                 wasSep = 1;
-                *dst++ = 92;
+                *dst++ = PATH_SEP;   // '\\' on Windows, '/' on Linux (q_shared.h)
             }
         }
         else

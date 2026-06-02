@@ -15,6 +15,11 @@ mapfile -t CPP < <(git ls-files 'src/*.cpp' 'src/**/*.cpp' 'DemonWare/**/*.cpp' 
 echo "compiling ${#CPP[@]} C++ TUs..."
 printf '%s\n' "${CPP[@]}" | xargs -P"$(nproc)" -I{} bash -c 'o="build_linux/obj/$(echo "{}"|tr / _).o"; g++ '"$CXXFLAGS"' '"$INCS"' "{}" -o "$o"'
 
+# bundled zlib C (the engine expects 1.2.3; system libz is newer)
+for f in $(git ls-files 'src/zlib/*.c'); do
+  gcc $CFLAGS -Isrc/zlib "$f" -o "build_linux/obj/$(echo "$f"|tr / _).o"
+done
+
 # bundled jpeg C (keep only the jmemnobs memory manager)
 for f in $(git ls-files 'src/jpeg/*.c' | grep -vE 'jmemansi|jmemname'); do
   gcc $CFLAGS -I. -Isrc -Isrc/jpeg -Isrc/platform/winsdk "$f" -o "build_linux/obj/$(echo "$f"|tr / _).o"
@@ -22,5 +27,5 @@ done
 
 echo "linking..."
 g++ -m32 -rdynamic build_linux/obj/*.o -o build_linux/blackops -L/usr/lib/i386-linux-gnu \
-    -lSDL2 -lGLEW -lGL -lopenal -lspeex -lvpx -l:libjpeg.so.62 -lpthread -lz -lm -ldl
+    -lSDL2 -lGLEW -lGL -lopenal -lspeex -lvpx -l:libjpeg.so.62 -lpthread -lm -ldl
 echo "built build_linux/blackops"

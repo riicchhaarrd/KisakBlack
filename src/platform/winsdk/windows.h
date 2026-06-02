@@ -324,7 +324,15 @@ static inline void ExitProcess(UINT code)            { _exit((int)code); }
 static inline void RaiseException(DWORD, DWORD, DWORD, const void *) {}
 static inline BOOL IsDebuggerPresent()               { return FALSE; }
 static inline void GetSystemTimeAsFileTime(FILETIME *ft) { if (ft) { ft->dwLowDateTime = 0; ft->dwHighDateTime = 0; } }
-static inline DWORD SleepEx(DWORD ms, BOOL)          { if (ms) usleep((useconds_t)ms * 1000u); return 0; }
+// SleepEx: an alertable wait (bAlertable=TRUE) is how the engine's async DB loader
+// waits for an I/O completion APC. Our overlapped I/O is synchronous (the data is
+// already read by the time we get here), so return WAIT_IO_COMPLETION immediately
+// rather than blocking forever on the APC that will never come.
+static inline DWORD SleepEx(DWORD ms, BOOL alertable) {
+    if (alertable) return 0x000000C0;                              // WAIT_IO_COMPLETION
+    if (ms && ms != INFINITE) usleep((useconds_t)ms * 1000u);
+    return 0;
+}
 static inline void *InterlockedExchangePointer(void **target, void *value) { return __sync_lock_test_and_set(target, value); }
 
 // ---- Thread scheduling (best-effort / no-op on Linux) ----------------------

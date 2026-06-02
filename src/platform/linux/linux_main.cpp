@@ -38,12 +38,6 @@ bool   GPad_IsButtonPressed(int, GamePadButton) { return false; }
 bool   GPad_IsStickPressed(int, GamePadStick, GamePadStickDir) { return false; }
 bool   GPad_IsStickReleased(int, GamePadStick, GamePadStickDir) { return false; }
 
-// ---- File enumeration (used by the FS layer to find zone/main assets) -------
-// TODO(bring-up): return a real glob'd HunkUser file list; for now report "none".
-HunkUser **Sys_ListFiles(char *, char *, char *, int *numfiles, int) {
-    if (numfiles) *numfiles = 0;
-    return nullptr;
-}
 
 // ---- Worker threads / task manager / streaming (single-threaded fallback) ---
 void R_InitWorkerThreads() {}

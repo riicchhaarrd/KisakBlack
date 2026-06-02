@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -54,9 +55,13 @@ void  Sys_Mkdir(const char *path) { if (path) mkdir(path, 0755); }
 const char *Sys_DefaultCDPath() { return ""; }
 char *Sys_DefaultInstallPath() { return Sys_Cwd(); }
 int Sys_DirectoryHasContents(const char *dir) {
-    if (!dir) return 0; char pat[4096]; snprintf(pat, sizeof(pat), "%s/*", dir);
-    WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(pat, &fd);
-    if (h == INVALID_HANDLE_VALUE) return 0; FindClose(h); return 1;
+    if (!dir) return 0;
+    char path[4096]; int i = 0; for (; dir[i] && i < 4095; ++i) path[i] = dir[i] == '\\' ? '/' : dir[i]; path[i] = 0;
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    int has = 0; struct dirent *e;
+    while ((e = readdir(d))) { if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { has = 1; break; } }
+    closedir(d); return has;
 }
 
 // ---- Error / exit / print --------------------------------------------------
@@ -142,7 +147,7 @@ void Sys_WriteDebugSocketMessageType(unsigned char) {}
 void Sys_WriteDebugSocketString(char *) {}
 
 // ---- Localization (English) ------------------------------------------------
-int Win_GetLanguage() { return 0; }
+char *Win_GetLanguage() { return (char *)"english"; }  // language NAME, not index (read from registry on Windows)
 const char *Win_LocalizeRef(const char *ref) { return ref ? ref : ""; }
 
 // ---- Aligned allocation ----------------------------------------------------
