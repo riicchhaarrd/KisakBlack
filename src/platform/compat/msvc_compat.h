@@ -10,6 +10,8 @@
 #ifndef KISAK_MSVC_COMPAT_H
 #define KISAK_MSVC_COMPAT_H
 
+#include "msvc_intrin.h"  // _Interlocked*/MemoryBarrier -> GCC builtins
+
 #if !defined(_MSC_VER)
 
 #ifndef __debugbreak
