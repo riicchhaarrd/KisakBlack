@@ -56,11 +56,8 @@ void GLDevice::useDrawProgram() {
         unsigned prog = glCreateProgram();
         glAttachShader(prog, vs_->glShader());
         glAttachShader(prog, ps_->glShader());
-        // Match the device's fixed attribute locations (see gl_d3d9_draw.cpp).
-        glBindAttribLocation(prog, 0, "aPos");
-        glBindAttribLocation(prog, 1, "aColor");
-        glBindAttribLocation(prog, 2, "aTexCoord");
-        glBindAttribLocation(prog, 3, "aNormal");
+        // Match the device's canonical attribute locations (see gl_shader.cpp).
+        GLBindAttribLocations(prog);
         glLinkProgram(prog);
         GLint ok = 0;
         glGetProgramiv(prog, GL_LINK_STATUS, &ok);

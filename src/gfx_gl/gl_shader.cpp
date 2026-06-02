@@ -70,17 +70,6 @@ std::string varyingName(int usage, int index) {
     return s.str();
 }
 
-// Vertex attribute name matching the device's glBindAttribLocation slots.
-std::string attribName(int usage) {
-    switch (usage) {
-        case D3DDECLUSAGE_POSITION: case D3DDECLUSAGE_POSITIONT: return "aPos";
-        case D3DDECLUSAGE_COLOR:    return "aColor";
-        case D3DDECLUSAGE_TEXCOORD: return "aTexCoord";
-        case D3DDECLUSAGE_NORMAL:   return "aNormal";
-        default:                    return "aPos";
-    }
-}
-
 std::string regName(Ctx &c, const Operand &o, bool isDest) {
     switch (o.type) {
         case RT_TEMP:    c.usedTemps.insert(o.reg); { std::ostringstream s; s << "r" << o.reg; return s.str(); }
@@ -91,7 +80,7 @@ std::string regName(Ctx &c, const Operand &o, bool isDest) {
             if (c.isPixel) { auto it = c.inputs.find(o.reg);
                              return it != c.inputs.end() ? varyingName(it->second.first, it->second.second) : "vec4(0.0)"; }
             else { auto it = c.inputs.find(o.reg);
-                   return it != c.inputs.end() ? attribName(it->second.first) : "aPos"; }
+                   return it != c.inputs.end() ? GLAttribName(it->second.first, it->second.second) : "aPos"; }
         case RT_OUTPUT: {
             auto it = c.outputs.find(o.reg);
             if (it != c.outputs.end()) {
@@ -140,6 +129,55 @@ void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
 }
 
 } // namespace
+
+// ---- Canonical vertex-attribute mapping (shared, see gl_shader.h) ----------
+//
+// One generic attribute location per (usage, usageIndex), laid out to fit the 16
+// locations GL guarantees. The same (usage,index) always yields the same location
+// and name across the translator, the linker and the device's vertex setup.
+int GLAttribLocation(int usage, int usageIndex) {
+    switch (usage) {
+        case D3DDECLUSAGE_POSITION:
+        case D3DDECLUSAGE_POSITIONT:   return 0;
+        case D3DDECLUSAGE_BLENDWEIGHT: return 1;
+        case D3DDECLUSAGE_BLENDINDICES:return 2;
+        case D3DDECLUSAGE_NORMAL:      return 3;
+        case D3DDECLUSAGE_TANGENT:     return 4;
+        case D3DDECLUSAGE_COLOR:       return usageIndex <= 1 ? 5 + usageIndex : -1;   // COLOR0..1  -> 5,6
+        case D3DDECLUSAGE_TEXCOORD:    return usageIndex <= 8 ? 7 + usageIndex : -1;   // TEXCOORD0..8 -> 7..15
+        default:                       return -1;
+    }
+}
+
+std::string GLAttribName(int usage, int usageIndex) {
+    std::ostringstream s;
+    switch (usage) {
+        case D3DDECLUSAGE_POSITION:
+        case D3DDECLUSAGE_POSITIONT:    return "aPos";
+        case D3DDECLUSAGE_BLENDWEIGHT:  return "aBlendWeight";
+        case D3DDECLUSAGE_BLENDINDICES: return "aBlendIndices";
+        case D3DDECLUSAGE_NORMAL:       return "aNormal";
+        case D3DDECLUSAGE_TANGENT:      return "aTangent";
+        case D3DDECLUSAGE_COLOR:        s << "aColor"    << usageIndex; return s.str();
+        case D3DDECLUSAGE_TEXCOORD:     s << "aTexCoord" << usageIndex; return s.str();
+        default:                        return "aPos";
+    }
+}
+
+void GLBindAttribLocations(unsigned program) {
+    // Bind every canonical name; GL ignores those a given shader doesn't declare.
+    static const int kUsages[] = { D3DDECLUSAGE_POSITION, D3DDECLUSAGE_BLENDWEIGHT,
+                                   D3DDECLUSAGE_BLENDINDICES, D3DDECLUSAGE_NORMAL,
+                                   D3DDECLUSAGE_TANGENT, D3DDECLUSAGE_COLOR,
+                                   D3DDECLUSAGE_TEXCOORD };
+    for (int u : kUsages) {
+        int maxIdx = (u == D3DDECLUSAGE_TEXCOORD) ? 8 : (u == D3DDECLUSAGE_COLOR ? 1 : 0);
+        for (int i = 0; i <= maxIdx; ++i) {
+            int loc = GLAttribLocation(u, i);
+            if (loc >= 0) glBindAttribLocation(program, loc, GLAttribName(u, i).c_str());
+        }
+    }
+}
 
 bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
     Ctx c;
@@ -193,7 +231,7 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
         for (auto &in : c.inputs)  o << "varying vec4 " << varyingName(in.second.first, in.second.second) << ";\n";
         for (int s : c.samplers)   o << "uniform sampler2D s" << s << ";\n";
     } else {
-        for (auto &in : c.inputs)  o << "attribute vec4 " << attribName(in.second.first) << ";\n";
+        for (auto &in : c.inputs)  o << "attribute vec4 " << GLAttribName(in.second.first, in.second.second) << ";\n";
         for (auto &ou : c.outputs)
             if (ou.second.first != D3DDECLUSAGE_POSITION && ou.second.first != D3DDECLUSAGE_POSITIONT)
                 o << "varying vec4 " << varyingName(ou.second.first, ou.second.second) << ";\n";

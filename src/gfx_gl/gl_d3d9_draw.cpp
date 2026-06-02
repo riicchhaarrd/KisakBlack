@@ -7,20 +7,21 @@
 // built-in is bypassed.
 #include "gl_d3d9.h"
 #include "gl_resources.h"
+#include "gl_shader.h"   // GLAttribLocation / GLAttribName / GLBindAttribLocations
 
 #include <GL/glew.h>
 #include <cstdio>
 
-// Attribute locations shared by the built-in program and applyVertexState().
-enum { ATTR_POS = 0, ATTR_COLOR = 1, ATTR_TEXCOORD = 2, ATTR_NORMAL = 3 };
-
 namespace {
 
+// The built-in 2D program consumes the canonical POSITION / COLOR0 / TEXCOORD0
+// attribute names (see GLAttribName in gl_shader.cpp), so the same vertex setup
+// drives it and the translated programs.
 const char *kBuiltinVS =
     "#version 120\n"
-    "attribute vec4 aPos;\n"       // POSITIONT: x,y in screen pixels, z depth, w=rhw
-    "attribute vec4 aColor;\n"
-    "attribute vec2 aTexCoord;\n"
+    "attribute vec4 aPos;\n"        // POSITIONT: x,y in screen pixels, z depth, w=rhw
+    "attribute vec4 aColor0;\n"
+    "attribute vec2 aTexCoord0;\n"
     "uniform vec2 uViewport;\n"
     "varying vec4 vColor;\n"
     "varying vec2 vTexCoord;\n"
@@ -28,8 +29,8 @@ const char *kBuiltinVS =
     "  float x = (aPos.x / uViewport.x) * 2.0 - 1.0;\n"
     "  float y = 1.0 - (aPos.y / uViewport.y) * 2.0;\n"  // D3D top-left -> GL bottom-left
     "  gl_Position = vec4(x, y, aPos.z, 1.0);\n"
-    "  vColor = aColor;\n"
-    "  vTexCoord = aTexCoord;\n"
+    "  vColor = aColor0;\n"
+    "  vTexCoord = aTexCoord0;\n"
     "}\n";
 
 const char *kBuiltinFS =
@@ -72,16 +73,6 @@ void declType(BYTE t, GLint *size, GLenum *type, GLboolean *norm) {
     }
 }
 
-int attribLocForUsage(BYTE usage) {
-    switch (usage) {
-        case D3DDECLUSAGE_POSITION:
-        case D3DDECLUSAGE_POSITIONT: return ATTR_POS;
-        case D3DDECLUSAGE_COLOR:     return ATTR_COLOR;
-        case D3DDECLUSAGE_TEXCOORD:  return ATTR_TEXCOORD;
-        case D3DDECLUSAGE_NORMAL:    return ATTR_NORMAL;
-        default:                     return -1;  // not consumed by the built-in program
-    }
-}
 
 void primInfo(D3DPRIMITIVETYPE pt, UINT primCount, GLenum *mode, GLsizei *verts) {
     switch (pt) {
@@ -162,9 +153,7 @@ void GLDevice::ensureBuiltinProgram() {
     builtinProg_ = glCreateProgram();
     glAttachShader(builtinProg_, vs);
     glAttachShader(builtinProg_, fs);
-    glBindAttribLocation(builtinProg_, ATTR_POS,      "aPos");
-    glBindAttribLocation(builtinProg_, ATTR_COLOR,    "aColor");
-    glBindAttribLocation(builtinProg_, ATTR_TEXCOORD, "aTexCoord");
+    GLBindAttribLocations(builtinProg_);
     glLinkProgram(builtinProg_);
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -188,15 +177,15 @@ void GLDevice::applyVertexState() {
     if (!vao_) glGenVertexArrays(1, &vao_);
     glBindVertexArray(vao_);
 
-    for (int i = 0; i < 4; ++i) glDisableVertexAttribArray(i);
+    for (int i = 0; i < 16; ++i) glDisableVertexAttribArray(i);
     // D3D's default (unspecified) diffuse colour is white; GL's default generic
     // attribute is (0,0,0,1). Without this, a texcoord-only vertex would multiply
-    // the texture by black. The array, if the decl supplies COLOR, overrides this.
-    glVertexAttrib4f(ATTR_COLOR, 1.0f, 1.0f, 1.0f, 1.0f);
+    // the texture by black. The array, if the decl supplies COLOR0, overrides this.
+    glVertexAttrib4f(GLAttribLocation(D3DDECLUSAGE_COLOR, 0), 1.0f, 1.0f, 1.0f, 1.0f);
     if (!decl_) return;
 
     for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
-        int loc = attribLocForUsage(e.Usage);
+        int loc = GLAttribLocation(e.Usage, e.UsageIndex);
         if (loc < 0 || e.Stream >= 4) continue;
         const Stream &s = streams_[e.Stream];
         if (!s.vb) continue;
