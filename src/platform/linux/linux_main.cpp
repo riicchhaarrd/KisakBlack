@@ -39,14 +39,11 @@ bool   GPad_IsStickPressed(int, GamePadStick, GamePadStickDir) { return false; }
 bool   GPad_IsStickReleased(int, GamePadStick, GamePadStickDir) { return false; }
 
 
-// ---- Worker threads / task manager / streaming (single-threaded fallback) ---
-void R_InitWorkerThreads() {}
+// ---- Streaming / task manager (worker threads now in linux_workercmds.cpp) ---
+// R_InitWorkerThreads, IW_task_manager_*, and the nuge_physics job module are the
+// real job-queue bring-up, ported to src/platform/linux/linux_workercmds.cpp.
 char Stream_Init() { return 1; }
 bool PC_StartWithNoSounds() { return false; }
-void IW_task_manager_add_batch(jqBatch *) {}
-void IW_task_manager_flush() {}
-jqModule nuge_physicsModule = {};
-jqWorkerCmd nuge_physicsWorkerCmd = {};
 char TaskManager_AnyTaskInProgress(overlappedTask *) { return 0; }
 void TaskManager_ClearOverlappedTasks(overlappedTask *) {}
 void TaskManager_ClearTask(overlappedTask *) {}
