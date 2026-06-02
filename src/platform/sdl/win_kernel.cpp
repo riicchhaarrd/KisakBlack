@@ -71,11 +71,12 @@ struct KObject {
     pthread_t thread{};                 // K_THREAD
     LPTHREAD_START_ROUTINE start = nullptr;
     void *param = nullptr;
-    pthread_mutex_t mtx{};              // K_EVENT / K_SEM / K_MUTEX
-    pthread_cond_t  cond{};             // K_EVENT / K_SEM
+    pthread_mutex_t mtx{};              // K_EVENT / K_SEM / K_MUTEX / K_THREAD start-gate
+    pthread_cond_t  cond{};             // K_EVENT / K_SEM / K_THREAD start-gate
     bool manualReset = false;          // K_EVENT
     bool signaled = false;             // K_EVENT
     long count = 0;                    // K_SEM
+    bool suspended = false;            // K_THREAD: CREATE_SUSPENDED start-gate
 };
 
 inline KObject *obj(HANDLE h) { return reinterpret_cast<KObject *>(h); }
@@ -91,6 +92,15 @@ void deadline(struct timespec *ts, DWORD ms) {
 
 void *thread_thunk(void *arg) {
     KObject *k = static_cast<KObject *>(arg);
+    // CREATE_SUSPENDED start-gate: block until ResumeThread() opens it. This is
+    // load-bearing — Sys_CreateThread() creates every engine thread suspended,
+    // records its id in the thread table, then resumes it. Running early would
+    // race the id store (e.g. SV_ServerThread asserting Sys_IsServerThread()).
+    if (k->suspended) {
+        pthread_mutex_lock(&k->mtx);
+        while (k->suspended) pthread_cond_wait(&k->cond, &k->mtx);
+        pthread_mutex_unlock(&k->mtx);
+    }
     if (k->start) k->start(k->param);
     return nullptr;
 }
@@ -98,12 +108,17 @@ void *thread_thunk(void *arg) {
 } // namespace
 
 // ---- Threads ---------------------------------------------------------------
-// CREATE_SUSPENDED is not supported over pthreads; the thread starts immediately
-// (engine thread procs gate on an event/semaphore, so this is benign) and
-// ResumeThread/SuspendThread are no-ops.
-HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, DWORD, DWORD *threadId) {
+// CREATE_SUSPENDED is honored via a start-gate (see thread_thunk): the thread is
+// created but parks before the user routine until ResumeThread() runs. The engine
+// relies on this — it stores the new thread's id, then resumes — so the thread
+// never observes its id table slot before it is written.
+HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, DWORD flags, DWORD *threadId) {
     KObject *k = new KObject(); k->kind = K_THREAD; k->start = start; k->param = param;
-    if (pthread_create(&k->thread, nullptr, thread_thunk, k) != 0) { delete k; return nullptr; }
+    pthread_mutex_init(&k->mtx, nullptr); pthread_cond_init(&k->cond, nullptr);
+    k->suspended = (flags & CREATE_SUSPENDED) != 0;
+    if (pthread_create(&k->thread, nullptr, thread_thunk, k) != 0) {
+        pthread_cond_destroy(&k->cond); pthread_mutex_destroy(&k->mtx); delete k; return nullptr;
+    }
     // The engine stores this id in its thread table and later matches it against
     // GetCurrentThreadId() inside the new thread. GetCurrentThreadId() is
     // (DWORD)(uintptr_t)pthread_self(), and pthread_self() in the new thread equals
@@ -111,7 +126,14 @@ HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, D
     if (threadId) *threadId = (DWORD)(uintptr_t)k->thread;
     return static_cast<HANDLE>(k);
 }
-DWORD ResumeThread(HANDLE)  { return 0; }
+DWORD ResumeThread(HANDLE h) {
+    if (!valid(h)) return 0;
+    KObject *k = obj(h);
+    pthread_mutex_lock(&k->mtx);
+    bool was = k->suspended; k->suspended = false; pthread_cond_broadcast(&k->cond);
+    pthread_mutex_unlock(&k->mtx);
+    return was ? 1 : 0;   // prior suspend count
+}
 DWORD SuspendThread(HANDLE) { return 0; }
 
 // ---- Events ----------------------------------------------------------------
@@ -198,7 +220,8 @@ BOOL CloseHandle(HANDLE h) {
     if (!valid(h)) return FALSE; KObject *k = obj(h);
     switch (k->kind) {
     case K_FILE:   if (k->fd >= 0) close(k->fd); break;
-    case K_THREAD: pthread_detach(k->thread); break;
+    case K_THREAD: pthread_detach(k->thread);
+                   pthread_cond_destroy(&k->cond); pthread_mutex_destroy(&k->mtx); break;
     case K_EVENT:
     case K_SEM:    pthread_cond_destroy(&k->cond);  pthread_mutex_destroy(&k->mtx); break;
     case K_MUTEX:  pthread_mutex_destroy(&k->mtx); break;

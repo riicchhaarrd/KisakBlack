@@ -10,7 +10,10 @@ CXXFLAGS="-m32 -malign-double -mmmx -msse -msse2 -std=c++20 -c -g -fms-extension
 CFLAGS="-m32 -std=gnu11 -w -fpermissive -c -D__cdecl= -D__stdcall= -D__fastcall= -D__int8=char -D__int16=short -D__int32=int"
 
 # engine C++ TUs (everything except win32/, vendored libs, tracy, tests, audio backends)
-mapfile -t CPP < <(git ls-files 'src/*.cpp' 'src/**/*.cpp' 'DemonWare/**/*.cpp' 'tl/**/*.cpp' 'src/platform/linux/*.cpp' 'src/audio_openal/al_audio.cpp' \
+# NOTE: git's '**' pathspec only matches with an intermediate directory, so
+# 'tl/**/*.cpp' silently drops top-level files like tl/tl_system.cpp. A plain
+# '<dir>/*.cpp' pathspec matches recursively, so use that form for every tree.
+mapfile -t CPP < <(git ls-files 'src/*.cpp' 'DemonWare/*.cpp' 'tl/*.cpp' 'src/platform/linux/*.cpp' 'src/audio_openal/al_audio.cpp' \
   | grep -vE '^src/(libs|tracy|steam|nvapi|binklib|win32)/' | grep -vE 'gfx_gl/tests/|audio_openal/tests/')
 echo "compiling ${#CPP[@]} C++ TUs..."
 printf '%s\n' "${CPP[@]}" | xargs -P"$(nproc)" -I{} bash -c 'o="build_linux/obj/$(echo "{}"|tr / _).o"; g++ '"$CXXFLAGS"' '"$INCS"' "{}" -o "$o"'
