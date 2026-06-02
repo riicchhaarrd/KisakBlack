@@ -24,6 +24,8 @@
 #include <cstring>
 #include <cfloat>
 #include <cstdio>
+#include <ctime>
+#include <csetjmp>
 #include <strings.h>
 
 #ifndef __debugbreak
@@ -42,6 +44,18 @@
 #define _strdup    strdup
 #endif
 typedef FILE _iobuf;  // MSVC's FILE struct tag, used bare in the decompiled code
+
+// MSVC's 64-bit time CRT (rb_logfile.cpp) and the SEH-era setjmp spelling
+// (rb_backend.cpp). __time64_t is just a 64-bit time_t; map onto the POSIX CRT.
+typedef long long __time64_t;
+static inline __time64_t _time64(__time64_t *t) { time_t r = time(nullptr); if (t) *t = (__time64_t)r; return (__time64_t)r; }
+static inline struct tm *_localtime64(const __time64_t *t) { time_t v = (time_t)*t; return localtime(&v); }
+#ifndef _setjmp
+#define _setjmp setjmp   // <csetjmp> provides jmp_buf + setjmp; MSVC spells it _setjmp
+#endif
+
+// MSVC's qsort/bsearch comparator typedef (used in casts, e.g. rb_imagetouch.cpp).
+typedef int (*_CoreCrtNonSecureSearchSortCompareFunction)(const void *, const void *);
 
 #ifndef __forceinline
 #define __forceinline inline __attribute__((always_inline))
@@ -82,6 +96,7 @@ typedef FILE _iobuf;  // MSVC's FILE struct tag, used bare in the decompiled cod
 // paste: __declspec(align(8)) -> __KISAK_DS_align(8) -> __attribute__((aligned(8))).
 // Coexists with -fms-extensions (verified).
 #define __declspec(x)          __KISAK_DS_##x
+#define _declspec(x)           __KISAK_DS_##x   // deprecated single-underscore spelling (r_stream.h)
 #define __KISAK_DS_align(n)    __attribute__((aligned(n)))
 #define __KISAK_DS_noinline    __attribute__((noinline))
 #define __KISAK_DS_noreturn    __attribute__((noreturn))

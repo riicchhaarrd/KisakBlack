@@ -27,12 +27,23 @@
 #define MemoryBarrier()                        __sync_synchronize()
 
 // _BitScanReverse(&index, mask): index <- position of the highest set bit;
-// returns 0 if mask == 0. (MSVC bit intrinsic.)
-static inline unsigned char _BitScanReverse(unsigned long *Index, unsigned long Mask) {
+// returns 0 if mask == 0. (MSVC bit intrinsic.) Templated on the index type so it
+// accepts whatever 32-bit integer pointer the decompiled callers pass — MSVC's
+// prototype is `unsigned long*`, but the engine passes DWORD* (unsigned int*), and
+// on i386 GCC those are distinct (non-convertible) pointer types.
+template <class T>
+static inline unsigned char _BitScanReverse(T *Index, unsigned long Mask) {
     if (!Mask) return 0;
-    *Index = 31u - (unsigned long)__builtin_clz((unsigned int)Mask);
+    *Index = (T)(31u - (unsigned)__builtin_clz((unsigned int)Mask));
     return 1;
 }
+
+// _mm_prefetch(addr, hint): SSE prefetch. GCC's <xmmintrin.h> version takes an
+// enum _mm_hint (no implicit int->enum in C++), but the decompiled code passes a
+// bare int. Map straight to __builtin_prefetch (the locality arg is advisory).
+#ifndef _mm_prefetch
+#define _mm_prefetch(addr, hint) __builtin_prefetch((const void *)(addr))
+#endif
 
 #endif // !_MSC_VER
 #endif // KISAK_MSVC_INTRIN_H

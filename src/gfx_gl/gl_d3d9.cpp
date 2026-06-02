@@ -127,6 +127,19 @@ HRESULT WINAPI GLDevice::GetDeviceCaps(D3DCAPS9 *pCaps) {
 // ---------------------------------------------------------------------------
 // GLD3D9 (factory)
 // ---------------------------------------------------------------------------
+HRESULT WINAPI GLD3D9::GetAdapterIdentifier(UINT, DWORD, D3DADAPTER_IDENTIFIER9 *pIdentifier) {
+    if (!pIdentifier) return E_INVALIDARG;
+    *pIdentifier = D3DADAPTER_IDENTIFIER9{};
+    // GL_VENDOR/GL_RENDERER need a current context; fall back to a neutral name.
+    const GLubyte *renderer = glGetString(GL_RENDERER);
+    const GLubyte *vendor   = glGetString(GL_VENDOR);
+    snprintf(pIdentifier->Description, sizeof(pIdentifier->Description), "%s",
+             renderer ? (const char *)renderer : "OpenGL Renderer");
+    snprintf(pIdentifier->Driver, sizeof(pIdentifier->Driver), "%s",
+             vendor ? (const char *)vendor : "OpenGL");
+    return D3D_OK;
+}
+
 HRESULT WINAPI GLD3D9::GetAdapterDisplayMode(UINT, D3DDISPLAYMODE *pMode) {
     if (!pMode) return E_INVALIDARG;
     pMode->Width = 1920; pMode->Height = 1080; pMode->RefreshRate = 60;

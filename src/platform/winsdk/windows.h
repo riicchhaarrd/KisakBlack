@@ -24,6 +24,11 @@ KISAK_DECLARE_HANDLE(HBRUSH);
 KISAK_DECLARE_HANDLE(HBITMAP);
 KISAK_DECLARE_HANDLE(HGLRC);
 
+// NOTE: deliberately NOT defining max/min macros here. MSVC's <windows.h> does
+// (unless NOMINMAX), but those 2-arg macros poison the C++ standard library
+// (std::max, numeric_limits::max, iterator traits). The handful of bare max()/min()
+// call sites in the decompiled renderer are spelled std::max/std::min instead.
+
 #ifndef MAKEFOURCC
 #define MAKEFOURCC(a, b, c, d) \
     ((DWORD)(BYTE)(a) | ((DWORD)(BYTE)(b) << 8) | \
@@ -76,6 +81,14 @@ static inline char *_itoa(int value, char *str, int radix) {
 #define InterlockedDecrement(p)            __sync_sub_and_fetch((p), 1)
 #define InterlockedCompareExchange(p, e, c) __sync_val_compare_and_swap((p), (c), (e))
 
+// ---- Dynamic library loading -----------------------------------------------
+// The engine LoadLibraryA's a few Windows-only DLLs (ddraw.dll, ...) and degrades
+// gracefully when they are missing. Returning null here takes that fallback path —
+// the matching POSIX route would be dlopen, but none of these DLLs exist on Linux.
+static inline HMODULE LoadLibraryA(const char *) { return nullptr; }
+static inline void   *GetProcAddress(HMODULE, const char *) { return nullptr; }
+static inline BOOL    FreeLibrary(HMODULE) { return TRUE; }
+
 // ---- Misc Win32 ------------------------------------------------------------
 typedef struct _FILETIME { DWORD dwLowDateTime, dwHighDateTime; } FILETIME, *LPFILETIME;
 #define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
@@ -93,6 +106,61 @@ static inline BOOL    PeekMessageA(MSG *, HWND, UINT, UINT, UINT) { return FALSE
 static inline BOOL    GetMessageA(MSG *, HWND, UINT, UINT) { return FALSE; }
 static inline BOOL    TranslateMessage(const MSG *) { return FALSE; }
 static inline LRESULT DispatchMessageA(const MSG *) { return 0; }
+
+// ---- High-resolution timer (QPC -> CLOCK_MONOTONIC) ------------------------
+// (LARGE_INTEGER lives in _kisak_wintypes.h — also needed by d3d9 headers.)
+static inline BOOL QueryPerformanceCounter(LARGE_INTEGER *c) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (c) c->QuadPart = (LONGLONG)ts.tv_sec * 1000000000LL + ts.tv_nsec; return TRUE;
+}
+static inline BOOL QueryPerformanceFrequency(LARGE_INTEGER *f) {
+    if (f) f->QuadPart = 1000000000LL; return TRUE;   // QPC counts nanoseconds
+}
+
+// ---- Async-overlap / SEH placeholders --------------------------------------
+// OVERLAPPED is an opaque member of the async file-load state (db_file_load.h);
+// the real async I/O runs through the platform layer. _EXCEPTION_POINTERS only
+// needs to name a type for the unhandled-filter prototype (win_main.h); the body
+// lives in the Windows-only win32/ source.
+typedef struct _OVERLAPPED {
+    ULONG_PTR Internal, InternalHigh;
+    DWORD Offset, OffsetHigh;
+    HANDLE hEvent;
+} OVERLAPPED, *LPOVERLAPPED;
+struct _EXCEPTION_POINTERS;
+
+// ---- Mutex / wait (pthread-backed; HANDLE carries a pthread_mutex_t) --------
+#define WAIT_OBJECT_0 0x0
+#define INFINITE      0xFFFFFFFF
+static inline HANDLE CreateMutexA(void *, BOOL initialOwner, const char *) {
+    pthread_mutex_t *m = new pthread_mutex_t; pthread_mutex_init(m, nullptr);
+    if (initialOwner) pthread_mutex_lock(m); return (HANDLE)m;
+}
+static inline DWORD WaitForSingleObject(HANDLE h, DWORD /*ms*/) {
+    if (h && h != INVALID_HANDLE_VALUE) pthread_mutex_lock((pthread_mutex_t *)h); return WAIT_OBJECT_0;
+}
+static inline BOOL ReleaseMutex(HANDLE h) {
+    if (h && h != INVALID_HANDLE_VALUE) pthread_mutex_unlock((pthread_mutex_t *)h); return TRUE;
+}
+
+// ---- Path / directory / file-time helpers ----------------------------------
+static inline BOOL RemoveDirectoryA(const char *path) { return rmdir(path) == 0; }
+// GetFullPathNameA normalizes lexically (the target need not exist) -> getcwd join.
+static inline DWORD GetFullPathNameA(const char *name, DWORD len, char *buf, char **filePart) {
+    char abs[MAX_PATH * 4];
+    if (name[0] == '/') { abs[0] = '\0'; strncat(abs, name, sizeof(abs) - 1); }
+    else { if (!getcwd(abs, sizeof(abs))) return 0; size_t n = strlen(abs);
+           if (n && abs[n - 1] != '/') { abs[n++] = '/'; abs[n] = '\0'; } strncat(abs, name, sizeof(abs) - n - 1); }
+    DWORD wrote = (DWORD)strlen(abs);
+    if (buf && len) { strncpy(buf, abs, len - 1); buf[len - 1] = '\0';
+        if (filePart) { char *s = strrchr(buf, '/'); *filePart = s ? s + 1 : buf; } }
+    return wrote;
+}
+static inline LONG CompareFileTime(const FILETIME *a, const FILETIME *b) {
+    unsigned long long x = ((unsigned long long)a->dwHighDateTime << 32) | a->dwLowDateTime;
+    unsigned long long y = ((unsigned long long)b->dwHighDateTime << 32) | b->dwLowDateTime;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
 
 // ---- File enumeration / deletion (FindFirstFile* -> glob, DeleteFile -> unlink)
 typedef struct _WIN32_FIND_DATAA {

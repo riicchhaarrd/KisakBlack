@@ -34,6 +34,10 @@ typedef char                CHAR,  *PCHAR;
 typedef wchar_t             WCHAR, *LPWSTR;
 typedef int64_t             LONGLONG, INT64, LONG64;
 typedef uint64_t            ULONGLONG, UINT64, DWORDLONG, ULONG64;
+typedef union _LARGE_INTEGER {
+    struct { DWORD LowPart; LONG HighPart; };
+    LONGLONG QuadPart;
+} LARGE_INTEGER, *PLARGE_INTEGER;
 typedef int8_t              INT8;
 typedef uint8_t             UINT8;
 typedef int16_t             INT16;

@@ -159,6 +159,7 @@ private:
 class GLD3D9 final : public GLObject<IDirect3D9> {
 public:
     UINT    WINAPI GetAdapterCount() override { return 1; }
+    HRESULT WINAPI GetAdapterIdentifier(UINT, DWORD, D3DADAPTER_IDENTIFIER9 *pIdentifier) override;
     HRESULT WINAPI GetAdapterDisplayMode(UINT, D3DDISPLAYMODE *pMode) override;
     HRESULT WINAPI GetDeviceCaps(UINT, D3DDEVTYPE, D3DCAPS9 *pCaps) override;
     HRESULT WINAPI CheckDeviceType(UINT, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, BOOL) override { return D3D_OK; }

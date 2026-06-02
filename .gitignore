@@ -432,6 +432,10 @@ KisakBlack/*
 __KisakBlack
 # OpenGL backend standalone build output
 build_gl/
+build_gl32/
+
+# Local agent/session state
+.claude/
 
 # Local reference binaries (Mac/X360 exes, revtool) — never commit
 ref/
