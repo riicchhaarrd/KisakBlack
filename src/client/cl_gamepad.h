@@ -35,7 +35,7 @@ enum GamepadVirtualAxis : __int32
     GPAD_VIRTAXIS_PITCH   = 0x4,
     GPAD_VIRTAXIS_ATTACK  = 0x5,
     GPAD_VIRTAXIS_COUNT   = 0x6,
-    GPAD_VIRTAXIS_NONE    = 0xFFFFFFFF,
+    GPAD_VIRTAXIS_NONE    = -1,
 };
 inline GamepadVirtualAxis &operator++(GamepadVirtualAxis &t)
 {
@@ -55,7 +55,7 @@ enum GamepadMapping : __int32
     GPAD_MAP_LINEAR  = 0x0,
     GPAD_MAP_SQUARED = 0x1,
     GPAD_MAP_COUNT   = 0x2,
-    GPAD_MAP_NONE    = 0xFFFFFFFF,
+    GPAD_MAP_NONE    = -1,
 };
 
 
