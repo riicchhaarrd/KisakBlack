@@ -54,6 +54,19 @@ static inline void GetLocalTime(SYSTEMTIME *st) {
 }
 static inline void GetSystemTime(SYSTEMTIME *st) { GetLocalTime(st); }
 
+// MSVC CRT _itoa(value, buffer, radix) — minimal integer-to-string.
+static inline char *_itoa(int value, char *str, int radix) {
+    char tmp[35]; int i = 0;
+    bool neg = (radix == 10 && value < 0);
+    unsigned int v = neg ? (unsigned int)(-value) : (unsigned int)value;
+    do { unsigned d = v % (unsigned)radix; tmp[i++] = (char)(d < 10 ? '0' + d : 'a' + d - 10); v /= (unsigned)radix; } while (v);
+    char *p = str;
+    if (neg) *p++ = '-';
+    while (i > 0) *p++ = tmp[--i];
+    *p = '\0';
+    return str;
+}
+
 // The non-underscore Interlocked* Win32 functions; macros (type-generic, like the
 // _Interlocked* intrinsics) so they accept the engine's various pointer types.
 #define InterlockedExchange(p, v)          __sync_lock_test_and_set((p), (v))

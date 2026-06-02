@@ -17,14 +17,23 @@
 
 #if !defined(_MSC_VER)
 
-// MSVC makes the C string functions broadly visible; the decompiled code uses
-// memset/memcpy/strlen/etc. without always including <string.h>. Pull it in
-// build-wide (this header is force-included) to match. (Not <cstdlib> — its POSIX
-// Com_Random()/etc. clash with the engine's own declarations.)
+// MSVC makes the C string/float-limits functions broadly visible; the decompiled
+// code uses memset/memcpy/FLT_MAX/etc. without always including the header. Pull
+// them in build-wide (this header is force-included) to match. (Not <cstdlib> —
+// its POSIX random()/etc. clash with the engine's own declarations.)
 #include <cstring>
+#include <cfloat>
 
 #ifndef __debugbreak
 #define __debugbreak() __builtin_trap()
+#endif
+
+// More MSVC-isms: another calling convention, and the _-prefixed CRT aliases.
+#ifndef __pascal
+#define __pascal
+#endif
+#ifndef _snprintf
+#define _snprintf snprintf
 #endif
 
 #ifndef __forceinline

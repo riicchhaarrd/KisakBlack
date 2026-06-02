@@ -26,5 +26,13 @@
 #define _WriteBarrier()                        __atomic_signal_fence(__ATOMIC_SEQ_CST)
 #define MemoryBarrier()                        __sync_synchronize()
 
+// _BitScanReverse(&index, mask): index <- position of the highest set bit;
+// returns 0 if mask == 0. (MSVC bit intrinsic.)
+static inline unsigned char _BitScanReverse(unsigned long *Index, unsigned long Mask) {
+    if (!Mask) return 0;
+    *Index = 31u - (unsigned long)__builtin_clz((unsigned int)Mask);
+    return 1;
+}
+
 #endif // !_MSC_VER
 #endif // KISAK_MSVC_INTRIN_H
