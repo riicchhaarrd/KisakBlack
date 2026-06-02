@@ -5,8 +5,9 @@
 // (compiler `-include`) ahead of every translation unit on non-Windows so it
 // applies before q_shared.h (which already maps __int64/_DWORD/etc. for __GNUC__).
 //
-// Note: __cdecl/__stdcall/__thiscall ARE recognised by GCC/Clang as calling-
-// convention attributes on 32-bit x86 (the target here), so they need no shim.
+// Note: __cdecl/__stdcall ARE recognised by GCC/Clang as keywords on 32-bit x86
+// (the target here), so they need no shim. __thiscall is NOT — but member
+// functions are thiscall by default there, so map it to nothing (see below).
 #ifndef KISAK_MSVC_COMPAT_H
 #define KISAK_MSVC_COMPAT_H
 
@@ -20,6 +21,13 @@
 
 #ifndef __forceinline
 #define __forceinline inline __attribute__((always_inline))
+#endif
+
+// GCC/Clang don't accept the bare __thiscall keyword (unlike __cdecl/__stdcall).
+// On x86-32 member functions are already thiscall, and the build is internally
+// self-consistent (no external __thiscall symbols), so drop it.
+#ifndef __thiscall
+#define __thiscall
 #endif
 
 // Sized integer keywords (also defined identically in q_shared.h under __GNUC__;
