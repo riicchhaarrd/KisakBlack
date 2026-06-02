@@ -313,10 +313,11 @@ HRESULT WINAPI GLCubeTexture::GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) {
     pDesc->Width = e; pDesc->Height = e;
     return D3D_OK;
 }
-HRESULT WINAPI GLCubeTexture::GetCubeMapSurface(D3DCUBEMAP_FACES, UINT, IDirect3DSurface9 **ppSurface) {
-    // The engine uploads faces via LockRect/UnlockRect, not via face surfaces.
-    if (ppSurface) *ppSurface = nullptr;
-    return E_NOTIMPL;
+HRESULT WINAPI GLCubeTexture::GetCubeMapSurface(D3DCUBEMAP_FACES face, UINT level,
+                                                IDirect3DSurface9 **ppSurface) {
+    if (!ppSurface || (unsigned)face >= 6 || level >= levels_) return E_INVALIDARG;
+    *ppSurface = new GLSurface(this, face, level);
+    return D3D_OK;
 }
 HRESULT WINAPI GLCubeTexture::LockRect(D3DCUBEMAP_FACES FaceType, UINT Level,
                                        D3DLOCKED_RECT *pLockedRect, const RECT *, DWORD) {
@@ -369,6 +370,12 @@ GLSurface::GLSurface(GLTexture *owner, UINT level)
       height_(owner->height() >> level ? owner->height() >> level : 1),
       format_(owner->format()) {}
 
+GLSurface::GLSurface(GLCubeTexture *owner, D3DCUBEMAP_FACES face, UINT level)
+    : cubeOwner_(owner), cubeFace_(face), level_(level),
+      width_(owner->edgeLength() >> level ? owner->edgeLength() >> level : 1),
+      height_(owner->edgeLength() >> level ? owner->edgeLength() >> level : 1),
+      format_(owner->format()) {}
+
 GLSurface::GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, bool sysmem)
     : device_(device), width_(width), height_(height), format_(format), sysmem_(sysmem) {
     if (sysmem_) {
@@ -394,10 +401,15 @@ GLSurface::GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMA
 
 GLSurface::~GLSurface() { if (ownTex_) glDeleteTextures(1, &ownTex_); }
 
-unsigned GLSurface::texName() const { return owner_ ? owner_->glName() : ownTex_; }
+unsigned GLSurface::texName() const {
+    if (owner_) return owner_->glName();
+    if (cubeOwner_) return cubeOwner_->glName();
+    return ownTex_;
+}
 
 HRESULT WINAPI GLSurface::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (owner_) return owner_->GetDevice(ppDevice);
+    if (cubeOwner_) return cubeOwner_->GetDevice(ppDevice);
     if (!ppDevice) return E_INVALIDARG;
     *ppDevice = device_;
     if (device_) device_->AddRef();
@@ -406,6 +418,7 @@ HRESULT WINAPI GLSurface::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT WINAPI GLSurface::GetDesc(D3DSURFACE_DESC *pDesc) {
     if (owner_) return owner_->GetLevelDesc(level_, pDesc);
+    if (cubeOwner_) return cubeOwner_->GetLevelDesc(level_, pDesc);
     if (!pDesc) return E_INVALIDARG;
     *pDesc = D3DSURFACE_DESC{};
     pDesc->Format = format_; pDesc->Type = D3DRTYPE_SURFACE;
@@ -418,6 +431,7 @@ HRESULT WINAPI GLSurface::GetDesc(D3DSURFACE_DESC *pDesc) {
 
 HRESULT WINAPI GLSurface::LockRect(D3DLOCKED_RECT *lr, const RECT *r, DWORD f) {
     if (owner_) return owner_->LockRect(level_, lr, r, f);
+    if (cubeOwner_) return cubeOwner_->LockRect(cubeFace_, level_, lr, r, f);
     if (!lr) return E_INVALIDARG;
     if (!sysmem_) return E_FAIL;  // only system-memory surfaces are CPU-lockable here
     lr->Pitch = (int)(width_ * D3DFormatBpp(format_));
@@ -427,13 +441,15 @@ HRESULT WINAPI GLSurface::LockRect(D3DLOCKED_RECT *lr, const RECT *r, DWORD f) {
 
 HRESULT WINAPI GLSurface::UnlockRect() {
     if (owner_) return owner_->UnlockRect(level_);
+    if (cubeOwner_) return cubeOwner_->UnlockRect(cubeFace_, level_);
     return D3D_OK;  // sysmem: nothing to flush
 }
 
 HRESULT WINAPI GLSurface::GetContainer(REFIID, void **ppContainer) {
     if (!ppContainer) return E_INVALIDARG;
     if (owner_) { owner_->AddRef(); *ppContainer = owner_; }
-    else        { AddRef();        *ppContainer = this; }
+    else if (cubeOwner_) { cubeOwner_->AddRef(); *ppContainer = cubeOwner_; }
+    else                 { AddRef();             *ppContainer = this; }
     return D3D_OK;
 }
 

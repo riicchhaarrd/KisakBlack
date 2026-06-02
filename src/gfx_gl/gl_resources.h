@@ -206,6 +206,7 @@ struct GLDepthStencilTag {};
 class GLSurface final : public GLObject<IDirect3DSurface9> {
 public:
     GLSurface(GLTexture *owner, UINT level);                                       // texture-level view
+    GLSurface(GLCubeTexture *owner, D3DCUBEMAP_FACES face, UINT level);            // cube-face view
     GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, // standalone
               bool sysmem);
     GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, // back buffer (FBO 0)
@@ -238,6 +239,8 @@ public:
 private:
     IDirect3DDevice9 *device_ = nullptr;  // null for texture-level views (delegate to owner)
     GLTexture        *owner_  = nullptr;  // texture-level view (non-owning)
+    GLCubeTexture    *cubeOwner_ = nullptr; // cube-face view (non-owning)
+    D3DCUBEMAP_FACES  cubeFace_ = D3DCUBEMAP_FACE_POSITIVE_X;
     unsigned          ownTex_ = 0;        // standalone render target: owned GL texture
     UINT              level_  = 0;
     UINT              width_  = 0;
