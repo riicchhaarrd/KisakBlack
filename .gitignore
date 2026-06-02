@@ -439,3 +439,7 @@ build_gl32/
 
 # Local reference binaries (Mac/X360 exes, revtool) — never commit
 ref/
+
+# OpenAL backend standalone build output
+build_al/
+build_al32/
