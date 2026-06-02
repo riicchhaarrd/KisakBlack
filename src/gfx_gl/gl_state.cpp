@@ -59,13 +59,16 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
         case D3DRS_ZWRITEENABLE:    glDepthMask(Value ? GL_TRUE : GL_FALSE); break;
         case D3DRS_ZFUNC:           glDepthFunc(glCmp(Value));               break;
         case D3DRS_CULLMODE:
-            // NOTE: winding interacts with the shader's Y-flip; refine alongside
-            // the 3D shader path (task #5).
+            // The vertex path flips Y in clip space (D3D's Y-down screen -> GL's
+            // Y-up), which reverses triangle winding. So the GL front face is the
+            // inverse of the naive D3D->GL mapping: D3DCULL_CW -> GL_CCW and
+            // D3DCULL_CCW -> GL_CW. (Without this every visible triangle is culled
+            // as a back face and the whole frame renders black.)
             if (Value == D3DCULL_NONE) { glDisable(GL_CULL_FACE); }
             else {
                 glEnable(GL_CULL_FACE);
                 glCullFace(GL_BACK);
-                glFrontFace(Value == D3DCULL_CW ? GL_CW : GL_CCW);
+                glFrontFace(Value == D3DCULL_CW ? GL_CCW : GL_CW);
             }
             break;
         case D3DRS_ALPHABLENDENABLE:
