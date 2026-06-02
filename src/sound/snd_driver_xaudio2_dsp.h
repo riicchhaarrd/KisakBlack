@@ -1,11 +1,18 @@
 #pragma once
 
-#include <XAPOBase.h>
-#include <XAudio2.h>
 #include <universal/assertive.h>
 #include "snd_radverb.h"
 
 #define SDXA2_MAX_FRAME_COUNT 480
+
+// The XAudio2/XAPO DSP backend is Windows-only. No non-sound code references these
+// types (verified), so on other platforms this header compiles to nothing — which
+// is what lets the rest of the engine, that only transitively includes snd_dsp.h,
+// build on Linux. The Linux audio backend (SDL2/OpenAL) is a separate task.
+#if defined(_WIN32)
+
+#include <XAPOBase.h>
+#include <XAudio2.h>
 
 static const GUID HACK_IID_IXAPOParameters = { 0xA90BC001, 0xE897, 0xE897, { 0x55, 0xE4, 0x9E, 0x47, 0x00, 0x00, 0x00, 0x01 } };
 
@@ -285,6 +292,8 @@ struct SDXA2MasterNoVoiceBusEffect : SDXA2Effect // sizeof=0xB900
         float *data);
     void STDMETHODCALLTYPE SetParameters(const void *pParams, unsigned int cbParams);
 };
+
+#endif // defined(_WIN32)
 
 
 
