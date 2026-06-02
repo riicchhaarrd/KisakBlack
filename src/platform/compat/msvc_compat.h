@@ -7,8 +7,6 @@
 //
 // Note: __cdecl/__stdcall/__thiscall ARE recognised by GCC/Clang as calling-
 // convention attributes on 32-bit x86 (the target here), so they need no shim.
-// __declspec is enabled via the -fdeclspec compiler flag, not a macro (macroing it
-// would clash with the keyword).
 #ifndef KISAK_MSVC_COMPAT_H
 #define KISAK_MSVC_COMPAT_H
 
@@ -37,6 +35,23 @@
 #ifndef __int64
 #define __int64 long long
 #endif
+
+// MSVC __declspec(...) -> GCC/Clang. GCC does not parse `__declspec(align(N))`
+// natively (the decompiled code uses it on hundreds of structs). Map it via token
+// paste: __declspec(align(8)) -> __KISAK_DS_align(8) -> __attribute__((aligned(8))).
+// Coexists with -fms-extensions (verified).
+#define __declspec(x)          __KISAK_DS_##x
+#define __KISAK_DS_align(n)    __attribute__((aligned(n)))
+#define __KISAK_DS_noinline    __attribute__((noinline))
+#define __KISAK_DS_noreturn    __attribute__((noreturn))
+#define __KISAK_DS_nothrow     __attribute__((nothrow))
+#define __KISAK_DS_deprecated  __attribute__((deprecated))
+#define __KISAK_DS_selectany   __attribute__((weak))
+#define __KISAK_DS_naked
+#define __KISAK_DS_dllimport
+#define __KISAK_DS_dllexport
+#define __KISAK_DS_import
+#define __KISAK_DS_export
 
 #endif // !_MSC_VER
 #endif // KISAK_MSVC_COMPAT_H
