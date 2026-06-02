@@ -35,6 +35,7 @@ GLDevice::~GLDevice() {
     if (builtinProg_) glDeleteProgram(builtinProg_);
     if (vao_)         glDeleteVertexArrays(1, &vao_);
     if (fbo_)         glDeleteFramebuffers(1, &fbo_);
+    if (fboDepth_)    glDeleteRenderbuffers(1, &fboDepth_);
     delete ctx_;
 }
 
@@ -49,7 +50,21 @@ HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurfa
     if (!fbo_) glGenFramebuffers(1, &fbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->texName(), s->level());
-    fbWidth_ = (int)s->width(); fbHeight_ = (int)s->height();
+
+    // Provide a matching depth-stencil buffer so depth testing works when
+    // rendering to a texture. (Honoring an explicit SetDepthStencilSurface is a
+    // TODO; for now the FBO owns an auto-sized depth-stencil renderbuffer.)
+    int w = (int)s->width(), h = (int)s->height();
+    if (fboDepthW_ != w || fboDepthH_ != h) {
+        if (!fboDepth_) glGenRenderbuffers(1, &fboDepth_);
+        glBindRenderbuffer(GL_RENDERBUFFER, fboDepth_);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        fboDepthW_ = w; fboDepthH_ = h;
+    }
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fboDepth_);
+
+    fbWidth_ = w; fbHeight_ = h;
     return D3D_OK;
 }
 

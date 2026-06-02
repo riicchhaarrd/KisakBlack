@@ -115,7 +115,10 @@ private:
     int  fbHeight_  = 0;
     int  bbWidth_   = 0;   // back-buffer dimensions (restored when RT is unset)
     int  bbHeight_  = 0;
-    unsigned fbo_   = 0;   // reused FBO for render-to-texture
+    unsigned fbo_       = 0;  // reused FBO for render-to-texture
+    unsigned fboDepth_  = 0;  // its depth-stencil renderbuffer
+    int      fboDepthW_ = 0;
+    int      fboDepthH_ = 0;
     bool inScene_   = false;
 
     unsigned vao_                 = 0;

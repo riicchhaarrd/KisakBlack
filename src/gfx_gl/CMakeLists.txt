@@ -55,3 +55,6 @@ target_link_libraries(gl_query PRIVATE kisak_gl)
 
 add_executable(gl_shader3d tests/smoke_shader3d.cpp)
 target_link_libraries(gl_shader3d PRIVATE kisak_gl)
+
+add_executable(gl_depthrt tests/smoke_depthrt.cpp)
+target_link_libraries(gl_depthrt PRIVATE kisak_gl)
