@@ -29,6 +29,7 @@ add_library(kisak_gl STATIC
     gl_query.cpp
     gl_format.cpp
     gl_surface_ops.cpp
+    gl_d3dx.cpp
 )
 target_include_directories(kisak_gl PUBLIC
     "${WINSDK_INC}" "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -66,3 +67,6 @@ target_link_libraries(gl_readback PRIVATE kisak_gl)
 
 add_executable(gl_stretchrect tests/smoke_stretchrect.cpp)
 target_link_libraries(gl_stretchrect PRIVATE kisak_gl)
+
+add_executable(gl_savesurface tests/smoke_savesurface.cpp)
+target_link_libraries(gl_savesurface PRIVATE kisak_gl)
