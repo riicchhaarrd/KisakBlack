@@ -20,3 +20,12 @@ int D3DFormatBpp(D3DFORMAT fmt) {
     unsigned i, f, t; int bpp;
     return D3DToGLFormat(fmt, &i, &f, &t, &bpp) ? bpp : 4;
 }
+
+unsigned D3DCompressedGLFormat(D3DFORMAT fmt, int *blockBytes) {
+    switch ((unsigned)fmt) {
+        case 0x31545844: if (blockBytes) *blockBytes = 8;  return GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;  // 'DXT1'
+        case 0x33545844: if (blockBytes) *blockBytes = 16; return GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;  // 'DXT3'
+        case 0x35545844: if (blockBytes) *blockBytes = 16; return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;  // 'DXT5'
+        default: return 0;
+    }
+}

@@ -88,7 +88,8 @@ public:
     HRESULT WINAPI CreateTexture(UINT Width, UINT Height, UINT Levels, DWORD Usage,
                                  D3DFORMAT Format, D3DPOOL Pool,
                                  IDirect3DTexture9 **ppTexture, HANDLE *) override;
-    HRESULT WINAPI CreateVolumeTexture(UINT, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DVolumeTexture9 **pp, HANDLE *) override { return ni(pp); }
+    HRESULT WINAPI CreateVolumeTexture(UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage,
+                                       D3DFORMAT Format, D3DPOOL Pool, IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *) override;
     HRESULT WINAPI CreateCubeTexture(UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DCubeTexture9 **pp, HANDLE *) override { return ni(pp); }
     HRESULT WINAPI CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE,
                                       DWORD, BOOL, IDirect3DSurface9 **ppSurface, HANDLE *) override;

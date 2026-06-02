@@ -114,6 +114,34 @@ private:
     bool              dirty_     = false;
 };
 
+// A 3D (volume) texture — colour-grading LUTs etc. Maps to a GL_TEXTURE_3D.
+class GLVolumeTexture final : public GLObject<IDirect3DVolumeTexture9> {
+public:
+    GLVolumeTexture(IDirect3DDevice9 *device, UINT w, UINT h, UINT d, UINT levels,
+                    DWORD usage, D3DFORMAT format, D3DPOOL pool);
+    ~GLVolumeTexture() override;
+    HRESULT WINAPI GetDevice(IDirect3DDevice9 **ppDevice) override;
+    D3DRESOURCETYPE WINAPI GetType() override { return D3DRTYPE_VOLUMETEXTURE; }
+    DWORD   WINAPI SetPriority(DWORD) override { return 0; }
+    DWORD   WINAPI GetPriority() override { return 0; }
+    void    WINAPI PreLoad() override {}
+    DWORD   WINAPI SetLOD(DWORD) override { return 0; }
+    DWORD   WINAPI GetLOD() override { return 0; }
+    DWORD   WINAPI GetLevelCount() override { return levels_; }
+    HRESULT WINAPI GetLevelDesc(UINT Level, D3DVOLUME_DESC *pDesc) override;
+    HRESULT WINAPI LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, const D3DBOX *, DWORD) override;
+    HRESULT WINAPI UnlockBox(UINT Level) override;
+private:
+    IDirect3DDevice9 *device_;
+    unsigned          tex_ = 0;
+    UINT              width_, height_, depth_, levels_;
+    DWORD             usage_;
+    D3DFORMAT         format_;
+    D3DPOOL           pool_;
+    std::vector<std::vector<unsigned char>> levelShadow_;
+    bool              dirty_ = false;
+};
+
 // A surface is either a view onto one mip level of a texture (GetSurfaceLevel),
 // a standalone render target (owns a GL texture, renderable + readable), or a
 // system-memory surface (owns a CPU buffer, lockable — the target of

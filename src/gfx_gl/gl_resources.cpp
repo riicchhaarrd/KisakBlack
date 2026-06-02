@@ -105,10 +105,17 @@ HRESULT WINAPI GLIndexBuffer::GetDesc(D3DINDEXBUFFER_DESC *pDesc) {
 }
 
 // ---- GLTexture ------------------------------------------------------------
+// D3D's CreateTexture(Levels=0) means "full mip chain"; compute it from the size.
+static UINT FullMipCount(UINT w, UINT h) {
+    UINT m = (w > h) ? w : h, n = 1;
+    while (m > 1) { m >>= 1; ++n; }
+    return n;
+}
+
 GLTexture::GLTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT levels,
                      DWORD usage, D3DFORMAT format, D3DPOOL pool)
     : device_(device), width_(width), height_(height),
-      levels_(levels ? levels : 1), usage_(usage), format_(format), pool_(pool) {
+      levels_(levels ? levels : FullMipCount(width, height)), usage_(usage), format_(format), pool_(pool) {
     glGenTextures(1, &tex_);
     glBindTexture(GL_TEXTURE_2D, tex_);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -154,29 +161,101 @@ HRESULT WINAPI GLTexture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, cons
     if (!pLockedRect || Level >= levels_) return E_INVALIDARG;
     UINT w = width_  >> Level ? width_  >> Level : 1;
     UINT h = height_ >> Level ? height_ >> Level : 1;
-    int  bpp = D3DFormatBpp(format_);
-    levelShadow_[Level].assign((size_t)w * h * bpp, 0);
+    int blockBytes = 0;
+    if (D3DCompressedGLFormat(format_, &blockBytes)) {
+        // DXT/BC: the lock surface is a grid of 4x4 blocks; Pitch is bytes per block row.
+        UINT bw = (w + 3) / 4, bh = (h + 3) / 4;
+        levelShadow_[Level].assign((size_t)bw * bh * blockBytes, 0);
+        pLockedRect->Pitch = (int)(bw * blockBytes);
+    } else {
+        int bpp = D3DFormatBpp(format_);
+        levelShadow_[Level].assign((size_t)w * h * bpp, 0);
+        pLockedRect->Pitch = (int)(w * bpp);
+    }
     lockLevel_ = Level;
     dirty_     = true;
-    pLockedRect->Pitch = (int)(w * bpp);
     pLockedRect->pBits = levelShadow_[Level].data();
     return D3D_OK;
 }
 
 HRESULT WINAPI GLTexture::UnlockRect(UINT Level) {
     if (Level >= levels_ || !dirty_) return D3D_OK;
-    unsigned internal, format, type; int bpp;
-    if (!D3DToGLFormat(format_, &internal, &format, &type, &bpp)) {
-        fprintf(stderr, "[gl] GLTexture: unsupported format 0x%x (level not uploaded)\n", format_);
-        dirty_ = false;
-        return D3D_OK;
-    }
     UINT w = width_  >> Level ? width_  >> Level : 1;
     UINT h = height_ >> Level ? height_ >> Level : 1;
     glBindTexture(GL_TEXTURE_2D, tex_);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, Level, internal, w, h, 0, format, type, levelShadow_[Level].data());
+    int blockBytes = 0; unsigned cfmt = D3DCompressedGLFormat(format_, &blockBytes);
+    if (cfmt) {
+        glCompressedTexImage2D(GL_TEXTURE_2D, Level, cfmt, w, h, 0,
+                               (GLsizei)levelShadow_[Level].size(), levelShadow_[Level].data());
+    } else {
+        unsigned internal, format, type; int bpp;
+        if (!D3DToGLFormat(format_, &internal, &format, &type, &bpp)) {
+            fprintf(stderr, "[gl] GLTexture: unsupported format 0x%x (level not uploaded)\n", format_);
+            glBindTexture(GL_TEXTURE_2D, 0); dirty_ = false; return D3D_OK;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, Level, internal, w, h, 0, format, type, levelShadow_[Level].data());
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
+    dirty_ = false;
+    return D3D_OK;
+}
+
+// ---- GLVolumeTexture (GL_TEXTURE_3D) --------------------------------------
+GLVolumeTexture::GLVolumeTexture(IDirect3DDevice9 *device, UINT w, UINT h, UINT d, UINT levels,
+                                 DWORD usage, D3DFORMAT format, D3DPOOL pool)
+    : device_(device), width_(w), height_(h), depth_(d),
+      levels_(levels ? levels : 1), usage_(usage), format_(format), pool_(pool) {
+    glGenTextures(1, &tex_);
+    glBindTexture(GL_TEXTURE_3D, tex_);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAX_LEVEL, levels_ - 1);
+    levelShadow_.resize(levels_);
+    glBindTexture(GL_TEXTURE_3D, 0);
+}
+GLVolumeTexture::~GLVolumeTexture() { if (tex_) glDeleteTextures(1, &tex_); }
+
+HRESULT WINAPI GLVolumeTexture::GetDevice(IDirect3DDevice9 **ppDevice) {
+    if (!ppDevice) return E_INVALIDARG;
+    *ppDevice = device_; if (device_) device_->AddRef(); return D3D_OK;
+}
+HRESULT WINAPI GLVolumeTexture::GetLevelDesc(UINT Level, D3DVOLUME_DESC *pDesc) {
+    if (!pDesc || Level >= levels_) return E_INVALIDARG;
+    *pDesc = D3DVOLUME_DESC{};
+    pDesc->Format = format_; pDesc->Type = D3DRTYPE_VOLUME; pDesc->Usage = usage_; pDesc->Pool = pool_;
+    pDesc->Width  = width_  >> Level ? width_  >> Level : 1;
+    pDesc->Height = height_ >> Level ? height_ >> Level : 1;
+    pDesc->Depth  = depth_  >> Level ? depth_  >> Level : 1;
+    return D3D_OK;
+}
+HRESULT WINAPI GLVolumeTexture::LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, const D3DBOX *, DWORD) {
+    if (!pLockedVolume || Level >= levels_) return E_INVALIDARG;
+    UINT w = width_  >> Level ? width_  >> Level : 1;
+    UINT h = height_ >> Level ? height_ >> Level : 1;
+    UINT d = depth_  >> Level ? depth_  >> Level : 1;
+    int bpp = D3DFormatBpp(format_);
+    levelShadow_[Level].assign((size_t)w * h * d * bpp, 0);
+    dirty_ = true;
+    pLockedVolume->RowPitch   = (int)(w * bpp);
+    pLockedVolume->SlicePitch = (int)(w * h * bpp);
+    pLockedVolume->pBits      = levelShadow_[Level].data();
+    return D3D_OK;
+}
+HRESULT WINAPI GLVolumeTexture::UnlockBox(UINT Level) {
+    if (Level >= levels_ || !dirty_) return D3D_OK;
+    UINT w = width_  >> Level ? width_  >> Level : 1;
+    UINT h = height_ >> Level ? height_ >> Level : 1;
+    UINT d = depth_  >> Level ? depth_  >> Level : 1;
+    unsigned internal, format, type; int bpp;
+    if (D3DToGLFormat(format_, &internal, &format, &type, &bpp)) {
+        glBindTexture(GL_TEXTURE_3D, tex_);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage3D(GL_TEXTURE_3D, Level, internal, w, h, d, 0, format, type, levelShadow_[Level].data());
+        glBindTexture(GL_TEXTURE_3D, 0);
+    } else {
+        fprintf(stderr, "[gl] GLVolumeTexture: unsupported format 0x%x\n", format_);
+    }
     dirty_ = false;
     return D3D_OK;
 }

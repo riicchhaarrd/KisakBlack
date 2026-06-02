@@ -104,7 +104,11 @@ void *thread_thunk(void *arg) {
 HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, DWORD, DWORD *threadId) {
     KObject *k = new KObject(); k->kind = K_THREAD; k->start = start; k->param = param;
     if (pthread_create(&k->thread, nullptr, thread_thunk, k) != 0) { delete k; return nullptr; }
-    if (threadId) *threadId = 0;
+    // The engine stores this id in its thread table and later matches it against
+    // GetCurrentThreadId() inside the new thread. GetCurrentThreadId() is
+    // (DWORD)(uintptr_t)pthread_self(), and pthread_self() in the new thread equals
+    // k->thread — so report that here, NOT 0.
+    if (threadId) *threadId = (DWORD)(uintptr_t)k->thread;
     return static_cast<HANDLE>(k);
 }
 DWORD ResumeThread(HANDLE)  { return 0; }
