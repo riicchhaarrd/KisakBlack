@@ -95,6 +95,8 @@ struct SDXA2Effect : public CXAPOBase, public IXAPOParameters // sizeof=0x3C80
     virtual void Process(unsigned int channelCount, unsigned int frameCount, float *data) = 0;
 };
 
+#endif // defined(_WIN32) — the snd_dsp_* structs below are platform-neutral data
+
 struct snd_dsp_master_params // sizeof=0x60
 {                                       // XREF: SDXA2MasterBusEffect/r
                                         // SoundState/r
@@ -193,6 +195,7 @@ struct snd_dsp_master_state // sizeof=0x1000
     snd_dsp_dynamo_state limit;
 };
 
+#if defined(_WIN32)
 struct SDXA2MasterBusEffect : SDXA2Effect // sizeof=0xBD00
 {                                       // XREF: SoundState/r
     snd_dsp_master_params params;
@@ -224,6 +227,8 @@ struct SDXA2RadverbEffect : SDXA2Effect // sizeof=0x87B80
 
     void STDMETHODCALLTYPE SetParameters(const void *pParams, unsigned int cbParams);
 };
+
+#endif // defined(_WIN32)
 
 struct snd_dsp_squelch_param // sizeof=0x8
 {                                       // XREF: snd_dsp_futz_param/r
@@ -262,6 +267,7 @@ struct snd_dsp_source_state // sizeof=0x4C
     snd_dsp_futz_state futz;
 };
 
+#if defined(_WIN32)
 struct SDXA2SourceEffect : public SDXA2Effect // sizeof=0x5B80
 {                                       // XREF: SoundState/r
     snd_dsp_source_params params;
