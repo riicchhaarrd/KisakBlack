@@ -339,7 +339,18 @@ static inline void *InterlockedExchangePointer(void **target, void *value) { ret
 static inline DWORD_PTR SetThreadAffinityMask(HANDLE, DWORD_PTR mask)        { return mask; }
 static inline DWORD     SetThreadIdealProcessor(HANDLE, DWORD proc)          { return proc; }
 static inline BOOL      SetThreadPriority(HANDLE, int)                       { return TRUE; }
-static inline BOOL      GetProcessAffinityMask(HANDLE, DWORD_PTR *p, DWORD_PTR *s) { if (p) *p = 1; if (s) *s = 1; return TRUE; }
+// Report one affinity bit per online CPU. The engine derives its CPU count
+// (and thus sys_smp_allowed) by popcount-ing this mask, so returning a single
+// bit would force single-threaded rendering — which is wrong for the GL
+// backend, whose context is bound to the render thread and must receive all
+// draw work via the SMP hand-off rather than inline on the main thread.
+static inline BOOL      GetProcessAffinityMask(HANDLE, DWORD_PTR *p, DWORD_PTR *s) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 1)  n = 1;
+    if (n > 32) n = 32;  // the mask is 32-bit; the engine caps the count anyway
+    DWORD_PTR mask = (n >= 32) ? (DWORD_PTR)~0u : (((DWORD_PTR)1 << n) - 1);
+    if (p) *p = mask; if (s) *s = mask; return TRUE;
+}
 static inline HANDLE    GetCurrentThread()                                   { return (HANDLE)(intptr_t)-2; }
 static inline HANDLE    GetCurrentProcess()                                  { return (HANDLE)(intptr_t)-1; }
 
