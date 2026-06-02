@@ -126,10 +126,24 @@ HMODULE  GetModuleHandleA(const char *lpModuleName);
 typedef struct _FILETIME { DWORD dwLowDateTime, dwHighDateTime; } FILETIME, *LPFILETIME;
 #define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
 static inline DWORD GetLastError() { return (DWORD)errno; }
+static inline void  SetLastError(DWORD e) { errno = (int)e; }
+static inline void  OutputDebugStringA(const char *s) { if (s) fputs(s, stderr); }
 static inline int   ShowCursor(BOOL) { return 0; }
 static inline BOOL  SystemTimeToFileTime(const SYSTEMTIME *, FILETIME *ft) {
     if (ft) { ft->dwLowDateTime = 0; ft->dwHighDateTime = 0; } return TRUE;
 }
+
+// ---- A couple more file helpers --------------------------------------------
+static inline BOOL SetFileAttributesA(const char *, DWORD) { return TRUE; }  // attrs are a Win32 concept
+
+// ---- Critical sections (no-op; the engine's real locking goes through the
+// Sys_*CriticalSection layer — these satisfy the Win32-typed declarations) -----
+typedef struct _RTL_CRITICAL_SECTION { void *opaque[8]; } CRITICAL_SECTION, *LPCRITICAL_SECTION;
+static inline void InitializeCriticalSection(LPCRITICAL_SECTION) {}
+static inline void DeleteCriticalSection(LPCRITICAL_SECTION) {}
+static inline void EnterCriticalSection(LPCRITICAL_SECTION) {}
+static inline void LeaveCriticalSection(LPCRITICAL_SECTION) {}
+static inline BOOL TryEnterCriticalSection(LPCRITICAL_SECTION) { return TRUE; }
 
 // ---- Window message pump (stubbed; real input runs through SDL) -------------
 typedef struct tagMSG {
@@ -162,19 +176,121 @@ typedef struct _OVERLAPPED {
 } OVERLAPPED, *LPOVERLAPPED;
 struct _EXCEPTION_POINTERS;
 
-// ---- Mutex / wait (pthread-backed; HANDLE carries a pthread_mutex_t) --------
-#define WAIT_OBJECT_0 0x0
-#define INFINITE      0xFFFFFFFF
-static inline HANDLE CreateMutexA(void *, BOOL initialOwner, const char *) {
-    pthread_mutex_t *m = new pthread_mutex_t; pthread_mutex_init(m, nullptr);
-    if (initialOwner) pthread_mutex_lock(m); return (HANDLE)m;
-}
-static inline DWORD WaitForSingleObject(HANDLE h, DWORD /*ms*/) {
-    if (h && h != INVALID_HANDLE_VALUE) pthread_mutex_lock((pthread_mutex_t *)h); return WAIT_OBJECT_0;
-}
-static inline BOOL ReleaseMutex(HANDLE h) {
-    if (h && h != INVALID_HANDLE_VALUE) pthread_mutex_unlock((pthread_mutex_t *)h); return TRUE;
-}
+// ---- Kernel objects: file / thread / event / semaphore / mutex -------------
+// All Win32 kernel handles are unified behind one tagged HANDLE, implemented over
+// POSIX/pthreads in src/platform/sdl/win_kernel.cpp; CloseHandle and
+// WaitForSingleObject dispatch on the object kind. Declared (not inline) so the
+// handle table has a single owner.
+#define WAIT_OBJECT_0    0x0
+#define WAIT_TIMEOUT     0x102
+#define INFINITE         0xFFFFFFFF
+#define CREATE_SUSPENDED 0x4
+
+typedef DWORD (*LPTHREAD_START_ROUTINE)(void *);
+
+HANDLE CreateThread(void *attrs, SIZE_T stack, LPTHREAD_START_ROUTINE start, void *param, DWORD flags, DWORD *threadId);
+DWORD  ResumeThread(HANDLE thread);
+DWORD  SuspendThread(HANDLE thread);
+HANDLE CreateEventA(void *attrs, BOOL manualReset, BOOL initialState, const char *name);
+BOOL   SetEvent(HANDLE ev);
+BOOL   ResetEvent(HANDLE ev);
+BOOL   PulseEvent(HANDLE ev);
+HANDLE CreateSemaphoreA(void *attrs, LONG initialCount, LONG maxCount, const char *name);
+BOOL   ReleaseSemaphore(HANDLE sem, LONG releaseCount, LONG *prevCount);
+HANDLE CreateMutexA(void *attrs, BOOL initialOwner, const char *name);
+BOOL   ReleaseMutex(HANDLE mtx);
+DWORD  WaitForSingleObject(HANDLE h, DWORD ms);
+BOOL   CloseHandle(HANDLE h);
+BOOL   DuplicateHandle(HANDLE srcProc, HANDLE src, HANDLE dstProc, HANDLE *dst,
+                       DWORD access, BOOL inherit, DWORD options);
+
+// ---- File I/O (HANDLE = fd; impl in win_kernel.cpp) ------------------------
+#ifndef GENERIC_READ
+#define GENERIC_READ          0x80000000u
+#define GENERIC_WRITE         0x40000000u
+#define FILE_SHARE_READ       0x1
+#define FILE_SHARE_WRITE      0x2
+#define CREATE_ALWAYS         2
+#define OPEN_EXISTING         3
+#define OPEN_ALWAYS           4
+#define FILE_ATTRIBUTE_NORMAL    0x80u
+#define FILE_ATTRIBUTE_DIRECTORY 0x10u
+#define INVALID_FILE_ATTRIBUTES  ((DWORD)-1)
+#define FILE_BEGIN   0
+#define FILE_CURRENT 1
+#define FILE_END     2
+#endif
+HANDLE CreateFileA(const char *name, DWORD access, DWORD share, void *sec, DWORD disp, DWORD flags, HANDLE tmpl);
+BOOL   ReadFile(HANDLE h, void *buf, DWORD n, DWORD *numRead, OVERLAPPED *ov);
+BOOL   ReadFileEx(HANDLE h, void *buf, DWORD n, OVERLAPPED *ov, void *completion);
+BOOL   WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, OVERLAPPED *ov);
+DWORD  GetFileSize(HANDLE h, DWORD *high);
+DWORD  SetFilePointer(HANDLE h, LONG dist, LONG *distHigh, DWORD method);
+DWORD  GetFileAttributesA(const char *name);
+DWORD  GetCurrentDirectoryA(DWORD len, char *buf);
+DWORD  GetModuleFileNameA(HMODULE mod, char *buf, DWORD size);
+
+// ---- Virtual / global memory (malloc/mmap-backed; impl in win_kernel.cpp) --
+typedef struct _MEMORY_BASIC_INFORMATION {
+    void  *BaseAddress, *AllocationBase;
+    DWORD  AllocationProtect;
+    SIZE_T RegionSize;
+    DWORD  State, Protect, Type;
+} MEMORY_BASIC_INFORMATION, *PMEMORY_BASIC_INFORMATION;
+#ifndef MEM_COMMIT
+#define MEM_COMMIT  0x1000
+#define MEM_RESERVE 0x2000
+#define MEM_RELEASE 0x8000
+#define PAGE_READWRITE 0x04
+#endif
+typedef HANDLE HGLOBAL;
+void  *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect);
+BOOL   VirtualFree(void *addr, SIZE_T size, DWORD type);
+SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *info, SIZE_T len);
+HGLOBAL GlobalAlloc(UINT flags, SIZE_T size);
+void   *GlobalLock(HGLOBAL h);
+BOOL    GlobalUnlock(HGLOBAL h);
+HGLOBAL GlobalFree(HGLOBAL h);
+
+// ---- Process / debug / exceptions (inline, self-contained) -----------------
+#ifndef EXCEPTION_EXECUTE_HANDLER
+#define EXCEPTION_EXECUTE_HANDLER     1
+#define EXCEPTION_CONTINUE_SEARCH     0
+#define EXCEPTION_CONTINUE_EXECUTION (-1)
+#endif
+typedef struct _TOKEN_PRIVILEGES { DWORD PrivilegeCount; struct { struct { DWORD LowPart; LONG HighPart; } Luid; DWORD Attributes; } Privileges[1]; } TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
+static inline void ExitProcess(UINT code)            { _exit((int)code); }
+static inline void RaiseException(DWORD, DWORD, DWORD, const void *) { __builtin_trap(); }
+static inline BOOL IsDebuggerPresent()               { return FALSE; }
+static inline void GetSystemTimeAsFileTime(FILETIME *ft) { if (ft) { ft->dwLowDateTime = 0; ft->dwHighDateTime = 0; } }
+static inline DWORD SleepEx(DWORD ms, BOOL)          { if (ms) usleep((useconds_t)ms * 1000u); return 0; }
+static inline void *InterlockedExchangePointer(void **target, void *value) { return __sync_lock_test_and_set(target, value); }
+
+// ---- Thread scheduling (best-effort / no-op on Linux) ----------------------
+static inline DWORD_PTR SetThreadAffinityMask(HANDLE, DWORD_PTR mask)        { return mask; }
+static inline DWORD     SetThreadIdealProcessor(HANDLE, DWORD proc)          { return proc; }
+static inline BOOL      SetThreadPriority(HANDLE, int)                       { return TRUE; }
+static inline BOOL      GetProcessAffinityMask(HANDLE, DWORD_PTR *p, DWORD_PTR *s) { if (p) *p = 1; if (s) *s = 1; return TRUE; }
+static inline HANDLE    GetCurrentThread()                                   { return (HANDLE)(intptr_t)-2; }
+static inline HANDLE    GetCurrentProcess()                                  { return (HANDLE)(intptr_t)-1; }
+
+// ---- Window / GDI / clipboard / shell (no-op on the SDL/Linux build) -------
+typedef BOOL (*WNDENUMPROC)(HWND, LPARAM);
+static inline HWND  GetActiveWindow()                       { return (HWND)0; }
+static inline HWND  GetDesktopWindow()                      { return (HWND)0; }
+static inline HDC   GetDC(HWND)                             { return (HDC)0; }
+static inline int   ReleaseDC(HWND, HDC)                    { return 1; }
+static inline LONG  GetWindowLongA(HWND, int)              { return 0; }
+static inline int   GetWindowTextA(HWND, char *buf, int n)  { if (buf && n) buf[0] = '\0'; return 0; }
+static inline BOOL  EnumThreadWindows(DWORD, WNDENUMPROC, LPARAM) { return TRUE; }
+static inline LONG  ChangeDisplaySettingsA(void *, DWORD)   { return 0; }   // DISP_CHANGE_SUCCESSFUL
+static inline BOOL  SetDeviceGammaRamp(HDC, void *)         { return TRUE; }
+static inline int   MessageBoxA(HWND, const char *, const char *, UINT) { return 1; }   // IDOK
+static inline HINSTANCE ShellExecuteA(HWND, const char *, const char *, const char *, const char *, int) { return (HINSTANCE)33; }
+static inline BOOL  OpenClipboard(HWND)                     { return FALSE; }
+static inline BOOL  CloseClipboard()                       { return TRUE; }
+static inline BOOL  EmptyClipboard()                       { return TRUE; }
+static inline HANDLE SetClipboardData(UINT, HANDLE h)       { return h; }
 
 // ---- Path / directory / file-time helpers ----------------------------------
 static inline BOOL RemoveDirectoryA(const char *path) { return rmdir(path) == 0; }
@@ -195,7 +311,11 @@ static inline LONG CompareFileTime(const FILETIME *a, const FILETIME *b) {
     return x < y ? -1 : (x > y ? 1 : 0);
 }
 
-// ---- File enumeration / deletion (FindFirstFile* -> glob, DeleteFile -> unlink)
+// ---- File enumeration / deletion (impl in win_kernel.cpp) ------------------
+// FindFirstFile* are backed by glob() in win_kernel.cpp — NOT here, because
+// <glob.h> pollutes the global namespace with `glob`, which the engine uses as an
+// ordinary variable name (e.g. SentientGlobals glob). Same reasoning as keeping
+// <cstdlib>'s random() out of this header.
 typedef struct _WIN32_FIND_DATAA {
     DWORD dwFileAttributes;
     FILETIME ftCreationTime, ftLastAccessTime, ftLastWriteTime;
@@ -204,29 +324,9 @@ typedef struct _WIN32_FIND_DATAA {
     char cAlternateFileName[14];
 } WIN32_FIND_DATAA, *LPWIN32_FIND_DATAA;
 
-#include <glob.h>
-#include <cstring>
-struct KisakFindState { glob_t g; size_t i; };
-static inline void KisakFindFill(KisakFindState *h, WIN32_FIND_DATAA *d) {
-    const char *p = h->g.gl_pathv[h->i];
-    const char *base = strrchr(p, '/'); base = base ? base + 1 : p;
-    int n = 0; while (base[n] && n < MAX_PATH - 1) { d->cFileName[n] = base[n]; ++n; }
-    d->cFileName[n] = '\0'; d->dwFileAttributes = 0;
-}
-static inline HANDLE FindFirstFileA(const char *pattern, WIN32_FIND_DATAA *d) {
-    KisakFindState *h = new KisakFindState(); h->i = 0;
-    if (glob(pattern, 0, nullptr, &h->g) != 0 || h->g.gl_pathc == 0) { globfree(&h->g); delete h; return INVALID_HANDLE_VALUE; }
-    KisakFindFill(h, d); return (HANDLE)h;
-}
-static inline BOOL FindNextFileA(HANDLE handle, WIN32_FIND_DATAA *d) {
-    KisakFindState *h = (KisakFindState *)handle;
-    if (++h->i >= h->g.gl_pathc) return FALSE;
-    KisakFindFill(h, d); return TRUE;
-}
-static inline BOOL FindClose(HANDLE handle) {
-    KisakFindState *h = (KisakFindState *)handle;
-    if (h && h != INVALID_HANDLE_VALUE) { globfree(&h->g); delete h; } return TRUE;
-}
+HANDLE FindFirstFileA(const char *pattern, WIN32_FIND_DATAA *d);
+BOOL   FindNextFileA(HANDLE handle, WIN32_FIND_DATAA *d);
+BOOL   FindClose(HANDLE handle);
 static inline BOOL DeleteFileA(const char *path) { return unlink(path) == 0; }
 
 #endif // KISAK_WINDOWS_H

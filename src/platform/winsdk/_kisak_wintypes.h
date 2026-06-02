@@ -81,6 +81,16 @@ typedef const wchar_t      *LPCWSTR;
 #define STDAPICALLTYPE
 #define FAR
 #define WINAPIV
+
+// COM interface-declaration macros (from <objbase.h>): the decompiled COM-style
+// interfaces (e.g. the XAudio2 voice callback) are written with these.
+#define STDMETHOD(method)        virtual HRESULT method
+#define STDMETHOD_(type, method) virtual type method
+#define THIS_
+#define THIS                     void
+#ifndef PURE
+#define PURE                     = 0
+#endif
 #ifndef __cdecl
 #define __cdecl
 #endif
@@ -105,6 +115,7 @@ typedef LONG HRESULT;
 KISAK_DECLARE_HANDLE(HWND);
 KISAK_DECLARE_HANDLE(HMONITOR);
 KISAK_DECLARE_HANDLE(HDC);
+KISAK_DECLARE_HANDLE(HFONT);
 KISAK_DECLARE_HANDLE(HINSTANCE);
 typedef HINSTANCE HMODULE;
 

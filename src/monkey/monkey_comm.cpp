@@ -53,7 +53,7 @@ char __cdecl Monkey_InitCommunication(const char *server)
             memset(&zookeeper.sin_port, 0, 14);
             zookeeper.sin_family = 2;
             zookeeper.sin_port = htons(7000);
-            zookeeper.sin_addr.S_un.S_addr = addr;
+            zookeeper.sin_addr.s_addr = addr;
             if ( connect(g_MonkeySock, (const struct sockaddr *)&zookeeper, 16) )
             {
                 err = WSAGetLastError();

@@ -25,8 +25,12 @@
 #include <cfloat>
 #include <cstdio>
 #include <ctime>
+#include <cctype>
 #include <csetjmp>
-#include <strings.h>
+// NOT <strings.h>: it declares index()/rindex(), which collide with the engine's
+// `index` variables. Declare the two case-insensitive compares we need directly.
+extern "C" int strcasecmp(const char *, const char *) noexcept;
+extern "C" int strncasecmp(const char *, const char *, size_t) noexcept;
 
 #ifndef __debugbreak
 #define __debugbreak() __builtin_trap()
@@ -43,6 +47,29 @@
 #define _strnicmp  strncasecmp
 #define _strdup    strdup
 #endif
+#ifndef sprintf_s
+#define sprintf_s(buf, size, ...) snprintf((buf), (size), __VA_ARGS__)
+#endif
+
+// MSVC's _-prefixed sized-int CRT conversions -> POSIX/C equivalents. Declared
+// directly (NOT via <cstdlib>) so we don't pull in POSIX random()/srandom(), which
+// collide with the engine's own random() declaration (only scope-renamed in a few
+// files). These libc symbols are otherwise standard.
+extern "C" long long          atoll(const char *) noexcept;
+extern "C" long long          strtoll(const char *, char **, int) noexcept;
+extern "C" unsigned long long strtoull(const char *, char **, int) noexcept;
+extern "C" int                putenv(char *) noexcept;
+static inline long long          _atoi64(const char *s)                    { return atoll(s); }
+static inline long long          _strtoi64(const char *s, char **e, int b)  { return strtoll(s, e, b); }
+static inline unsigned long long _strtoui64(const char *s, char **e, int b) { return strtoull(s, e, b); }
+static inline char *_strlwr(char *s) { for (char *p = s; *p; ++p) *p = (char)tolower((unsigned char)*p); return s; }
+static inline char *_strupr(char *s) { for (char *p = s; *p; ++p) *p = (char)toupper((unsigned char)*p); return s; }
+#ifndef _putenv
+#define _putenv putenv
+#endif
+#ifndef ARRAYSIZE
+#define ARRAYSIZE(a) (sizeof(a) / sizeof((a)[0]))
+#endif
 typedef FILE _iobuf;  // MSVC's FILE struct tag, used bare in the decompiled code
 
 // MSVC's 64-bit time CRT (rb_logfile.cpp) and the SEH-era setjmp spelling
@@ -50,8 +77,43 @@ typedef FILE _iobuf;  // MSVC's FILE struct tag, used bare in the decompiled cod
 typedef long long __time64_t;
 static inline __time64_t _time64(__time64_t *t) { time_t r = time(nullptr); if (t) *t = (__time64_t)r; return (__time64_t)r; }
 static inline struct tm *_localtime64(const __time64_t *t) { time_t v = (time_t)*t; return localtime(&v); }
+static inline struct tm *_gmtime64(const __time64_t *t)    { time_t v = (time_t)*t; return gmtime(&v); }
+static inline char       *_ctime64(const __time64_t *t)    { time_t v = (time_t)*t; return ctime(&v); }
+#include <cerrno>
+#ifndef _errno
+#define _errno() (&errno)   // MSVC: errno is (*_errno())
+#endif
+// _ui64toa(value, buffer, radix) — unsigned 64-bit integer-to-string.
+static inline char *_ui64toa(unsigned long long value, char *str, int radix) {
+    char tmp[65]; int i = 0;
+    do { unsigned d = (unsigned)(value % (unsigned)radix); tmp[i++] = (char)(d < 10 ? '0' + d : 'a' + d - 10); value /= (unsigned)radix; } while (value);
+    char *p = str; while (i > 0) *p++ = tmp[--i]; *p = '\0'; return str;
+}
+// MSVC spells setjmp `_setjmp`, and the decompiled code passes a raw int*/void*
+// buffer (not a typed jmp_buf). Bridge straight to glibc's __sigsetjmp primitive
+// (savemask 0): this both casts the buffer and avoids the glibc setjmp<->_setjmp
+// macro recursion that `#define _setjmp setjmp` would trigger.
 #ifndef _setjmp
-#define _setjmp setjmp   // <csetjmp> provides jmp_buf + setjmp; MSVC spells it _setjmp
+#define _setjmp(buf) __sigsetjmp((struct __jmp_buf_tag *)(buf), 0)
+#endif
+// longjmp's matching restore — the decompiled code passes the same raw int*/void*
+// buffer. _longjmp is glibc's non-sigmask variant (pairs with __sigsetjmp(...,0))
+// and isn't a macro, so this doesn't recurse.
+#define longjmp(buf, val) _longjmp((struct __jmp_buf_tag *)(buf), (val))
+
+// Structured Exception Handling -> C++ try/catch. GCC has no SEH; the filter
+// expression is dropped (catch-all). This compiles the crash-guard scaffolding;
+// actual hardware-fault interception is a separate (deferred) concern.
+#ifndef __try
+#define __try            try
+#define __except(filter) catch (...)
+#define __finally
+#endif
+
+// Our 32-bit build uses the x87 FPU (no -mfpmath=sse), which is what the few
+// precision-sensitive files assert via MSVC's _M_IX86_FP (0 == x87, no SSE).
+#ifndef _M_IX86_FP
+#define _M_IX86_FP 0
 #endif
 
 // MSVC's qsort/bsearch comparator typedef (used in casts, e.g. rb_imagetouch.cpp).
@@ -73,6 +135,17 @@ typedef int (*_CoreCrtNonSecureSearchSortCompareFunction)(const void *, const vo
 #endif
 #ifndef __thiscall
 #define __thiscall
+#endif
+
+// MSVC's <windows.h> provides 2-arg min/max as macros; the decompiled engine calls
+// them bare. We can't use macros (they poison the C++ standard library — e.g.
+// numeric_limits::max), so provide global function templates instead. Safe because
+// the engine never does `using namespace std` (verified), so bare min/max resolve
+// here with no ambiguity. Two type params + a decltype'd return mirror the macro's
+// type-agnostic behaviour (mixed int/float operands).
+#if defined(__cplusplus)
+template <class A, class B> inline auto min(A a, B b) -> decltype(a < b ? a : b) { return a < b ? a : b; }
+template <class A, class B> inline auto max(A a, B b) -> decltype(a > b ? a : b) { return a > b ? a : b; }
 #endif
 
 // Sized integer keywords (also defined identically in q_shared.h under __GNUC__;

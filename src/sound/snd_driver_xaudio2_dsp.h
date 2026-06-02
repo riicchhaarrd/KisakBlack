@@ -5,10 +5,20 @@
 
 #define SDXA2_MAX_FRAME_COUNT 480
 
-// The XAudio2/XAPO DSP backend is Windows-only. No non-sound code references these
-// types (verified), so on other platforms this header compiles to nothing — which
-// is what lets the rest of the engine, that only transitively includes snd_dsp.h,
-// build on Linux. The Linux audio backend (SDL2/OpenAL) is a separate task.
+// Forward declarations of the DSP-effect classes, visible on every platform so that
+// SoundState (snd_driver_xaudio2.h) can hold pointers to them. The full XAPO-derived
+// definitions below are Windows-only; the bodies that dereference these pointers live
+// in snd*.cpp, which is the deferred SDL2/OpenAL audio port.
+struct SDXA2Effect;
+struct SDXA2SourceEffect;
+struct SDXA2MasterBusEffect;
+struct SDXA2MasterNoVoiceBusEffect;
+struct SDXA2RadverbEffect;
+
+// The XAudio2/XAPO DSP backend is Windows-only. On other platforms the full
+// definitions compile to nothing — which (with the forward decls above) is what lets
+// the rest of the engine, that only transitively includes snd_dsp.h, build on Linux.
+// The Linux audio backend (SDL2/OpenAL) is a separate task.
 #if defined(_WIN32)
 
 #include <XAPOBase.h>

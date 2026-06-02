@@ -23,6 +23,15 @@ typedef int            socklen_t_win;
 #define INVALID_SOCKET (-1)
 #define SOCKET_ERROR   (-1)
 
+// WSAStartup's out-parameter — only its presence matters here (the fields describe
+// the Winsock implementation, which has no analogue on BSD sockets).
+typedef struct WSAData {
+    WORD  wVersion, wHighVersion;
+    char  szDescription[257], szSystemStatus[129];
+    unsigned short iMaxSockets, iMaxUdpDg;
+    char *lpVendorInfo;
+} WSADATA, *LPWSADATA;
+
 static inline int closesocket(int s)            { return close(s); }
 static inline int WSAGetLastError()             { return errno; }
 static inline int WSAStartup(WORD, void *)      { return 0; }

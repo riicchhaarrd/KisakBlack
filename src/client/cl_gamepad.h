@@ -14,7 +14,7 @@ enum GamepadPhysicalAxis : __int32
     GPAD_PHYSAXIS_RTRIGGER = 0x4,
     GPAD_PHYSAXIS_LTRIGGER = 0x5,
     GPAD_PHYSAXIS_COUNT    = 0x6,
-    GPAD_PHYSAXIS_NONE     = 0xFFFFFFFF, // XREF: .data:axisSameStick/s
+    GPAD_PHYSAXIS_NONE     = -1, // XREF: .data:axisSameStick/s
 };
 
 enum GamePadStickDir : __int32
