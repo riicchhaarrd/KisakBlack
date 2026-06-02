@@ -20,6 +20,12 @@
 #include <cstring>
 
 #include "../sdl/sdl_events.h"   // Sys_PumpSDLEvents
+#include <SDL2/SDL.h>            // SDL_GetMouseState / relative-mouse mode (IN_Frame)
+
+// Client mouse entry point (src/client_mp/cl_input_mp.cpp). Declared directly to
+// avoid pulling the whole client header into the platform layer; __cdecl is the
+// default on x86-32 so this resolves to the same symbol.
+int CL_MouseEvent(int x, int y, int dx, int dy);
 
 // ---- The window-vars global (normally in win_wndproc.cpp) ------------------
 WinVars_t g_wv;
@@ -107,9 +113,26 @@ sysEvent_t *Sys_GetEvent(sysEvent_t *result) {
 void Sys_LoadingKeepAlive() { Sys_PumpSDLEvents(Sys_Milliseconds()); }
 
 // ---- Input / window (driven by the SDL layer / GL backend) -----------------
-void IN_Frame() {}
-void IN_SetCursorPos(unsigned int, unsigned int) {}
-void IN_ShowSystemCursor(bool) {}
+// Poll the mouse each frame and feed it to the client, mirroring win_input.cpp's
+// IN_Frame -> IN_MouseMove -> CL_MouseEvent. SDL events are pumped every frame by
+// Com_EventLoop (Sys_GetEvent -> Sys_PumpSDLEvents), so SDL_GetMouseState is
+// current. CL_MouseEvent routes the window-relative position to the menu cursor
+// (UI_MouseEvent) when a menu is open, or accumulates the delta for game look
+// otherwise; its return value (recenterMouse) requests relative/captured mode,
+// which maps cleanly to SDL's relative mouse mode.
+void IN_Frame() {
+    int x = 0, y = 0;
+    SDL_GetMouseState(&x, &y);            // window-relative pixel coordinates
+    static int oldX = 0, oldY = 0;
+    static bool primed = false;
+    if (!primed) { oldX = x; oldY = y; primed = true; }
+    int dx = x - oldX, dy = y - oldY;
+    oldX = x; oldY = y;
+    int recenter = CL_MouseEvent(x, y, dx, dy);
+    SDL_SetRelativeMouseMode(recenter ? SDL_TRUE : SDL_FALSE);
+}
+void IN_SetCursorPos(unsigned int x, unsigned int y) { SDL_WarpMouseInWindow(nullptr, (int)x, (int)y); }
+void IN_ShowSystemCursor(bool show) { SDL_ShowCursor(show ? SDL_ENABLE : SDL_DISABLE); }
 
 // ---- Misc Windows extras: no-ops on Linux ----------------------------------
 char *Sys_GetClipboardData() { return nullptr; }
