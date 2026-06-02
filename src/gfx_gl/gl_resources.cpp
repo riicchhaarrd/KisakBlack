@@ -1,5 +1,6 @@
 // gl_resources.cpp — GL-backed vertex/index buffers + vertex declaration.
 #include "gl_resources.h"
+#include "gl_format.h"
 
 #include <GL/glew.h>
 #include <cstdio>
@@ -103,27 +104,6 @@ HRESULT WINAPI GLIndexBuffer::GetDesc(D3DINDEXBUFFER_DESC *pDesc) {
     return D3D_OK;
 }
 
-// ---- Format mapping -------------------------------------------------------
-// Maps a D3DFORMAT to GL (internalFormat, uploadFormat, uploadType, bytesPerPixel).
-// D3D's *A8R8G8B8 is BGRA byte order in memory, so we upload it as GL_BGRA.
-// Returns false for formats not yet handled (e.g. compressed DXT — TODO).
-static bool MapFormat(D3DFORMAT fmt, GLint *internal, GLenum *format, GLenum *type, int *bpp) {
-    switch (fmt) {
-        case D3DFMT_A8R8G8B8: *internal = GL_RGBA8; *format = GL_BGRA; *type = GL_UNSIGNED_INT_8_8_8_8_REV; *bpp = 4; return true;
-        case D3DFMT_X8R8G8B8: *internal = GL_RGB8;  *format = GL_BGRA; *type = GL_UNSIGNED_INT_8_8_8_8_REV; *bpp = 4; return true;
-        case D3DFMT_A8B8G8R8: *internal = GL_RGBA8; *format = GL_RGBA; *type = GL_UNSIGNED_INT_8_8_8_8_REV; *bpp = 4; return true;
-        case D3DFMT_R5G6B5:   *internal = GL_RGB5;  *format = GL_RGB;  *type = GL_UNSIGNED_SHORT_5_6_5;     *bpp = 2; return true;
-        case D3DFMT_A8:       *internal = GL_R8;    *format = GL_RED;  *type = GL_UNSIGNED_BYTE;            *bpp = 1; return true;
-        case D3DFMT_L8:       *internal = GL_R8;    *format = GL_RED;  *type = GL_UNSIGNED_BYTE;            *bpp = 1; return true;
-        default: return false;
-    }
-}
-
-static int FormatBpp(D3DFORMAT fmt) {
-    GLint i; GLenum f, t; int bpp;
-    return MapFormat(fmt, &i, &f, &t, &bpp) ? bpp : 4;
-}
-
 // ---- GLTexture ------------------------------------------------------------
 GLTexture::GLTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT levels,
                      DWORD usage, D3DFORMAT format, D3DPOOL pool)
@@ -138,8 +118,8 @@ GLTexture::GLTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT lev
     // A render-target texture is never Lock/Unlocked, so allocate level-0 storage
     // now to make it complete for FBO colour attachment.
     if (usage_ & D3DUSAGE_RENDERTARGET) {
-        GLint internal; GLenum fmt, type; int bpp;
-        if (MapFormat(format_, &internal, &fmt, &type, &bpp))
+        unsigned internal, fmt, type; int bpp;
+        if (D3DToGLFormat(format_, &internal, &fmt, &type, &bpp))
             glTexImage2D(GL_TEXTURE_2D, 0, internal, width_, height_, 0, fmt, type, nullptr);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -174,7 +154,7 @@ HRESULT WINAPI GLTexture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, cons
     if (!pLockedRect || Level >= levels_) return E_INVALIDARG;
     UINT w = width_  >> Level ? width_  >> Level : 1;
     UINT h = height_ >> Level ? height_ >> Level : 1;
-    int  bpp = FormatBpp(format_);
+    int  bpp = D3DFormatBpp(format_);
     levelShadow_[Level].assign((size_t)w * h * bpp, 0);
     lockLevel_ = Level;
     dirty_     = true;
@@ -185,8 +165,8 @@ HRESULT WINAPI GLTexture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, cons
 
 HRESULT WINAPI GLTexture::UnlockRect(UINT Level) {
     if (Level >= levels_ || !dirty_) return D3D_OK;
-    GLint internal; GLenum format, type; int bpp;
-    if (!MapFormat(format_, &internal, &format, &type, &bpp)) {
+    unsigned internal, format, type; int bpp;
+    if (!D3DToGLFormat(format_, &internal, &format, &type, &bpp)) {
         fprintf(stderr, "[gl] GLTexture: unsupported format 0x%x (level not uploaded)\n", format_);
         dirty_ = false;
         return D3D_OK;
@@ -202,17 +182,71 @@ HRESULT WINAPI GLTexture::UnlockRect(UINT Level) {
 }
 
 // ---- GLSurface ------------------------------------------------------------
-GLSurface::GLSurface(GLTexture *owner, UINT level) : owner_(owner), level_(level) {}
+GLSurface::GLSurface(GLTexture *owner, UINT level)
+    : owner_(owner), level_(level),
+      width_(owner->width()  >> level ? owner->width()  >> level : 1),
+      height_(owner->height() >> level ? owner->height() >> level : 1),
+      format_(owner->format()) {}
 
-HRESULT WINAPI GLSurface::GetDevice(IDirect3DDevice9 **ppDevice) { return owner_->GetDevice(ppDevice); }
-HRESULT WINAPI GLSurface::GetDesc(D3DSURFACE_DESC *pDesc)        { return owner_->GetLevelDesc(level_, pDesc); }
-HRESULT WINAPI GLSurface::LockRect(D3DLOCKED_RECT *lr, const RECT *r, DWORD f) { return owner_->LockRect(level_, lr, r, f); }
-HRESULT WINAPI GLSurface::UnlockRect()                          { return owner_->UnlockRect(level_); }
+GLSurface::GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, bool sysmem)
+    : device_(device), width_(width), height_(height), format_(format), sysmem_(sysmem) {
+    if (sysmem_) {
+        shadow_.assign((size_t)width_ * height_ * D3DFormatBpp(format_), 0);
+    } else {
+        // Standalone render target: an immutable-storage GL texture.
+        unsigned internal, fmt, type; int bpp;
+        glGenTextures(1, &ownTex_);
+        glBindTexture(GL_TEXTURE_2D, ownTex_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        if (D3DToGLFormat(format_, &internal, &fmt, &type, &bpp))
+            glTexImage2D(GL_TEXTURE_2D, 0, internal, width_, height_, 0, fmt, type, nullptr);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+}
+
+GLSurface::~GLSurface() { if (ownTex_) glDeleteTextures(1, &ownTex_); }
+
+unsigned GLSurface::texName() const { return owner_ ? owner_->glName() : ownTex_; }
+
+HRESULT WINAPI GLSurface::GetDevice(IDirect3DDevice9 **ppDevice) {
+    if (owner_) return owner_->GetDevice(ppDevice);
+    if (!ppDevice) return E_INVALIDARG;
+    *ppDevice = device_;
+    if (device_) device_->AddRef();
+    return D3D_OK;
+}
+
+HRESULT WINAPI GLSurface::GetDesc(D3DSURFACE_DESC *pDesc) {
+    if (owner_) return owner_->GetLevelDesc(level_, pDesc);
+    if (!pDesc) return E_INVALIDARG;
+    *pDesc = D3DSURFACE_DESC{};
+    pDesc->Format = format_; pDesc->Type = D3DRTYPE_SURFACE;
+    pDesc->Usage = sysmem_ ? 0 : D3DUSAGE_RENDERTARGET;
+    pDesc->Pool = sysmem_ ? D3DPOOL_SYSTEMMEM : D3DPOOL_DEFAULT;
+    pDesc->MultiSampleType = D3DMULTISAMPLE_NONE;
+    pDesc->Width = width_; pDesc->Height = height_;
+    return D3D_OK;
+}
+
+HRESULT WINAPI GLSurface::LockRect(D3DLOCKED_RECT *lr, const RECT *r, DWORD f) {
+    if (owner_) return owner_->LockRect(level_, lr, r, f);
+    if (!lr) return E_INVALIDARG;
+    if (!sysmem_) return E_FAIL;  // only system-memory surfaces are CPU-lockable here
+    lr->Pitch = (int)(width_ * D3DFormatBpp(format_));
+    lr->pBits = shadow_.data();
+    return D3D_OK;
+}
+
+HRESULT WINAPI GLSurface::UnlockRect() {
+    if (owner_) return owner_->UnlockRect(level_);
+    return D3D_OK;  // sysmem: nothing to flush
+}
 
 HRESULT WINAPI GLSurface::GetContainer(REFIID, void **ppContainer) {
     if (!ppContainer) return E_INVALIDARG;
-    owner_->AddRef();
-    *ppContainer = owner_;
+    if (owner_) { owner_->AddRef(); *ppContainer = owner_; }
+    else        { AddRef();        *ppContainer = this; }
     return D3D_OK;
 }
 

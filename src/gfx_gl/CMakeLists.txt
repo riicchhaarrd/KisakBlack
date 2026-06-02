@@ -27,6 +27,8 @@ add_library(kisak_gl STATIC
     gl_shader.cpp
     gl_program.cpp
     gl_query.cpp
+    gl_format.cpp
+    gl_surface_ops.cpp
 )
 target_include_directories(kisak_gl PUBLIC
     "${WINSDK_INC}" "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -58,3 +60,9 @@ target_link_libraries(gl_shader3d PRIVATE kisak_gl)
 
 add_executable(gl_depthrt tests/smoke_depthrt.cpp)
 target_link_libraries(gl_depthrt PRIVATE kisak_gl)
+
+add_executable(gl_readback tests/smoke_readback.cpp)
+target_link_libraries(gl_readback PRIVATE kisak_gl)
+
+add_executable(gl_stretchrect tests/smoke_stretchrect.cpp)
+target_link_libraries(gl_stretchrect PRIVATE kisak_gl)

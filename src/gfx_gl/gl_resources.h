@@ -114,11 +114,17 @@ private:
     bool              dirty_     = false;
 };
 
-// A surface is a view onto one mip level of a texture (from GetSurfaceLevel).
-// Standalone render-target/depth surfaces will extend this later.
+// A surface is either a view onto one mip level of a texture (GetSurfaceLevel),
+// a standalone render target (owns a GL texture, renderable + readable), or a
+// system-memory surface (owns a CPU buffer, lockable — the target of
+// GetRenderTargetData and CreateOffscreenPlainSurface).
 class GLSurface final : public GLObject<IDirect3DSurface9> {
 public:
-    GLSurface(GLTexture *owner, UINT level);
+    GLSurface(GLTexture *owner, UINT level);                                       // texture-level view
+    GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, // standalone
+              bool sysmem);
+
+    ~GLSurface() override;
 
     HRESULT WINAPI GetDevice(IDirect3DDevice9 **ppDevice) override;
     D3DRESOURCETYPE WINAPI GetType() override { return D3DRTYPE_SURFACE; }
@@ -130,15 +136,24 @@ public:
     HRESULT WINAPI LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) override;
     HRESULT WINAPI UnlockRect() override;
 
-    // For binding as an FBO colour attachment.
-    unsigned texName() const { return owner_->glName(); }
-    UINT     level()   const { return level_; }
-    UINT     width()   const { return owner_->width()  >> level_ ? owner_->width()  >> level_ : 1; }
-    UINT     height()  const { return owner_->height() >> level_ ? owner_->height() >> level_ : 1; }
+    unsigned  texName() const;  // renderable GL texture (FBO attachment), or 0 if sysmem
+    UINT      level()   const { return level_; }
+    UINT      width()   const { return width_; }
+    UINT      height()  const { return height_; }
+    D3DFORMAT format()  const { return format_; }
+    bool      sysmem()  const { return sysmem_; }
+    std::vector<unsigned char> &shadow() { return shadow_; }
 
 private:
-    GLTexture *owner_;  // non-owning: the texture outlives its surface views
-    UINT       level_;
+    IDirect3DDevice9 *device_ = nullptr;  // null for texture-level views (delegate to owner)
+    GLTexture        *owner_  = nullptr;  // texture-level view (non-owning)
+    unsigned          ownTex_ = 0;        // standalone render target: owned GL texture
+    UINT              level_  = 0;
+    UINT              width_  = 0;
+    UINT              height_ = 0;
+    D3DFORMAT         format_ = D3DFMT_UNKNOWN;
+    bool              sysmem_ = false;
+    std::vector<unsigned char> shadow_;   // sysmem backing for LockRect
 };
 
 class GLVertexDeclaration final : public GLObject<IDirect3DVertexDeclaration9> {

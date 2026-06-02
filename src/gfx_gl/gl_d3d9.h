@@ -90,12 +90,18 @@ public:
                                  IDirect3DTexture9 **ppTexture, HANDLE *) override;
     HRESULT WINAPI CreateVolumeTexture(UINT, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DVolumeTexture9 **pp, HANDLE *) override { return ni(pp); }
     HRESULT WINAPI CreateCubeTexture(UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DCubeTexture9 **pp, HANDLE *) override { return ni(pp); }
-    HRESULT WINAPI CreateRenderTarget(UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9 **pp, HANDLE *) override { return ni(pp); }
+    HRESULT WINAPI CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE,
+                                      DWORD, BOOL, IDirect3DSurface9 **ppSurface, HANDLE *) override;
+    HRESULT WINAPI CreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL,
+                                               IDirect3DSurface9 **ppSurface, HANDLE *) override;
+    HRESULT WINAPI GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
+                                       IDirect3DSurface9 *pDestSurface) override;
+    HRESULT WINAPI StretchRect(IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect,
+                               IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
+                               D3DTEXTUREFILTERTYPE Filter) override;
+    // Still stubbed (TODO): standalone depth-stencil surfaces, UpdateSurface.
     HRESULT WINAPI CreateDepthStencilSurface(UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9 **pp, HANDLE *) override { return ni(pp); }
-    HRESULT WINAPI CreateOffscreenPlainSurface(UINT, UINT, D3DFORMAT, D3DPOOL, IDirect3DSurface9 **pp, HANDLE *) override { return ni(pp); }
     HRESULT WINAPI UpdateSurface(IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *, const POINT *) override { return E_NOTIMPL; }
-    HRESULT WINAPI GetRenderTargetData(IDirect3DSurface9 *, IDirect3DSurface9 *) override { return E_NOTIMPL; }
-    HRESULT WINAPI StretchRect(IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *, const RECT *, D3DTEXTUREFILTERTYPE) override { return E_NOTIMPL; }
     HRESULT WINAPI CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) override;
     HRESULT WINAPI CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 **ppShader) override;
     HRESULT WINAPI CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) override;
