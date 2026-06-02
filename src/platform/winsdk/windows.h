@@ -34,10 +34,25 @@ KISAK_DECLARE_HANDLE(HGLRC);
 #include "../compat/msvc_intrin.h"  // _Interlocked*/MemoryBarrier
 #include <pthread.h>
 #include <unistd.h>
+#include <sched.h>
+#include <ctime>
 
 static inline DWORD GetCurrentThreadId()  { return (DWORD)(uintptr_t)pthread_self(); }
 static inline DWORD GetCurrentProcessId() { return (DWORD)getpid(); }
 static inline void  Sleep(DWORD ms)       { if (ms) usleep((useconds_t)ms * 1000u); }
+static inline BOOL  SwitchToThread()      { return sched_yield() == 0; }
+
+typedef struct _SYSTEMTIME {
+    WORD wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds;
+} SYSTEMTIME, *LPSYSTEMTIME;
+static inline void GetLocalTime(SYSTEMTIME *st) {
+    time_t t = time(nullptr); struct tm tmv; localtime_r(&t, &tmv);
+    st->wYear = (WORD)(tmv.tm_year + 1900); st->wMonth = (WORD)(tmv.tm_mon + 1);
+    st->wDayOfWeek = (WORD)tmv.tm_wday;      st->wDay = (WORD)tmv.tm_mday;
+    st->wHour = (WORD)tmv.tm_hour; st->wMinute = (WORD)tmv.tm_min;
+    st->wSecond = (WORD)tmv.tm_sec; st->wMilliseconds = 0;
+}
+static inline void GetSystemTime(SYSTEMTIME *st) { GetLocalTime(st); }
 
 // The non-underscore Interlocked* Win32 functions; macros (type-generic, like the
 // _Interlocked* intrinsics) so they accept the engine's various pointer types.

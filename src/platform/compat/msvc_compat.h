@@ -17,6 +17,12 @@
 
 #if !defined(_MSC_VER)
 
+// MSVC makes the C string functions broadly visible; the decompiled code uses
+// memset/memcpy/strlen/etc. without always including <string.h>. Pull it in
+// build-wide (this header is force-included) to match. (Not <cstdlib> — its POSIX
+// random()/etc. clash with the engine's own declarations.)
+#include <cstring>
+
 #ifndef __debugbreak
 #define __debugbreak() __builtin_trap()
 #endif
