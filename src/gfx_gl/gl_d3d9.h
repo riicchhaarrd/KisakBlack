@@ -98,7 +98,7 @@ public:
     HRESULT WINAPI StretchRect(IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *, const RECT *, D3DTEXTUREFILTERTYPE) override { return E_NOTIMPL; }
     HRESULT WINAPI CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) override;
     HRESULT WINAPI CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 **ppShader) override;
-    HRESULT WINAPI CreateQuery(D3DQUERYTYPE, IDirect3DQuery9 **pp) override { return ni(pp); }
+    HRESULT WINAPI CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) override;
 
 private:
     static const int kMaxStages = 8;

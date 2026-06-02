@@ -26,6 +26,7 @@ add_library(kisak_gl STATIC
     gl_state.cpp
     gl_shader.cpp
     gl_program.cpp
+    gl_query.cpp
 )
 target_include_directories(kisak_gl PUBLIC
     "${WINSDK_INC}" "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -48,3 +49,9 @@ target_link_libraries(gl_shader PRIVATE kisak_gl)
 
 add_executable(gl_rendertarget tests/smoke_rendertarget.cpp)
 target_link_libraries(gl_rendertarget PRIVATE kisak_gl)
+
+add_executable(gl_query tests/smoke_query.cpp)
+target_link_libraries(gl_query PRIVATE kisak_gl)
+
+add_executable(gl_shader3d tests/smoke_shader3d.cpp)
+target_link_libraries(gl_shader3d PRIVATE kisak_gl)
