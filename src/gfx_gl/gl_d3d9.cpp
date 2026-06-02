@@ -4,6 +4,7 @@
 #include "gl_resources.h"
 
 #include <GL/glew.h>
+#include <SDL2/SDL.h>   // adapter display-mode queries (EnumAdapterModes etc.)
 #include <cstdio>
 
 // Default device caps, shared by GLDevice::GetDeviceCaps and GLD3D9::GetDeviceCaps.
@@ -142,8 +143,33 @@ HRESULT WINAPI GLD3D9::GetAdapterIdentifier(UINT, DWORD, D3DADAPTER_IDENTIFIER9 
 
 HRESULT WINAPI GLD3D9::GetAdapterDisplayMode(UINT, D3DDISPLAYMODE *pMode) {
     if (!pMode) return E_INVALIDARG;
-    pMode->Width = 1920; pMode->Height = 1080; pMode->RefreshRate = 60;
+    SDL_DisplayMode dm;
+    if (SDL_WasInit(SDL_INIT_VIDEO) && SDL_GetDesktopDisplayMode(0, &dm) == 0) {
+        pMode->Width = (UINT)dm.w; pMode->Height = (UINT)dm.h;
+        pMode->RefreshRate = (UINT)dm.refresh_rate;
+    } else {
+        pMode->Width = 1920; pMode->Height = 1080; pMode->RefreshRate = 60;
+    }
     pMode->Format = D3DFMT_X8R8G8B8;
+    return D3D_OK;
+}
+
+UINT WINAPI GLD3D9::GetAdapterModeCount(UINT, D3DFORMAT) {
+    int n = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetNumDisplayModes(0) : 0;
+    return n > 0 ? (UINT)n : 1;  // always offer at least the fallback desktop mode
+}
+
+HRESULT WINAPI GLD3D9::EnumAdapterModes(UINT, D3DFORMAT Format, UINT Mode, D3DDISPLAYMODE *pMode) {
+    if (!pMode) return E_INVALIDARG;
+    SDL_DisplayMode dm;
+    if (SDL_WasInit(SDL_INIT_VIDEO) && SDL_GetDisplayMode(0, (int)Mode, &dm) == 0) {
+        pMode->Width = (UINT)dm.w; pMode->Height = (UINT)dm.h;
+        pMode->RefreshRate = (UINT)dm.refresh_rate;
+    } else {
+        if (Mode != 0) return D3DERR_INVALIDCALL;
+        pMode->Width = 1920; pMode->Height = 1080; pMode->RefreshRate = 60;
+    }
+    pMode->Format = Format;
     return D3D_OK;
 }
 

@@ -45,6 +45,7 @@ add_library(kisak_gl STATIC
     gl_format.cpp
     gl_surface_ops.cpp
     gl_d3dx.cpp
+    ../platform/sdl/sdl_window.cpp   # Win32 window/monitor APIs bridged onto the SDL window
 )
 target_include_directories(kisak_gl PUBLIC
     "${WINSDK_INC}" "${CMAKE_CURRENT_SOURCE_DIR}"

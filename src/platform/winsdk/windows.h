@@ -89,6 +89,39 @@ static inline HMODULE LoadLibraryA(const char *) { return nullptr; }
 static inline void   *GetProcAddress(HMODULE, const char *) { return nullptr; }
 static inline BOOL    FreeLibrary(HMODULE) { return TRUE; }
 
+// ---- Window / monitor management -------------------------------------------
+// The GL backend owns the single SDL window (it creates it in CreateDevice). The
+// renderer's Win32 window calls are bridged onto that window by the SDL platform
+// layer (src/platform/sdl/sdl_window.cpp): window-manipulation calls are no-ops /
+// sentinels (the SDL window is authoritative), while the monitor/metrics queries
+// return real SDL display data so the renderer picks a correct resolution. These
+// are plain declarations (not inline) to keep SDL out of this header.
+typedef struct tagMONITORINFO {
+    DWORD cbSize;
+    RECT  rcMonitor;
+    RECT  rcWork;
+    DWORD dwFlags;
+} MONITORINFO, *LPMONITORINFO;
+typedef BOOL (*MONITORENUMPROC)(HMONITOR, HDC, LPRECT, LPARAM);
+
+int      GetSystemMetrics(int nIndex);                 // 0=SM_CXSCREEN, 1=SM_CYSCREEN
+HMONITOR MonitorFromPoint(POINT pt, DWORD dwFlags);
+HMONITOR MonitorFromWindow(HWND hWnd, DWORD dwFlags);
+BOOL     GetMonitorInfoA(HMONITOR hMonitor, LPMONITORINFO lpmi);
+BOOL     EnumDisplayMonitors(HDC hdc, LPRECT lprcClip, MONITORENUMPROC lpfnEnum, LPARAM dwData);
+BOOL     ClientToScreen(HWND hWnd, LPPOINT lpPoint);
+BOOL     AdjustWindowRectEx(LPRECT lpRect, DWORD dwStyle, BOOL bMenu, DWORD dwExStyle);
+HWND     CreateWindowExA(DWORD exStyle, const char *cls, const char *name, DWORD style,
+                         int x, int y, int w, int h, HWND parent, HMENU menu,
+                         HINSTANCE inst, void *param);
+BOOL     DestroyWindow(HWND hWnd);
+BOOL     IsWindow(HWND hWnd);
+BOOL     ShowWindow(HWND hWnd, int nCmdShow);
+BOOL     SetWindowPos(HWND hWnd, HWND hWndAfter, int x, int y, int cx, int cy, UINT flags);
+LONG     SetWindowLongA(HWND hWnd, int nIndex, LONG dwNewLong);
+HWND     SetFocus(HWND hWnd);
+HMODULE  GetModuleHandleA(const char *lpModuleName);
+
 // ---- Misc Win32 ------------------------------------------------------------
 typedef struct _FILETIME { DWORD dwLowDateTime, dwHighDateTime; } FILETIME, *LPFILETIME;
 #define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)

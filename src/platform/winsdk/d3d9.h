@@ -282,6 +282,10 @@ struct IDirect3D9 : public IUnknown {
     virtual UINT    WINAPI GetAdapterCount() = 0;
     virtual HRESULT WINAPI GetAdapterIdentifier(UINT Adapter, DWORD Flags,
                                                 D3DADAPTER_IDENTIFIER9 *pIdentifier) = 0;
+    virtual UINT    WINAPI GetAdapterModeCount(UINT Adapter, D3DFORMAT Format) = 0;
+    virtual HRESULT WINAPI EnumAdapterModes(UINT Adapter, D3DFORMAT Format, UINT Mode,
+                                            D3DDISPLAYMODE *pMode) = 0;
+    virtual HMONITOR WINAPI GetAdapterMonitor(UINT Adapter) = 0;
     virtual HRESULT WINAPI GetAdapterDisplayMode(UINT Adapter, D3DDISPLAYMODE *pMode) = 0;
     virtual HRESULT WINAPI GetDeviceCaps(UINT Adapter, D3DDEVTYPE DeviceType, D3DCAPS9 *pCaps) = 0;
     virtual HRESULT WINAPI CheckDeviceType(UINT Adapter, D3DDEVTYPE DevType,
