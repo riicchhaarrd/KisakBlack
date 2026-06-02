@@ -170,7 +170,16 @@ typedef struct _FILETIME { DWORD dwLowDateTime, dwHighDateTime; } FILETIME, *LPF
 static inline DWORD GetLastError() { return (DWORD)errno; }
 static inline void  SetLastError(DWORD e) { errno = (int)e; }
 static inline void  OutputDebugStringA(const char *s) { if (s) fputs(s, stderr); }
-static inline int   ShowCursor(BOOL) { return 0; }
+// Win32 ShowCursor maintains a per-process display counter: +1 on show, -1 on
+// hide, returning the new value (cursor visible when >= 0). The engine's swap
+// loop spins ShowCursor() until the returned counter reaches a target, so a
+// constant return value would loop forever (it hung the render thread in
+// RB_SwapBuffers). Track the counter so the loop converges.
+static inline int   ShowCursor(BOOL bShow) {
+    static int s_cursorDisplayCount = 0;
+    s_cursorDisplayCount += bShow ? 1 : -1;
+    return s_cursorDisplayCount;
+}
 static inline BOOL  SystemTimeToFileTime(const SYSTEMTIME *, FILETIME *ft) {
     if (ft) { ft->dwLowDateTime = 0; ft->dwHighDateTime = 0; } return TRUE;
 }
