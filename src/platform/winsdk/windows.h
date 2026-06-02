@@ -81,6 +81,27 @@ static inline char *_itoa(int value, char *str, int radix) {
 #define InterlockedDecrement(p)            __sync_sub_and_fetch((p), 1)
 #define InterlockedCompareExchange(p, e, c) __sync_val_compare_and_swap((p), (c), (e))
 
+// ---- COM init + wide/narrow string conversion ------------------------------
+// COM doesn't exist on Linux; the audio init calls become no-ops. The string
+// converters do a plain UTF-16<->8-bit truncation (the engine only converts ASCII
+// device names).
+static inline HRESULT CoInitializeEx(void *, DWORD) { return 0; }   // S_OK
+static inline HRESULT CoInitialize(void *)          { return 0; }
+static inline void    CoUninitialize()              {}
+static inline HRESULT CLSIDFromString(const wchar_t *, GUID *clsid) { if (clsid) { DWORD *p = (DWORD *)clsid; p[0]=p[1]=p[2]=p[3]=0; } return 0; }
+static inline int WideCharToMultiByte(UINT, DWORD, const wchar_t *wstr, int cch, char *out, int cb, const char *, int *) {
+    if (!wstr) return 0;
+    int n = 0; int limit = (cb > 0) ? cb : 0x7fffffff;
+    while ((cch < 0 || n < cch) && n < limit) { wchar_t w = wstr[n]; if (cch < 0 && w == 0) { if (out) out[n] = 0; n++; break; } if (out) out[n] = (char)w; if (w == 0) { n++; break; } n++; }
+    return n;
+}
+static inline int MultiByteToWideChar(UINT, DWORD, const char *str, int cch, wchar_t *out, int cw) {
+    if (!str) return 0;
+    int n = 0; int limit = (cw > 0) ? cw : 0x7fffffff;
+    while ((cch < 0 || n < cch) && n < limit) { char c = str[n]; if (out) out[n] = (wchar_t)(unsigned char)c; if (c == 0) { n++; break; } n++; }
+    return n;
+}
+
 // ---- Dynamic library loading -----------------------------------------------
 // The engine LoadLibraryA's a few Windows-only DLLs (ddraw.dll, ...) and degrades
 // gracefully when they are missing. Returning null here takes that fallback path —

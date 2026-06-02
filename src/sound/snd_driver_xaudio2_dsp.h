@@ -5,22 +5,9 @@
 
 #define SDXA2_MAX_FRAME_COUNT 480
 
-// Forward declarations of the DSP-effect classes, visible on every platform so that
-// SoundState (snd_driver_xaudio2.h) can hold pointers to them. The full XAPO-derived
-// definitions below are Windows-only; the bodies that dereference these pointers live
-// in snd*.cpp, which is the deferred SDL2/OpenAL audio port.
-struct SDXA2Effect;
-struct SDXA2SourceEffect;
-struct SDXA2MasterBusEffect;
-struct SDXA2MasterNoVoiceBusEffect;
-struct SDXA2RadverbEffect;
-
-// The XAudio2/XAPO DSP backend is Windows-only. On other platforms the full
-// definitions compile to nothing — which (with the forward decls above) is what lets
-// the rest of the engine, that only transitively includes snd_dsp.h, build on Linux.
-// The Linux audio backend (SDL2/OpenAL) is a separate task.
-#if defined(_WIN32)
-
+// The DSP effects derive from CXAPOBase / IXAPOParameters — reconstructed portably in
+// XAPOBase.h — so they now compile on every platform; the OpenAL backend
+// (src/audio_openal) supplies the XAudio2/XAPO runtime that drives them.
 #include <XAPOBase.h>
 #include <XAudio2.h>
 
@@ -105,7 +92,6 @@ struct SDXA2Effect : public CXAPOBase, public IXAPOParameters // sizeof=0x3C80
     virtual void Process(unsigned int channelCount, unsigned int frameCount, float *data) = 0;
 };
 
-#endif // defined(_WIN32) — the snd_dsp_* structs below are platform-neutral data
 
 struct snd_dsp_master_params // sizeof=0x60
 {                                       // XREF: SDXA2MasterBusEffect/r
@@ -205,7 +191,6 @@ struct snd_dsp_master_state // sizeof=0x1000
     snd_dsp_dynamo_state limit;
 };
 
-#if defined(_WIN32)
 struct SDXA2MasterBusEffect : SDXA2Effect // sizeof=0xBD00
 {                                       // XREF: SoundState/r
     snd_dsp_master_params params;
@@ -238,7 +223,6 @@ struct SDXA2RadverbEffect : SDXA2Effect // sizeof=0x87B80
     void STDMETHODCALLTYPE SetParameters(const void *pParams, unsigned int cbParams);
 };
 
-#endif // defined(_WIN32)
 
 struct snd_dsp_squelch_param // sizeof=0x8
 {                                       // XREF: snd_dsp_futz_param/r
@@ -277,7 +261,6 @@ struct snd_dsp_source_state // sizeof=0x4C
     snd_dsp_futz_state futz;
 };
 
-#if defined(_WIN32)
 struct SDXA2SourceEffect : public SDXA2Effect // sizeof=0x5B80
 {                                       // XREF: SoundState/r
     snd_dsp_source_params params;
@@ -309,7 +292,6 @@ struct SDXA2MasterNoVoiceBusEffect : SDXA2Effect // sizeof=0xB900
     void STDMETHODCALLTYPE SetParameters(const void *pParams, unsigned int cbParams);
 };
 
-#endif // defined(_WIN32)
 
 
 

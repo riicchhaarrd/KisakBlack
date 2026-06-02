@@ -107,6 +107,7 @@ typedef LONG HRESULT;
 #define E_OUTOFMEMORY   ((HRESULT)0x8007000EL)
 #define E_INVALIDARG    ((HRESULT)0x80070057L)
 #define E_NOTIMPL       ((HRESULT)0x80004001L)
+#define E_POINTER       ((HRESULT)0x80004003L)
 #define SUCCEEDED(hr)   (((HRESULT)(hr)) >= 0)
 #define FAILED(hr)      (((HRESULT)(hr)) <  0)
 
@@ -134,6 +135,19 @@ typedef struct _GUID {
 typedef const GUID &REFGUID;
 typedef const IID  &REFIID;
 typedef const CLSID &REFCLSID;
+
+// The engine compares GUIDs/IIDs with == (e.g. in QueryInterface). MSVC provides
+// operator== for GUID via a header; supply it here (byte-compare).
+#ifdef __cplusplus
+inline bool operator==(const GUID &a, const GUID &b) {
+    return a.Data1 == b.Data1 && a.Data2 == b.Data2 && a.Data3 == b.Data3 &&
+           a.Data4[0] == b.Data4[0] && a.Data4[1] == b.Data4[1] &&
+           a.Data4[2] == b.Data4[2] && a.Data4[3] == b.Data4[3] &&
+           a.Data4[4] == b.Data4[4] && a.Data4[5] == b.Data4[5] &&
+           a.Data4[6] == b.Data4[6] && a.Data4[7] == b.Data4[7];
+}
+inline bool operator!=(const GUID &a, const GUID &b) { return !(a == b); }
+#endif
 
 // Abstract COM root. All D3D9 interfaces derive from this.
 struct IUnknown {
