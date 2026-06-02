@@ -226,6 +226,8 @@ struct IDirect3DDevice9 : public IUnknown {
     // Fixed/programmable state
     virtual HRESULT WINAPI SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) = 0;
     virtual HRESULT WINAPI SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) = 0;
+    virtual HRESULT WINAPI SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type,
+                                                DWORD Value) = 0;
     virtual HRESULT WINAPI SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) = 0;
     virtual HRESULT WINAPI SetScissorRect(const RECT *pRect) = 0;
 

@@ -69,6 +69,9 @@ target_link_libraries(gl_cubetexture PRIVATE kisak_gl)
 add_executable(gl_voltexture tests/smoke_voltexture.cpp)
 target_link_libraries(gl_voltexture PRIVATE kisak_gl)
 
+add_executable(gl_alphatest tests/smoke_alphatest.cpp)
+target_link_libraries(gl_alphatest PRIVATE kisak_gl)
+
 add_executable(gl_shader tests/smoke_shader.cpp)
 target_link_libraries(gl_shader PRIVATE kisak_gl)
 

@@ -37,11 +37,29 @@ const char *kBuiltinFS =
     "#version 120\n"
     "uniform sampler2D uTex;\n"
     "uniform int uUseTexture;\n"
+    "uniform int uColorOp;\n"    // 0 = SELECTARG1 (texture only), 1 = MODULATE (tex*diffuse)
+    "uniform int uAlphaFunc;\n"  // GL compare func (GL_NEVER..GL_ALWAYS), 0 = alpha test off
+    "uniform float uAlphaRef;\n" // reference in [0,1]
     "varying vec4 vColor;\n"
     "varying vec2 vTexCoord;\n"
+    "bool alphaPass(float a) {\n"
+    "  if (uAlphaFunc == 0) return true;\n"            // disabled
+    "  if (uAlphaFunc == 0x0200) return false;\n"      // GL_NEVER
+    "  if (uAlphaFunc == 0x0201) return a <  uAlphaRef;\n"  // GL_LESS
+    "  if (uAlphaFunc == 0x0202) return a == uAlphaRef;\n"  // GL_EQUAL
+    "  if (uAlphaFunc == 0x0203) return a <= uAlphaRef;\n"  // GL_LEQUAL
+    "  if (uAlphaFunc == 0x0204) return a >  uAlphaRef;\n"  // GL_GREATER
+    "  if (uAlphaFunc == 0x0205) return a != uAlphaRef;\n"  // GL_NOTEQUAL
+    "  if (uAlphaFunc == 0x0206) return a >= uAlphaRef;\n"  // GL_GEQUAL
+    "  return true;\n"                                  // GL_ALWAYS (0x0207) / default
+    "}\n"
     "void main() {\n"
     "  vec4 c = vColor;\n"
-    "  if (uUseTexture != 0) c *= texture2D(uTex, vTexCoord);\n"
+    "  if (uUseTexture != 0) {\n"
+    "    vec4 t = texture2D(uTex, vTexCoord);\n"
+    "    c = (uColorOp == 0) ? t : (t * vColor);\n"  // SELECTARG1(tex) vs MODULATE(tex*diffuse)
+    "  }\n"
+    "  if (!alphaPass(c.a)) discard;\n"
     "  gl_FragColor = c;\n"
     "}\n";
 
@@ -179,9 +197,28 @@ void GLDevice::ensureBuiltinProgram() {
     glLinkProgram(builtinProg_);
     glDeleteShader(vs);
     glDeleteShader(fs);
-    builtinViewportLoc_ = glGetUniformLocation(builtinProg_, "uViewport");
-    builtinTexLoc_      = glGetUniformLocation(builtinProg_, "uTex");
-    builtinUseTexLoc_   = glGetUniformLocation(builtinProg_, "uUseTexture");
+    builtinViewportLoc_  = glGetUniformLocation(builtinProg_, "uViewport");
+    builtinTexLoc_       = glGetUniformLocation(builtinProg_, "uTex");
+    builtinUseTexLoc_    = glGetUniformLocation(builtinProg_, "uUseTexture");
+    builtinColorOpLoc_   = glGetUniformLocation(builtinProg_, "uColorOp");
+    builtinAlphaFuncLoc_ = glGetUniformLocation(builtinProg_, "uAlphaFunc");
+    builtinAlphaRefLoc_  = glGetUniformLocation(builtinProg_, "uAlphaRef");
+}
+
+// D3DCMP_* -> the GL compare-func enum (GL_NEVER..GL_ALWAYS). The built-in
+// fragment shader emulates the alpha test against these values; 0 means the test
+// is disabled.
+static GLenum alphaFuncToGL(DWORD d3dCmp) {
+    switch (d3dCmp) {
+        case D3DCMP_NEVER:        return GL_NEVER;
+        case D3DCMP_LESS:         return GL_LESS;
+        case D3DCMP_EQUAL:        return GL_EQUAL;
+        case D3DCMP_LESSEQUAL:    return GL_LEQUAL;
+        case D3DCMP_GREATER:      return GL_GREATER;
+        case D3DCMP_NOTEQUAL:     return GL_NOTEQUAL;
+        case D3DCMP_GREATEREQUAL: return GL_GEQUAL;
+        default:                  return GL_ALWAYS;
+    }
 }
 
 // Bind the built-in program and set its frame/texture uniforms before a draw.
@@ -193,6 +230,18 @@ void GLDevice::bindBuiltinForDraw() {
     bool sampling = applyTextures();
     if (builtinTexLoc_ >= 0)    glUniform1i(builtinTexLoc_, 0);
     if (builtinUseTexLoc_ >= 0) glUniform1i(builtinUseTexLoc_, sampling ? 1 : 0);
+
+    // Fixed-function stage-0 combine: SELECTARG1 (texture only) vs MODULATE
+    // (texture * diffuse). Both arg slots default to the (TEXTURE, DIFFUSE) pair,
+    // which is all the engine's 2D path uses.
+    if (builtinColorOpLoc_ >= 0)
+        glUniform1i(builtinColorOpLoc_, texStage0_.colorOp == D3DTOP_SELECTARG1 ? 0 : 1);
+
+    // Alpha test (emulated by discard). Pass the GL compare func, or 0 to disable.
+    if (builtinAlphaFuncLoc_ >= 0)
+        glUniform1i(builtinAlphaFuncLoc_, alphaTest_.enable ? (int)alphaFuncToGL(alphaTest_.func) : 0);
+    if (builtinAlphaRefLoc_ >= 0)
+        glUniform1f(builtinAlphaRefLoc_, (float)alphaTest_.ref / 255.0f);
 }
 
 void GLDevice::applyVertexState() {

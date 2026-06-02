@@ -35,6 +35,23 @@ struct GLSamplerState {
     DWORD addressV  = D3DTADDRESS_WRAP;
 };
 
+// Fixed-function texture-stage state (D3DTSS_*), kept in D3D terms and folded into
+// the built-in fragment shader's tex/diffuse combine at draw time. Defaults match
+// D3D's stage-0 defaults: COLOROP = MODULATE(TEXTURE, DIFFUSE).
+struct GLTextureStageState {
+    DWORD colorOp   = D3DTOP_MODULATE;
+    DWORD colorArg1 = D3DTA_TEXTURE;
+    DWORD colorArg2 = D3DTA_DIFFUSE;
+};
+
+// Alpha-test state (removed from core GL), emulated via discard in the fragment
+// shader. Defaults match D3D: disabled, ALWAYS, ref 0.
+struct GLAlphaTestState {
+    bool  enable = false;
+    DWORD func   = D3DCMP_ALWAYS;
+    DWORD ref    = 0;  // 0..255
+};
+
 // ---- IDirect3DDevice9 -> OpenGL -------------------------------------------
 class GLDevice final : public GLObject<IDirect3DDevice9> {
 public:
@@ -74,6 +91,7 @@ public:
     // --- Render / sampler / texture state (gl_state.cpp) ---
     HRESULT WINAPI SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) override;
     HRESULT WINAPI SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) override;
+    HRESULT WINAPI SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) override;
     HRESULT WINAPI SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) override;
     HRESULT WINAPI SetScissorRect(const RECT *pRect) override;
     HRESULT WINAPI SetVertexShader(IDirect3DVertexShader9 *pShader) override;
@@ -147,6 +165,9 @@ private:
     int      builtinViewportLoc_  = -1;
     int      builtinTexLoc_       = -1;
     int      builtinUseTexLoc_    = -1;
+    int      builtinColorOpLoc_   = -1;  // 0 = SELECTARG1 (tex), 1 = MODULATE (tex*diffuse)
+    int      builtinAlphaFuncLoc_ = -1;  // GL-style compare func, or 0 = disabled
+    int      builtinAlphaRefLoc_  = -1;  // [0,1] reference
 
     struct Stream { GLVertexBuffer *vb = nullptr; UINT offset = 0; UINT stride = 0; };
     Stream               streams_[4];
@@ -158,6 +179,8 @@ private:
     unsigned       boundTexName_[kMaxStages]   = {};   // GL texture object (0 = none)
     unsigned       boundTexTarget_[kMaxStages] = {};   // GL_TEXTURE_2D / _CUBE_MAP / _3D
     GLSamplerState samplers_[kMaxStages];
+    GLTextureStageState texStage0_;     // stage-0 fixed-function combine (built-in program)
+    GLAlphaTestState    alphaTest_;     // alpha-test emulation (built-in program)
 
     // Blend factors are set by two separate render states but applied together.
     DWORD blendSrc_  = D3DBLEND_ONE;

@@ -3,9 +3,9 @@
 // Translates the D3D9 state the renderer sets into immediate GL calls. Only the
 // states the engine actually uses are handled (extracted from the renderer);
 // unhandled states are ignored rather than asserting, so new ones degrade
-// gracefully. Alpha test (removed from core GL) and the fixed-function texture
-// blend cascade (D3DTSS_*) are not handled here yet — TODO(task #5: fold into
-// the shader path).
+// gracefully. Alpha test (removed from core GL) and the stage-0 fixed-function
+// combine (D3DTSS_COLOROP/COLORARG1/2) are tracked here and folded into the
+// built-in fragment shader at draw time (see gl_d3d9_draw.cpp).
 #include "gl_d3d9.h"
 #include "gl_resources.h"
 
@@ -75,16 +75,22 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
             if (Value) glEnable(GL_BLEND); else glDisable(GL_BLEND);
             break;
         // Alpha test — foliage/grass/fences use an alpha-cutout; without it their
-        // transparent (alpha-0) texels render opaque (black fringes). GL_ALPHA_TEST is
-        // a fixed post-shader stage in the compatibility profile and works with our
-        // GLSL output (it tests gl_FragColor.a against the reference).
+        // transparent (alpha-0) texels render opaque. Keep the compatibility-profile
+        // state for programmable shaders and mirror it into the built-in shader state.
         case D3DRS_ALPHATESTENABLE:
+            alphaTest_.enable = (Value != 0);
             if (Value) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
             break;
         case D3DRS_ALPHAFUNC:
-            alphaFunc_ = Value; glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f); break;
+            alphaTest_.func = Value;
+            alphaFunc_ = Value;
+            glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f);
+            break;
         case D3DRS_ALPHAREF:
-            alphaRef_  = Value; glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f); break;
+            alphaTest_.ref = Value & 0xff;
+            alphaRef_ = Value & 0xff;
+            glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f);
+            break;
         case D3DRS_SRCBLEND:  blendSrc_  = Value; glBlendFunc(glBlend(blendSrc_), glBlend(blendDest_)); break;
         case D3DRS_DESTBLEND: blendDest_ = Value; glBlendFunc(glBlend(blendSrc_), glBlend(blendDest_)); break;
         case D3DRS_BLENDOP:   glBlendEquation(glBlendEq(Value)); break;
@@ -115,6 +121,20 @@ HRESULT WINAPI GLDevice::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type
         case D3DSAMP_ADDRESSU:  s.addressU  = Value; break;
         case D3DSAMP_ADDRESSV:  s.addressV  = Value; break;
         default: break;
+    }
+    return D3D_OK;
+}
+
+// Fixed-function texture-stage state. Only stage 0 drives the built-in program's
+// tex/diffuse combine (D3DTSS_COLOROP/COLORARG1/COLORARG2); other stages and the
+// alpha-op cascade are accepted and ignored (the 2D path never uses them).
+HRESULT WINAPI GLDevice::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) {
+    if (Stage != 0) return D3D_OK;
+    switch (Type) {
+        case D3DTSS_COLOROP:   texStage0_.colorOp   = Value; break;
+        case D3DTSS_COLORARG1: texStage0_.colorArg1 = Value; break;
+        case D3DTSS_COLORARG2: texStage0_.colorArg2 = Value; break;
+        default: break;  // ALPHAOP/ALPHAARG* etc.: accepted, not yet emulated
     }
     return D3D_OK;
 }
