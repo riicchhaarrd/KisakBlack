@@ -30,4 +30,21 @@ KISAK_DECLARE_HANDLE(HGLRC);
      ((DWORD)(BYTE)(c) << 16) | ((DWORD)(BYTE)(d) << 24))
 #endif
 
+// ---- Win32 thread / timing / atomic APIs the engine calls ------------------
+#include "../compat/msvc_intrin.h"  // _Interlocked*/MemoryBarrier
+#include <pthread.h>
+#include <unistd.h>
+
+static inline DWORD GetCurrentThreadId()  { return (DWORD)(uintptr_t)pthread_self(); }
+static inline DWORD GetCurrentProcessId() { return (DWORD)getpid(); }
+static inline void  Sleep(DWORD ms)       { if (ms) usleep((useconds_t)ms * 1000u); }
+
+// The non-underscore Interlocked* Win32 functions; macros (type-generic, like the
+// _Interlocked* intrinsics) so they accept the engine's various pointer types.
+#define InterlockedExchange(p, v)          __sync_lock_test_and_set((p), (v))
+#define InterlockedExchangeAdd(p, v)       __sync_fetch_and_add((p), (v))
+#define InterlockedIncrement(p)            __sync_add_and_fetch((p), 1)
+#define InterlockedDecrement(p)            __sync_sub_and_fetch((p), 1)
+#define InterlockedCompareExchange(p, e, c) __sync_val_compare_and_swap((p), (c), (e))
+
 #endif // KISAK_WINDOWS_H
