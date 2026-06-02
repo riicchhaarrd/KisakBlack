@@ -100,7 +100,7 @@ struct bpei_database_t // sizeof=0x10
 };
 
 
-const struct cached_simplex_info // sizeof=0x30
+struct cached_simplex_info // sizeof=0x30
 {                                                                             // XREF: phys_gjk_cache_info/r
     phys_vec3 m_indices[3];
 

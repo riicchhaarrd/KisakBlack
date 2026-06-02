@@ -432,3 +432,6 @@ KisakBlack/*
 __KisakBlack
 # OpenGL backend standalone build output
 build_gl/
+
+# Local reference binaries (Mac/X360 exes, revtool) — never commit
+ref/

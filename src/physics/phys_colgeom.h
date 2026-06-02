@@ -408,7 +408,7 @@ struct CollisionBorder // sizeof=0x1C
         float length;
 };
 
-const struct CollisionPartition // sizeof=0x14
+struct CollisionPartition // sizeof=0x14
 {
         unsigned __int8 triCount;
         unsigned __int8 borderCount;
