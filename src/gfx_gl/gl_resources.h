@@ -142,15 +142,30 @@ private:
     bool              dirty_ = false;
 };
 
+// Tag selecting the back-buffer constructor: a surface that is a view onto the
+// window's default framebuffer (FBO 0) rather than any texture or CPU buffer.
+struct GLBackbufferTag {};
+
+// Tag selecting the depth-stencil constructor. The default framebuffer already
+// owns a depth-stencil buffer and render-to-texture FBOs auto-allocate one, so a
+// depth-stencil surface is currently a metadata-only handle (dims + format) that
+// the renderer attaches to a render target; it carries no GL object of its own.
+struct GLDepthStencilTag {};
+
 // A surface is either a view onto one mip level of a texture (GetSurfaceLevel),
-// a standalone render target (owns a GL texture, renderable + readable), or a
+// a standalone render target (owns a GL texture, renderable + readable), a
 // system-memory surface (owns a CPU buffer, lockable — the target of
-// GetRenderTargetData and CreateOffscreenPlainSurface).
+// GetRenderTargetData and CreateOffscreenPlainSurface), or the back buffer
+// (a view onto the default framebuffer, bound as FBO 0).
 class GLSurface final : public GLObject<IDirect3DSurface9> {
 public:
     GLSurface(GLTexture *owner, UINT level);                                       // texture-level view
     GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, // standalone
               bool sysmem);
+    GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, // back buffer (FBO 0)
+              GLBackbufferTag);
+    GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, // depth-stencil handle
+              GLDepthStencilTag);
 
     ~GLSurface() override;
 
@@ -170,6 +185,8 @@ public:
     UINT      height()  const { return height_; }
     D3DFORMAT format()  const { return format_; }
     bool      sysmem()  const { return sysmem_; }
+    bool      isBackbuffer()   const { return backbuffer_; }
+    bool      isDepthStencil() const { return depthStencil_; }
     std::vector<unsigned char> &shadow() { return shadow_; }
 
 private:
@@ -181,7 +198,35 @@ private:
     UINT              height_ = 0;
     D3DFORMAT         format_ = D3DFMT_UNKNOWN;
     bool              sysmem_ = false;
+    bool              backbuffer_ = false;   // view onto the default framebuffer (FBO 0)
+    bool              depthStencil_ = false; // metadata-only depth-stencil handle
     std::vector<unsigned char> shadow_;   // sysmem backing for LockRect
+};
+
+// The window's swap chain. The GL backend renders directly into the default
+// framebuffer, so the swap chain is a thin shim: Present() forwards to the
+// device (which swaps the GL window), and GetBackBuffer() hands back the
+// device's back-buffer surface (FBO 0). Created on demand by GetSwapChain().
+class GLSwapChain final : public GLObject<IDirect3DSwapChain9> {
+public:
+    GLSwapChain(IDirect3DDevice9 *device, GLSurface *backbuffer)
+        : device_(device), backbuffer_(backbuffer) {}
+
+    HRESULT WINAPI Present(const RECT *src, const RECT *dst, HWND hwnd,
+                           const RGNDATA *dirty, DWORD /*flags*/) override {
+        return device_->Present(src, dst, hwnd, dirty);
+    }
+    HRESULT WINAPI GetBackBuffer(UINT /*iBackBuffer*/, D3DBACKBUFFER_TYPE,
+                                 IDirect3DSurface9 **ppBackBuffer) override {
+        if (!ppBackBuffer) return E_INVALIDARG;
+        backbuffer_->AddRef();
+        *ppBackBuffer = backbuffer_;
+        return D3D_OK;
+    }
+
+private:
+    IDirect3DDevice9 *device_;
+    GLSurface        *backbuffer_;  // non-owning; owned by the device
 };
 
 class GLVertexDeclaration final : public GLObject<IDirect3DVertexDeclaration9> {

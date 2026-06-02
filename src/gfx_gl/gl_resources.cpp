@@ -284,6 +284,12 @@ GLSurface::GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMA
     }
 }
 
+GLSurface::GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, GLBackbufferTag)
+    : device_(device), width_(width), height_(height), format_(format), backbuffer_(true) {}
+
+GLSurface::GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format, GLDepthStencilTag)
+    : device_(device), width_(width), height_(height), format_(format), depthStencil_(true) {}
+
 GLSurface::~GLSurface() { if (ownTex_) glDeleteTextures(1, &ownTex_); }
 
 unsigned GLSurface::texName() const { return owner_ ? owner_->glName() : ownTex_; }
@@ -301,7 +307,7 @@ HRESULT WINAPI GLSurface::GetDesc(D3DSURFACE_DESC *pDesc) {
     if (!pDesc) return E_INVALIDARG;
     *pDesc = D3DSURFACE_DESC{};
     pDesc->Format = format_; pDesc->Type = D3DRTYPE_SURFACE;
-    pDesc->Usage = sysmem_ ? 0 : D3DUSAGE_RENDERTARGET;
+    pDesc->Usage = depthStencil_ ? D3DUSAGE_DEPTHSTENCIL : (sysmem_ ? 0 : D3DUSAGE_RENDERTARGET);
     pDesc->Pool = sysmem_ ? D3DPOOL_SYSTEMMEM : D3DPOOL_DEFAULT;
     pDesc->MultiSampleType = D3DMULTISAMPLE_NONE;
     pDesc->Width = width_; pDesc->Height = height_;

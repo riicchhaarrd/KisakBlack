@@ -10,6 +10,36 @@
 
 #include <GL/glew.h>
 
+// --- Back buffer / swap chain ----------------------------------------------
+//
+// The GL backend renders straight into the window's default framebuffer, so the
+// back buffer is a single GLSurface tagged as such (binding it as a render
+// target restores FBO 0), and the swap chain is a thin shim whose Present()
+// swaps the GL window. Both are created lazily and owned by the device.
+GLSurface *GLDevice::backBufferSurface() {
+    if (!backBuffer_)
+        backBuffer_ = new GLSurface(this, (UINT)bbWidth_, (UINT)bbHeight_,
+                                    D3DFMT_A8R8G8B8, GLBackbufferTag{});
+    return backBuffer_;
+}
+
+HRESULT WINAPI GLDevice::GetBackBuffer(UINT, UINT, D3DBACKBUFFER_TYPE, IDirect3DSurface9 **pp) {
+    if (!pp) return E_INVALIDARG;
+    GLSurface *bb = backBufferSurface();
+    bb->AddRef();
+    *pp = bb;
+    return D3D_OK;
+}
+
+HRESULT WINAPI GLDevice::GetSwapChain(UINT, IDirect3DSwapChain9 **pp) {
+    if (!pp) return E_INVALIDARG;
+    if (!swapChain_)
+        swapChain_ = new GLSwapChain(this, backBufferSurface());
+    swapChain_->AddRef();
+    *pp = swapChain_;
+    return D3D_OK;
+}
+
 HRESULT WINAPI GLDevice::CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format,
                                             D3DMULTISAMPLE_TYPE, DWORD, BOOL,
                                             IDirect3DSurface9 **ppSurface, HANDLE *) {
@@ -22,6 +52,14 @@ HRESULT WINAPI GLDevice::CreateOffscreenPlainSurface(UINT Width, UINT Height, D3
                                                      D3DPOOL, IDirect3DSurface9 **ppSurface, HANDLE *) {
     if (!ppSurface) return E_INVALIDARG;
     *ppSurface = new GLSurface(this, Width, Height, Format, /*sysmem=*/true);
+    return D3D_OK;
+}
+
+HRESULT WINAPI GLDevice::CreateDepthStencilSurface(UINT Width, UINT Height, D3DFORMAT Format,
+                                                   D3DMULTISAMPLE_TYPE, DWORD, BOOL,
+                                                   IDirect3DSurface9 **ppSurface, HANDLE *) {
+    if (!ppSurface) return E_INVALIDARG;
+    *ppSurface = new GLSurface(this, Width, Height, Format, GLDepthStencilTag{});
     return D3D_OK;
 }
 

@@ -22,6 +22,8 @@ class GLVertexBuffer;
 class GLIndexBuffer;
 class GLVertexDeclaration;
 class GLTexture;
+class GLSurface;
+class GLSwapChain;
 class GLVertexShader;
 class GLPixelShader;
 
@@ -83,8 +85,8 @@ public:
     void    WINAPI SetGammaRamp(UINT, DWORD, const D3DGAMMARAMP *) override {}
 
     // --- Not yet ported: textures / surfaces / shaders / queries — TODO(task #4/#5) ---
-    HRESULT WINAPI GetBackBuffer(UINT, UINT, D3DBACKBUFFER_TYPE, IDirect3DSurface9 **pp) override { return ni(pp); }
-    HRESULT WINAPI GetSwapChain(UINT, IDirect3DSwapChain9 **pp) override { return ni(pp); }
+    HRESULT WINAPI GetBackBuffer(UINT, UINT, D3DBACKBUFFER_TYPE, IDirect3DSurface9 **pp) override;
+    HRESULT WINAPI GetSwapChain(UINT, IDirect3DSwapChain9 **pp) override;
     HRESULT WINAPI CreateTexture(UINT Width, UINT Height, UINT Levels, DWORD Usage,
                                  D3DFORMAT Format, D3DPOOL Pool,
                                  IDirect3DTexture9 **ppTexture, HANDLE *) override;
@@ -101,7 +103,7 @@ public:
                                IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
                                D3DTEXTUREFILTERTYPE Filter) override;
     // Still stubbed (TODO): standalone depth-stencil surfaces, UpdateSurface.
-    HRESULT WINAPI CreateDepthStencilSurface(UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9 **pp, HANDLE *) override { return ni(pp); }
+    HRESULT WINAPI CreateDepthStencilSurface(UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9 **pp, HANDLE *) override;
     HRESULT WINAPI UpdateSurface(IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *, const POINT *) override { return E_NOTIMPL; }
     HRESULT WINAPI CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) override;
     HRESULT WINAPI CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 **ppShader) override;
@@ -116,6 +118,7 @@ private:
     void useDrawProgram();        // pick shader program (if vs+ps bound) or built-in; set uniforms
     void applyVertexState();      // set up VAO attribs from decl_ + streams_
     bool applyTextures();         // bind stage-0 texture + sampler state; returns true if sampling
+    GLSurface *backBufferSurface(); // lazily create the back-buffer surface (FBO 0 view)
 
     GLContext *ctx_ = nullptr;
     int  fbWidth_   = 0;   // current render-target dimensions (back buffer or FBO)
@@ -127,6 +130,11 @@ private:
     int      fboDepthW_ = 0;
     int      fboDepthH_ = 0;
     bool inScene_   = false;
+
+    // Back buffer / swap chain — the window's default framebuffer (FBO 0),
+    // exposed to the renderer through GetBackBuffer()/GetSwapChain().
+    GLSurface   *backBuffer_ = nullptr;  // owned
+    GLSwapChain *swapChain_  = nullptr;  // owned
 
     unsigned vao_                 = 0;
     unsigned builtinProg_         = 0;
