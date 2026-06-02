@@ -80,6 +80,27 @@ static inline char *_itoa(int value, char *str, int radix) {
 #define InterlockedIncrement(p)            __sync_add_and_fetch((p), 1)
 #define InterlockedDecrement(p)            __sync_sub_and_fetch((p), 1)
 #define InterlockedCompareExchange(p, e, c) __sync_val_compare_and_swap((p), (c), (e))
+#define InterlockedExchange64(p, v)        __sync_lock_test_and_set((p), (v))
+#define InterlockedExchangeAdd64(p, v)     __sync_fetch_and_add((p), (v))
+#define InterlockedIncrement64(p)          __sync_add_and_fetch((p), 1)
+#define InterlockedDecrement64(p)          __sync_sub_and_fetch((p), 1)
+#define InterlockedCompareExchange64(p, e, c) __sync_val_compare_and_swap((p), (c), (e))
+
+// ---- System info -----------------------------------------------------------
+typedef struct _SYSTEM_INFO {
+    union { DWORD dwOemId; struct { WORD wProcessorArchitecture, wReserved; }; };
+    DWORD     dwPageSize;
+    void     *lpMinimumApplicationAddress, *lpMaximumApplicationAddress;
+    DWORD_PTR dwActiveProcessorMask;
+    DWORD     dwNumberOfProcessors, dwProcessorType, dwAllocationGranularity;
+    WORD      wProcessorLevel, wProcessorRevision;
+} SYSTEM_INFO, *LPSYSTEM_INFO;
+static inline void GetSystemInfo(SYSTEM_INFO *si) {
+    if (!si) return; memset(si, 0, sizeof(*si));
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    si->dwNumberOfProcessors = n > 0 ? (DWORD)n : 1;
+    si->dwPageSize = 4096; si->dwAllocationGranularity = 65536; si->wProcessorArchitecture = 0;
+}
 
 // ---- COM init + wide/narrow string conversion ------------------------------
 // COM doesn't exist on Linux; the audio init calls become no-ops. The string
@@ -208,6 +229,22 @@ struct _EXCEPTION_POINTERS;
 #define CREATE_SUSPENDED 0x4
 
 typedef DWORD (*LPTHREAD_START_ROUTINE)(void *);
+typedef struct _SECURITY_ATTRIBUTES { DWORD nLength; void *lpSecurityDescriptor; BOOL bInheritHandle; } SECURITY_ATTRIBUTES, *LPSECURITY_ATTRIBUTES;
+static inline BOOL TerminateThread(HANDLE, DWORD) { return TRUE; }   // best-effort no-op (pthreads can't force-kill safely)
+#define STILL_ACTIVE 259
+static inline BOOL GetExitCodeThread(HANDLE, DWORD *code) { if (code) *code = 0; return TRUE; }   // thread already finished
+typedef struct _MEMORYSTATUS {
+    DWORD  dwLength, dwMemoryLoad;
+    SIZE_T dwTotalPhys, dwAvailPhys, dwTotalPageFile, dwAvailPageFile, dwTotalVirtual, dwAvailVirtual;
+} MEMORYSTATUS, *LPMEMORYSTATUS;
+static inline void GlobalMemoryStatus(MEMORYSTATUS *s) {
+    if (!s) return; memset(s, 0, sizeof(*s)); s->dwLength = sizeof(*s);
+    long pages = sysconf(_SC_PHYS_PAGES), avail = sysconf(_SC_AVPHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && psz > 0) s->dwTotalPhys = (SIZE_T)pages * psz;
+    if (avail > 0 && psz > 0) s->dwAvailPhys = (SIZE_T)avail * psz;
+    s->dwTotalVirtual = s->dwTotalPhys; s->dwAvailVirtual = s->dwAvailPhys;
+}
+static inline DWORD GetCurrentThreadId();   // (defined earlier)
 
 HANDLE CreateThread(void *attrs, SIZE_T stack, LPTHREAD_START_ROUTINE start, void *param, DWORD flags, DWORD *threadId);
 DWORD  ResumeThread(HANDLE thread);
@@ -297,6 +334,15 @@ static inline HANDLE    GetCurrentProcess()                                  { r
 
 // ---- Window / GDI / clipboard / shell (no-op on the SDL/Linux build) -------
 typedef BOOL (*WNDENUMPROC)(HWND, LPARAM);
+#ifndef IDC_ARROW
+#define IDC_ARROW   ((const char *)32512)
+#define IDC_WAIT    ((const char *)32514)
+#define IDC_APPSTARTING ((const char *)32650)
+#endif
+static inline HCURSOR LoadCursor(HINSTANCE, const char *) { return (HCURSOR)0; }
+static inline HCURSOR SetCursor(HCURSOR)                  { return (HCURSOR)0; }
+static inline HANDLE  OpenProcess(DWORD, BOOL, DWORD)     { return (HANDLE)0; }
+static inline DWORD   GetCurrentProcessId();   // (defined earlier)
 static inline HWND  GetActiveWindow()                       { return (HWND)0; }
 static inline HWND  GetDesktopWindow()                      { return (HWND)0; }
 static inline HDC   GetDC(HWND)                             { return (HDC)0; }
@@ -306,7 +352,20 @@ static inline int   GetWindowTextA(HWND, char *buf, int n)  { if (buf && n) buf[
 static inline BOOL  EnumThreadWindows(DWORD, WNDENUMPROC, LPARAM) { return TRUE; }
 static inline LONG  ChangeDisplaySettingsA(void *, DWORD)   { return 0; }   // DISP_CHANGE_SUCCESSFUL
 static inline BOOL  SetDeviceGammaRamp(HDC, void *)         { return TRUE; }
+#ifndef MB_OK
+#define MB_OK 0x0
+#define MB_OKCANCEL 0x1
+#define MB_YESNO 0x4
+#define MB_ICONERROR 0x10
+#define MB_ICONWARNING 0x30
+#define MB_ICONINFORMATION 0x40
+#define IDOK 1
+#define IDCANCEL 2
+#define IDYES 6
+#define IDNO 7
+#endif
 static inline int   MessageBoxA(HWND, const char *, const char *, UINT) { return 1; }   // IDOK
+static inline int   MessageBoxW(HWND, const wchar_t *, const wchar_t *, UINT) { return 1; }
 static inline HINSTANCE ShellExecuteA(HWND, const char *, const char *, const char *, const char *, int) { return (HINSTANCE)33; }
 static inline BOOL  OpenClipboard(HWND)                     { return FALSE; }
 static inline BOOL  CloseClipboard()                       { return TRUE; }
