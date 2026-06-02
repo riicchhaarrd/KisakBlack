@@ -11,6 +11,9 @@
 #include <cstdio>
 #include <vector>
 
+// From src/platform/sdl/sdl_system.cpp.
+unsigned int Sys_Milliseconds();
+
 struct Ev { sysEventType_t type; int value; int value2; };
 static std::vector<Ev> g_events;
 
@@ -62,6 +65,12 @@ int main() {
         check("esc up",   g_events[1].type == SE_KEY && g_events[1].value == K_ESCAPE && g_events[1].value2 == 0);
         check("mouse1",   g_events[2].type == SE_KEY && g_events[2].value == K_MOUSE1 && g_events[2].value2 == 1);
     }
+    // 3) Sys_Milliseconds (SDL timer) advances.
+    unsigned t0 = Sys_Milliseconds();
+    SDL_Delay(5);
+    unsigned t1 = Sys_Milliseconds();
+    check("Sys_Milliseconds advances", t1 >= t0 && (t1 - t0) < 1000);
+
     SDL_Quit();
 
     printf(fails == 0 ? "INPUT: PASS\n" : "INPUT: FAIL (%d)\n", fails);

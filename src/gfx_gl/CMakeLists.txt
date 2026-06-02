@@ -76,6 +76,7 @@ target_link_libraries(gl_savesurface PRIVATE kisak_gl)
 # and the MSVC-keyword compat force-included.
 add_executable(gl_input
     "${CMAKE_CURRENT_SOURCE_DIR}/../platform/sdl/sdl_events.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../platform/sdl/sdl_system.cpp"
     tests/smoke_input.cpp)
 target_include_directories(gl_input PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/.." ${SDL2_INCLUDE_DIRS})
