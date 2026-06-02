@@ -70,3 +70,15 @@ target_link_libraries(gl_stretchrect PRIVATE kisak_gl)
 
 add_executable(gl_savesurface tests/smoke_savesurface.cpp)
 target_link_libraries(gl_savesurface PRIVATE kisak_gl)
+
+# SDL input/event-pump layer (Linux platform layer). Pulls two self-contained
+# engine headers (ui/keycodes.h, win32/win_local.h), so it needs src/ on the path
+# and the MSVC-keyword compat force-included.
+add_executable(gl_input
+    "${CMAKE_CURRENT_SOURCE_DIR}/../platform/sdl/sdl_events.cpp"
+    tests/smoke_input.cpp)
+target_include_directories(gl_input PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/.." ${SDL2_INCLUDE_DIRS})
+target_compile_options(gl_input PRIVATE -Wall -Wextra
+    -include "${CMAKE_CURRENT_SOURCE_DIR}/../platform/compat/msvc_compat.h")
+target_link_libraries(gl_input PRIVATE ${SDL2_LIBRARIES})

@@ -22,5 +22,21 @@
 #define __forceinline inline __attribute__((always_inline))
 #endif
 
+// Sized integer keywords (also defined identically in q_shared.h under __GNUC__;
+// benign redefinition). Lets standalone headers like ui/keycodes.h — which use
+// `enum X : __int32` — compile without pulling in q_shared.h.
+#ifndef __int8
+#define __int8  char
+#endif
+#ifndef __int16
+#define __int16 short
+#endif
+#ifndef __int32
+#define __int32 int
+#endif
+#ifndef __int64
+#define __int64 long long
+#endif
+
 #endif // !_MSC_VER
 #endif // KISAK_MSVC_COMPAT_H
