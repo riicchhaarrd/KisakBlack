@@ -318,7 +318,7 @@ struct __declspec(align(16)) gjk_geom_info_t // sizeof=0x40
     struct gjk_entity_info_t *get_xform();
 };
 
-const struct __declspec(align(16)) gjk_query_input // sizeof=0x80
+struct __declspec(align(16)) gjk_query_input // sizeof=0x80
 {                                       // XREF: gjk_trace_input_t/r
                                         // ?cached_query_resize@gjk_query_output@@QAEX_NPAV?$colgeom_visitor_inlined_t@$0MI@@@H@Z/r
     phys_vec3 m_cg_aabb_min;
