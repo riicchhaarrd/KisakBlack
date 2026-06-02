@@ -36,6 +36,7 @@ KISAK_DECLARE_HANDLE(HGLRC);
 #include <unistd.h>
 #include <sched.h>
 #include <ctime>
+#include <cerrno>
 
 static inline DWORD GetCurrentThreadId()  { return (DWORD)(uintptr_t)pthread_self(); }
 static inline DWORD GetCurrentProcessId() { return (DWORD)getpid(); }
@@ -74,5 +75,57 @@ static inline char *_itoa(int value, char *str, int radix) {
 #define InterlockedIncrement(p)            __sync_add_and_fetch((p), 1)
 #define InterlockedDecrement(p)            __sync_sub_and_fetch((p), 1)
 #define InterlockedCompareExchange(p, e, c) __sync_val_compare_and_swap((p), (c), (e))
+
+// ---- Misc Win32 ------------------------------------------------------------
+typedef struct _FILETIME { DWORD dwLowDateTime, dwHighDateTime; } FILETIME, *LPFILETIME;
+#define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
+static inline DWORD GetLastError() { return (DWORD)errno; }
+static inline int   ShowCursor(BOOL) { return 0; }
+static inline BOOL  SystemTimeToFileTime(const SYSTEMTIME *, FILETIME *ft) {
+    if (ft) { ft->dwLowDateTime = 0; ft->dwHighDateTime = 0; } return TRUE;
+}
+
+// ---- Window message pump (stubbed; real input runs through SDL) -------------
+typedef struct tagMSG {
+    HWND hwnd; UINT message; WPARAM wParam; LPARAM lParam; DWORD time; POINT pt;
+} MSG, *LPMSG;
+static inline BOOL    PeekMessageA(MSG *, HWND, UINT, UINT, UINT) { return FALSE; }
+static inline BOOL    GetMessageA(MSG *, HWND, UINT, UINT) { return FALSE; }
+static inline BOOL    TranslateMessage(const MSG *) { return FALSE; }
+static inline LRESULT DispatchMessageA(const MSG *) { return 0; }
+
+// ---- File enumeration / deletion (FindFirstFile* -> glob, DeleteFile -> unlink)
+typedef struct _WIN32_FIND_DATAA {
+    DWORD dwFileAttributes;
+    FILETIME ftCreationTime, ftLastAccessTime, ftLastWriteTime;
+    DWORD nFileSizeHigh, nFileSizeLow, dwReserved0, dwReserved1;
+    char cFileName[MAX_PATH];
+    char cAlternateFileName[14];
+} WIN32_FIND_DATAA, *LPWIN32_FIND_DATAA;
+
+#include <glob.h>
+#include <cstring>
+struct KisakFindState { glob_t g; size_t i; };
+static inline void KisakFindFill(KisakFindState *h, WIN32_FIND_DATAA *d) {
+    const char *p = h->g.gl_pathv[h->i];
+    const char *base = strrchr(p, '/'); base = base ? base + 1 : p;
+    int n = 0; while (base[n] && n < MAX_PATH - 1) { d->cFileName[n] = base[n]; ++n; }
+    d->cFileName[n] = '\0'; d->dwFileAttributes = 0;
+}
+static inline HANDLE FindFirstFileA(const char *pattern, WIN32_FIND_DATAA *d) {
+    KisakFindState *h = new KisakFindState(); h->i = 0;
+    if (glob(pattern, 0, nullptr, &h->g) != 0 || h->g.gl_pathc == 0) { globfree(&h->g); delete h; return INVALID_HANDLE_VALUE; }
+    KisakFindFill(h, d); return (HANDLE)h;
+}
+static inline BOOL FindNextFileA(HANDLE handle, WIN32_FIND_DATAA *d) {
+    KisakFindState *h = (KisakFindState *)handle;
+    if (++h->i >= h->g.gl_pathc) return FALSE;
+    KisakFindFill(h, d); return TRUE;
+}
+static inline BOOL FindClose(HANDLE handle) {
+    KisakFindState *h = (KisakFindState *)handle;
+    if (h && h != INVALID_HANDLE_VALUE) { globfree(&h->g); delete h; } return TRUE;
+}
+static inline BOOL DeleteFileA(const char *path) { return unlink(path) == 0; }
 
 #endif // KISAK_WINDOWS_H

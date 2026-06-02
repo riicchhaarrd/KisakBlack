@@ -23,6 +23,8 @@
 // its POSIX random()/etc. clash with the engine's own declarations.)
 #include <cstring>
 #include <cfloat>
+#include <cstdio>
+#include <strings.h>
 
 #ifndef __debugbreak
 #define __debugbreak() __builtin_trap()
@@ -33,8 +35,13 @@
 #define __pascal
 #endif
 #ifndef _snprintf
-#define _snprintf snprintf
+#define _snprintf  snprintf
+#define _vsnprintf vsnprintf
+#define _stricmp   strcasecmp
+#define _strnicmp  strncasecmp
+#define _strdup    strdup
 #endif
+typedef FILE _iobuf;  // MSVC's FILE struct tag, used bare in the decompiled code
 
 #ifndef __forceinline
 #define __forceinline inline __attribute__((always_inline))
