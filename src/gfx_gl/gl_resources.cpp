@@ -211,7 +211,17 @@ HRESULT WINAPI GLTexture::UnlockRect(UINT Level) {
             glBindTexture(GL_TEXTURE_2D, 0); dirty_ = false; return D3D_OK;
         }
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, Level, internal, w, h, 0, format, type, levelShadow_[Level].data());
+        const void *pixels = levelShadow_[Level].data();
+        std::vector<unsigned char> swz;
+        if (D3DFormatNeedsBGRASwizzle(format_)) {
+            // WebGL2 has no GL_BGRA: the bytes are BGRA, so swap B<->R into a temp.
+            // X8R8G8B8 carries no real alpha — force the X byte opaque so it samples solid.
+            swz = levelShadow_[Level];
+            for (size_t i = 0; i + 3 < swz.size(); i += 4) { unsigned char t = swz[i]; swz[i] = swz[i + 2]; swz[i + 2] = t; }
+            if (format_ == D3DFMT_X8R8G8B8) for (size_t i = 3; i < swz.size(); i += 4) swz[i] = 255;
+            pixels = swz.data();
+        }
+        glTexImage2D(GL_TEXTURE_2D, Level, internal, w, h, 0, format, type, pixels);
     }
     GLenum uerr = glGetError();
     glBindTexture(GL_TEXTURE_2D, 0);

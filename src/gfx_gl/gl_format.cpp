@@ -4,6 +4,30 @@
 #include <GL/glew.h>
 
 bool D3DToGLFormat(D3DFORMAT fmt, unsigned *internal, unsigned *format, unsigned *type, int *bpp) {
+#if defined(__EMSCRIPTEN__)
+    // WebGL2 (GLES3) is far stricter than desktop GL about texImage2D enums: it has
+    // NO GL_BGRA upload format, NO GL_UNSIGNED_INT_8_8_8_8[_REV] packed type, and no
+    // sized GL_RGB5 / GL_LUMINANCE8_ALPHA8 internal formats — passing any of those
+    // gives GL_INVALID_ENUM (0x500). So the BGRA byte-order D3D formats upload as
+    // plain RGBA8 / GL_RGBA / GL_UNSIGNED_BYTE, and the upload site swaps B<->R in the
+    // bytes (D3DFormatNeedsBGRASwizzle). R5G6B5 uses the GLES sized GL_RGB565; A8L8
+    // uses the legacy *unsized* GL_LUMINANCE_ALPHA that WebGL2 still accepts.
+    switch (fmt) {
+        case D3DFMT_A8R8G8B8: *internal = GL_RGBA8; *format = GL_RGBA; *type = GL_UNSIGNED_BYTE; *bpp = 4; return true;
+        case D3DFMT_X8R8G8B8: *internal = GL_RGBA8; *format = GL_RGBA; *type = GL_UNSIGNED_BYTE; *bpp = 4; return true;
+        case D3DFMT_A8B8G8R8: *internal = GL_RGBA8; *format = GL_RGBA; *type = GL_UNSIGNED_BYTE; *bpp = 4; return true;
+        case D3DFMT_R5G6B5:   *internal = GL_RGB565; *format = GL_RGB; *type = GL_UNSIGNED_SHORT_5_6_5; *bpp = 2; return true;
+        case D3DFMT_A8:       *internal = GL_R8; *format = GL_RED; *type = GL_UNSIGNED_BYTE; *bpp = 1; return true;
+        case D3DFMT_L8:       *internal = GL_R8; *format = GL_RED; *type = GL_UNSIGNED_BYTE; *bpp = 1; return true;
+        case D3DFMT_A8L8:     *internal = GL_LUMINANCE_ALPHA; *format = GL_LUMINANCE_ALPHA; *type = GL_UNSIGNED_BYTE; *bpp = 2; return true;
+        case D3DFMT_A16B16G16R16F: *internal = GL_RGBA16F; *format = GL_RGBA; *type = GL_HALF_FLOAT; *bpp = 8; return true;
+        case D3DFMT_G16R16F:  *internal = GL_RG16F; *format = GL_RG; *type = GL_HALF_FLOAT; *bpp = 4; return true;
+        case D3DFMT_R32F:     *internal = GL_R32F; *format = GL_RED; *type = GL_FLOAT; *bpp = 4; return true;
+        // A16B16G16R16 (GL_RGBA16) / G16R16 (GL_RG16) are 16-bit *normalized* formats
+        // absent from WebGL2 core; leave unhandled (HDR/normal targets) until needed.
+        default: return false;
+    }
+#else
     // D3D's *A8R8G8B8 is BGRA byte order in memory, so upload it as GL_BGRA.
     switch (fmt) {
         case D3DFMT_A8R8G8B8: *internal = GL_RGBA8; *format = GL_BGRA; *type = GL_UNSIGNED_INT_8_8_8_8_REV; *bpp = 4; return true;
@@ -28,6 +52,17 @@ bool D3DToGLFormat(D3DFORMAT fmt, unsigned *internal, unsigned *format, unsigned
         case D3DFMT_R32F:          *internal = GL_R32F;    *format = GL_RED;  *type = GL_FLOAT;            *bpp = 4; return true;
         default: return false;
     }
+#endif
+}
+
+bool D3DFormatNeedsBGRASwizzle(D3DFORMAT fmt) {
+#if defined(__EMSCRIPTEN__)
+    // These are the BGRA byte-order formats remapped to GL_RGBA above; their bytes
+    // need B and R swapped at upload so the sampled colour is correct.
+    return fmt == D3DFMT_A8R8G8B8 || fmt == D3DFMT_X8R8G8B8;
+#else
+    (void)fmt; return false;   // desktop uploads BGRA directly via GL_BGRA
+#endif
 }
 
 int D3DFormatBpp(D3DFORMAT fmt) {

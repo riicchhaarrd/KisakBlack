@@ -15,6 +15,12 @@ bool D3DToGLFormat(D3DFORMAT fmt, unsigned *internalFormat, unsigned *glFormat,
 // Bytes per pixel for `fmt` (4 if unknown).
 int D3DFormatBpp(D3DFORMAT fmt);
 
+// True when D3DToGLFormat() returned a plain RGBA mapping for a BGRA byte-order
+// source (D3DFMT_*A8R8G8B8) because the target GL has no GL_BGRA upload format —
+// the upload site must then swap B<->R in the pixel data. (Always false on desktop
+// GL, where GL_BGRA is used directly; only true under WebGL2/Emscripten.)
+bool D3DFormatNeedsBGRASwizzle(D3DFORMAT fmt);
+
 // For a DXT/BC block-compressed FourCC format, returns the GL compressed internal
 // format (e.g. GL_COMPRESSED_RGBA_S3TC_DXT5_EXT) and the per-4x4-block byte size;
 // returns 0 for non-compressed formats.
