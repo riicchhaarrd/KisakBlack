@@ -105,6 +105,10 @@ HRESULT WINAPI GLIndexBuffer::GetDesc(D3DINDEXBUFFER_DESC *pDesc) {
 }
 
 // ---- GLTexture ------------------------------------------------------------
+// Diagnostic counters: how many textures are created vs how many actually get
+// their level-0 pixels uploaded (a big gap => streamed textures never uploaded).
+static int g_texCreated = 0, g_texLevel0 = 0;
+
 // D3D's CreateTexture(Levels=0) means "full mip chain"; compute it from the size.
 static UINT FullMipCount(UINT w, UINT h) {
     UINT m = (w > h) ? w : h, n = 1;
@@ -128,6 +132,14 @@ GLTexture::GLTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT lev
         unsigned internal, fmt, type; int bpp;
         if (D3DToGLFormat(format_, &internal, &fmt, &type, &bpp))
             glTexImage2D(GL_TEXTURE_2D, 0, internal, width_, height_, 0, fmt, type, nullptr);
+    } else {
+        // Give every texture a neutral 1x1 level-0 immediately so it is COMPLETE even
+        // before (or if) the engine uploads its pixels — otherwise a not-yet-uploaded
+        // (e.g. streamed) texture is incomplete and samples as a debug colour (magenta
+        // on Mesa). The real LockRect/UnlockRect redefines level 0 with the true data.
+        static const unsigned char gray[4] = { 128, 128, 128, 255 };
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, gray);
+        ++g_texCreated;
     }
     glBindTexture(GL_TEXTURE_2D, 0);
 }
@@ -198,6 +210,9 @@ HRESULT WINAPI GLTexture::UnlockRect(UINT Level) {
     }
     glBindTexture(GL_TEXTURE_2D, 0);
     dirty_ = false;
+    if (Level == 0) { ++g_texLevel0;
+        if ((g_texLevel0 % 512) == 0)
+            fprintf(stderr, "[gl] texture uploads: created=%d level0-uploaded=%d\n", g_texCreated, g_texLevel0); }
     return D3D_OK;
 }
 
