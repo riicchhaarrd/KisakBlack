@@ -430,9 +430,18 @@ void __cdecl Live_InitPlatform()
         Cmd_AddCommandInternal("mp_toggleMute", Live_ToggleMute_f, &Live_ToggleMute_f_VAR);
         Session_Init();
         g_shouldWeHost = 1;
+#if defined(__EMSCRIPTEN__)
+        // The Steam/Live persistent-data backends (leaderboards, cloud storage,
+        // friends) are online-only and unreachable in the web build. They also init
+        // huge decompiled structs (LbGlob etc.) via raw hardcoded byte offsets that
+        // assume the original 32-bit MSVC layout; LB_Init()'s feederText[...] writes
+        // trap on wasm32 (memory access out of bounds). Skip them — nothing on the
+        // render/menu path needs them, and g_lbGlob et al. stay safely zero-inited.
+#else
         LB_Init();
         LiveStorage_Init();
         Friends_Init();
+#endif
         //BLOPS_NULLSUB();
         LiveCounter_Init();
         xblive_loggedin = _Dvar_RegisterBool("xblive_loggedin", 0, 0, "User is logged into online service");
