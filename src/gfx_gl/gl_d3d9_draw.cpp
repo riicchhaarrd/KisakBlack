@@ -59,17 +59,32 @@ unsigned compile(GLenum stage, const char *src) {
     return s;
 }
 
-// D3DDECLTYPE -> (component count, GL type, normalized)
+// D3DDECLTYPE -> (component count, GL type, normalized). CoD's vertex formats
+// pack normals/tangents (UBYTE4N/DEC3N), colours (UBYTE4N) and texcoords
+// (FLOAT16_2/4) — decoding any of these as plain floats yields garbage normals
+// (dark/flat lighting, half-black triangles) and garbage UVs (skybox moire).
 void declType(BYTE t, GLint *size, GLenum *type, GLboolean *norm) {
     *norm = GL_FALSE;
     switch (t) {
-        case D3DDECLTYPE_FLOAT1:   *size = 1; *type = GL_FLOAT;         break;
-        case D3DDECLTYPE_FLOAT2:   *size = 2; *type = GL_FLOAT;         break;
-        case D3DDECLTYPE_FLOAT3:   *size = 3; *type = GL_FLOAT;         break;
-        case D3DDECLTYPE_FLOAT4:   *size = 4; *type = GL_FLOAT;         break;
-        case D3DDECLTYPE_D3DCOLOR: *size = GL_BGRA; *type = GL_UNSIGNED_BYTE; *norm = GL_TRUE; break;
-        case D3DDECLTYPE_UBYTE4:   *size = 4; *type = GL_UNSIGNED_BYTE; break;
-        default:                   *size = 4; *type = GL_FLOAT;         break;
+        case D3DDECLTYPE_FLOAT1:    *size = 1; *type = GL_FLOAT;          break;
+        case D3DDECLTYPE_FLOAT2:    *size = 2; *type = GL_FLOAT;          break;
+        case D3DDECLTYPE_FLOAT3:    *size = 3; *type = GL_FLOAT;          break;
+        case D3DDECLTYPE_FLOAT4:    *size = 4; *type = GL_FLOAT;          break;
+        case D3DDECLTYPE_D3DCOLOR:  *size = GL_BGRA; *type = GL_UNSIGNED_BYTE; *norm = GL_TRUE; break;
+        case D3DDECLTYPE_UBYTE4:    *size = 4; *type = GL_UNSIGNED_BYTE;  break;
+        case D3DDECLTYPE_UBYTE4N:   *size = 4; *type = GL_UNSIGNED_BYTE;  *norm = GL_TRUE; break;
+        case D3DDECLTYPE_SHORT2:    *size = 2; *type = GL_SHORT;          break;
+        case D3DDECLTYPE_SHORT4:    *size = 4; *type = GL_SHORT;          break;
+        case D3DDECLTYPE_SHORT2N:   *size = 2; *type = GL_SHORT;          *norm = GL_TRUE; break;
+        case D3DDECLTYPE_SHORT4N:   *size = 4; *type = GL_SHORT;          *norm = GL_TRUE; break;
+        case D3DDECLTYPE_USHORT2N:  *size = 2; *type = GL_UNSIGNED_SHORT; *norm = GL_TRUE; break;
+        case D3DDECLTYPE_USHORT4N:  *size = 4; *type = GL_UNSIGNED_SHORT; *norm = GL_TRUE; break;
+        // 3 components packed 10:10:10:2 (low bits = x). REV matches D3D's order.
+        case D3DDECLTYPE_UDEC3:     *size = 4; *type = GL_UNSIGNED_INT_2_10_10_10_REV; break;
+        case D3DDECLTYPE_DEC3N:     *size = 4; *type = GL_INT_2_10_10_10_REV; *norm = GL_TRUE; break;
+        case D3DDECLTYPE_FLOAT16_2: *size = 2; *type = GL_HALF_FLOAT;     break;
+        case D3DDECLTYPE_FLOAT16_4: *size = 4; *type = GL_HALF_FLOAT;     break;
+        default:                    *size = 4; *type = GL_FLOAT;          break;
     }
 }
 
