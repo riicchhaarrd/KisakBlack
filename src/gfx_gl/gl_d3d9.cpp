@@ -6,6 +6,9 @@
 #include <GL/glew.h>
 #include <SDL2/SDL.h>   // adapter display-mode queries (EnumAdapterModes etc.)
 #include <cstdio>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/html5_webgl.h>  // emscripten_webgl_get_current_context()
+#endif
 
 // Default device caps, shared by GLDevice::GetDeviceCaps and GLD3D9::GetDeviceCaps.
 // These advertise an SM3.0-class GPU, which is what the Black Ops renderer expects.
@@ -134,9 +137,19 @@ HRESULT WINAPI GLDevice::GetDeviceCaps(D3DCAPS9 *pCaps) {
 HRESULT WINAPI GLD3D9::GetAdapterIdentifier(UINT, DWORD, D3DADAPTER_IDENTIFIER9 *pIdentifier) {
     if (!pIdentifier) return E_INVALIDARG;
     *pIdentifier = D3DADAPTER_IDENTIFIER9{};
-    // GL_VENDOR/GL_RENDERER need a current context; fall back to a neutral name.
-    const GLubyte *renderer = glGetString(GL_RENDERER);
-    const GLubyte *vendor   = glGetString(GL_VENDOR);
+    // GL_VENDOR/GL_RENDERER need a current context. R_ChooseAdapter() queries this
+    // BEFORE R_CreateGameWindow() creates the context, so there may be none yet.
+    // On desktop glGetString() returns null with no context; under Emscripten the
+    // JS shim instead THROWS (GLctx is undefined), so only query when one is current.
+    const GLubyte *renderer = nullptr;
+    const GLubyte *vendor   = nullptr;
+#if defined(__EMSCRIPTEN__)
+    if (emscripten_webgl_get_current_context() > 0)
+#endif
+    {
+        renderer = glGetString(GL_RENDERER);
+        vendor   = glGetString(GL_VENDOR);
+    }
     snprintf(pIdentifier->Description, sizeof(pIdentifier->Description), "%s",
              renderer ? (const char *)renderer : "OpenGL Renderer");
     snprintf(pIdentifier->Driver, sizeof(pIdentifier->Driver), "%s",
