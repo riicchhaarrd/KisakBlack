@@ -97,12 +97,22 @@ int main(int argc, char **argv) {
     Sys_SetupTLCallbacks(0x900000);
     Com_Init(cmdline);
 
-#if defined(__EMSCRIPTEN__)
-    // Browsers can't block in main(): hand one Com_Frame() per rAF tick to the
-    // event loop. fps=0 => use requestAnimationFrame; simulate_infinite_loop=1
-    // keeps the runtime/stack alive after main() returns. (A future ASYNCIFY-based
-    // variant could instead keep the for(;;) and yield inside the frame.)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    // Single-OS-thread fiber build: browsers can't block in main(), so hand one
+    // Com_Frame() per rAF tick to the event loop. fps=0 => use requestAnimationFrame;
+    // simulate_infinite_loop=1 keeps the runtime/stack alive after main() returns.
     emscripten_set_main_loop([]{ Com_Frame(); }, 0, 1);
+#elif defined(__EMSCRIPTEN_PTHREADS__)
+    // Pthreads build with -sPROXY_TO_PTHREAD: main() runs on a dedicated Web Worker
+    // (NOT the browser DOM thread), so it CAN block in a normal loop without freezing
+    // the page — exactly like the desktop build, and with NO Asyncify. The render
+    // BACKEND runs on its own worker (RB_RenderThread, spawned via Sys_SpawnRenderThread
+    // under sys_smp_allowed==1), owns the WebGL2 context and swaps buffers; this worker
+    // just drives the game frame and trades the DX-device-ownership lock with it — the
+    // deadlock the cooperative single-thread build could not resolve. When this worker
+    // blocks on a Win32 event (a real pthread condvar) the Emscripten runtime services
+    // its proxying queue, so DOM/canvas events still flow. No rAF driver is needed.
+    for (;;) Com_Frame();
 #else
     for (;;) Com_Frame();
 #endif

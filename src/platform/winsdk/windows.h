@@ -45,7 +45,7 @@ KISAK_DECLARE_HANDLE(HGLRC);
 
 static inline DWORD GetCurrentThreadId()  { return (DWORD)(uintptr_t)pthread_self(); }
 static inline DWORD GetCurrentProcessId() { return (DWORD)getpid(); }
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
 // Single-OS-thread cooperative build: a real usleep would block the one OS thread and
 // freeze the page. Instead, Sleep/SwitchToThread YIELD to the fiber scheduler so other
 // engine "threads" (fibers) make progress. (WebFiber_Yield lives in web_fibers.cpp;
@@ -54,6 +54,10 @@ void WebFiber_Yield(void);
 static inline void  Sleep(DWORD /*ms*/)   { WebFiber_Yield(); }
 static inline BOOL  SwitchToThread()      { WebFiber_Yield(); return TRUE; }
 #else
+// Real-thread build (desktop, or Emscripten WITH -pthread = Web Workers). Each engine
+// thread is its own OS thread/worker, so a real usleep/yield is correct: it parks THIS
+// worker and lets the others run. Under PROXY_TO_PTHREAD + ALLOW_BLOCKING_ON_MAIN_THREAD
+// even the proxied "main" worker may block here without freezing the DOM thread.
 static inline void  Sleep(DWORD ms)       { if (ms) usleep((useconds_t)ms * 1000u); }
 static inline BOOL  SwitchToThread()      { return sched_yield() == 0; }
 #endif
@@ -355,7 +359,7 @@ static inline void GetSystemTimeAsFileTime(FILETIME *ft) { if (ft) { ft->dwLowDa
 // rather than blocking forever on the APC that will never come.
 static inline DWORD SleepEx(DWORD ms, BOOL alertable) {
     if (alertable) return 0x000000C0;                              // WAIT_IO_COMPLETION
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
     // Cooperative build: yield to the fiber scheduler rather than block the OS thread.
     if (ms) { extern void WebFiber_Yield(void); WebFiber_Yield(); }
 #else

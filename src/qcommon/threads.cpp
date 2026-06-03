@@ -9,7 +9,7 @@
 #include <gfx_d3d/rb_resource.h>
 #include <win32/win_common.h>
 
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
 #include "../platform/sdl/web_fibers.h"   // cooperative green-thread scheduler (single OS thread)
 
 // One fiber per engine thread context (index by ThreadContext_t). NULL until
@@ -124,7 +124,7 @@ unsigned int __cdecl Sys_GetCpuCount()
     return s_cpuCount;
 }
 
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
 extern "C" void Sys_Web_OnFiberSwitch(int ctx);   // defined below; forward for init
 #endif
 
@@ -133,7 +133,7 @@ void __cdecl Sys_InitMainThread()
     HANDLE process; // [esp+8h] [ebp-Ch]
     HANDLE pseudoHandle; // [esp+Ch] [ebp-8h]
 
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
     // Bring up the cooperative fiber scheduler and adopt THIS (the OS entry) context
     // as the main fiber, BEFORE recording threadId[0]. After this, Sys_Web_OnFiberSwitch
     // has run for the main fiber, so Sys_GetCurrentThreadId() returns the main id.
@@ -150,7 +150,7 @@ void __cdecl Sys_InitMainThread()
     Com_InitThreadData(0);
 }
 
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
 // Cooperative-fiber identity. All engine "threads" run as fibers on ONE OS thread,
 // so pthread_self() (and thus GetCurrentThreadId()) is identical for every fiber and
 // cannot distinguish them. Instead the fiber scheduler reports the running fiber's
@@ -173,7 +173,7 @@ extern "C" void Sys_Web_OnFiberSwitch(int ctx)
 
 unsigned int __cdecl Sys_GetCurrentThreadId()
 {
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
     // Before the scheduler is initialized (very early boot, all on the main thread)
     // g_webCurrentThreadId is 0; fall through to the real id so threadId[0] is sane.
     if (g_webCurrentThreadId)
@@ -301,7 +301,7 @@ void __cdecl Sys_CreateThread(void (__cdecl *function)(unsigned int), unsigned i
 
     threadFunc[threadContext] = function;
 
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
     // SINGLE-OS-THREAD WEB BUILD: run every engine "thread" as a cooperative fiber
     // (web_fibers.*). wasm32 without -pthread has no Web Workers, so we can't spawn a
     // real OS thread — but the engine genuinely needs these worker threads to run
@@ -529,7 +529,7 @@ void __cdecl Sys_InitWorkerThreadContext()
 
 void __cdecl Sys_ResumeThread(unsigned int threadContext)
 {
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
     // Cooperative web build: Sys_CreateThread built a fiber (NOT runnable). Mark it
     // runnable now — the scheduler will run it the next time the current fiber yields
     // or blocks (e.g. when the main thread blocks on databaseCompletedEvent). We do

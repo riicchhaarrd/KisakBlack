@@ -167,11 +167,14 @@ void  Sys_UpdateHotkeyBlock() {}
 
 // ---- Networking: minimal (offline) -----------------------------------------
 void NET_Init() {}
-#if defined(__EMSCRIPTEN__)
-// Cooperative build: yield to the fiber scheduler instead of blocking the OS thread.
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+// Cooperative single-OS-thread build: yield to the fiber scheduler instead of blocking
+// the one OS thread (a real usleep would freeze the page).
 extern void WebFiber_Yield(void);
 void NET_Sleep(unsigned int /*msec*/) { WebFiber_Yield(); }
 #else
+// Desktop, or Emscripten-with-pthreads (this is its own Web Worker): a real usleep
+// parks just this worker and lets the others run.
 void NET_Sleep(unsigned int msec) { if (msec) usleep(msec * 1000u); }
 #endif
 void NET_RestartDebug() {}

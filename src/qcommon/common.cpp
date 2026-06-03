@@ -2138,12 +2138,14 @@ void Com_InitDvars()
                                             0,
                                             "Prevents threads from changing CPUs; improves profiling and may fix some bugs, but can hurt performance");
     CpuCount = Sys_GetCpuCount();
-#if defined(__EMSCRIPTEN__)
-    // Single-threaded web build (M3): force SMP off regardless of
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    // Single-threaded web build (M3, fiber path): force SMP off regardless of
     // navigator.hardwareConcurrency. The render backend + jobs run inline on the
     // main thread via the engine's native sys_smp_allowed==0 seam.
     sys_smp_allowed = _Dvar_RegisterBool("sys_smp_allowed", 0, 0x10u, "Allow multi-threading");
 #else
+    // Desktop, or Emscripten-with-pthreads: real worker threads (Web Workers under
+    // pthreads), so SMP is allowed when there is more than one CPU/hardware thread.
     sys_smp_allowed = _Dvar_RegisterBool("sys_smp_allowed", CpuCount > 1, 0x10u, "Allow multi-threading");
 #endif
 #ifdef _DEBUG
