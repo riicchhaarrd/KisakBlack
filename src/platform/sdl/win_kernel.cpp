@@ -312,10 +312,20 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD, DWORD) {
     if (p) { std::lock_guard<std::mutex> lk(g_vmutex); g_vallocs[(char *)p] = size ? size : 1; }
     return p;
 }
-BOOL VirtualFree(void *addr, SIZE_T, DWORD) {
+BOOL VirtualFree(void *addr, SIZE_T size, DWORD freeType) {
     if (!addr) return TRUE;
-    { std::lock_guard<std::mutex> lk(g_vmutex); g_vallocs.erase((char *)addr); }
-    free(addr); return TRUE;
+    if (freeType & MEM_RELEASE) {
+        // Release the whole reservation; addr is its tracked base.
+        { std::lock_guard<std::mutex> lk(g_vmutex); g_vallocs.erase((char *)addr); }
+        free(addr);
+    } else {
+        // MEM_DECOMMIT: addr/size are a SUB-REGION of a reservation, not a heap
+        // block — freeing it would corrupt the heap. We don't track per-page commit
+        // state, so just discard the contents: Win32 hands back zeroed pages on the
+        // next commit, and Hunk_Clear -> Z_VirtualDecommit relies on that.
+        if (size) memset(addr, 0, size);
+    }
+    return TRUE;
 }
 SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *info, SIZE_T len) {
     if (!info) return 0;

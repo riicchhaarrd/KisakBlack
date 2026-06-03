@@ -20,6 +20,7 @@
 // (Included so types such as SessionData_s, profileWriteState_t, GamerSettingState,
 //  netadr_t, HSteamUser, SteamAPICall_t, CCallbackBase resolve to the real types.)
 
+#include <cstring>                    // strcmp (interface-version match)
 #include <steam/steam_api.h>          // SteamAPI_* / SteamInternal_* / SteamGameServer_*
 #include <win32/win_steam.h>          // Steam_* (ticket / client) + g_steamInitialized
 #include <win32/win_voice.h>          // Voice_* + Live_GetClientNumForXuid + voice_current_scaler
@@ -44,14 +45,69 @@ S_API HSteamUser S_CALLTYPE SteamGameServer_GetHSteamUser()
     return 0;
 }
 
-S_API void *S_CALLTYPE SteamInternal_ContextInit( void * /*pContextInitData*/ )
+// SteamInternal_ContextInit drives the inline accessors (SteamUser(), etc). The
+// accessor passes a 3-slot context { &SteamInternal_Init_<name>, counter, iface }.
+// On first use we run the init callback (which fills slot 2 with the interface
+// pointer via FindOrCreate*Interface) and return &slot2; the accessor then
+// dereferences that to get the interface. Returning null here — as the old stub
+// did — made `*(type*)nullptr` inside the accessor crash the moment SteamUser()
+// (or any accessor) was first called, e.g. during devmap's server/live init.
+S_API void *S_CALLTYPE SteamInternal_ContextInit( void *pContextInitData )
 {
-    return nullptr;
+    void **slot = static_cast<void **>(pContextInitData);   // { initFn, counter, iface }
+    typedef void (S_CALLTYPE *InitFn)(void *);
+    if (!slot[1]) { ((InitFn)slot[0])(&slot[2]); slot[1] = (void *)1; }
+    return &slot[2];
 }
 
-S_API void *S_CALLTYPE SteamInternal_FindOrCreateUserInterface( HSteamUser /*hSteamUser*/, const char * /*pszVersion*/ )
+// Offline stand-in for ISteamUser: reports a present, logged-in local user with a
+// valid SteamID so the (often unguarded) SteamUser()-> calls in the live/server
+// path don't crash; everything else is a harmless no-op.
+namespace {
+class StubSteamUser : public ISteamUser {
+public:
+    HSteamUser GetHSteamUser() override { return 1; }
+    bool BLoggedOn() override { return true; }
+    CSteamID GetSteamID() override { return CSteamID(1u, k_EUniversePublic, k_EAccountTypeIndividual); }
+    int InitiateGameConnection_DEPRECATED(void*, int, CSteamID, uint32, uint16, bool) override { return 0; }
+    void TerminateGameConnection_DEPRECATED(uint32, uint16) override {}
+    void TrackAppUsageEvent(CGameID, int, const char*) override {}
+    bool GetUserDataFolder(char *buf, int n) override { if (buf && n) buf[0] = 0; return false; }
+    void StartVoiceRecording() override {}
+    void StopVoiceRecording() override {}
+    EVoiceResult GetAvailableVoice(uint32 *c, uint32 *u, uint32) override { if (c) *c = 0; if (u) *u = 0; return (EVoiceResult)0; }
+    EVoiceResult GetVoice(bool, void*, uint32, uint32 *w, bool, void*, uint32, uint32*, uint32) override { if (w) *w = 0; return (EVoiceResult)0; }
+    EVoiceResult DecompressVoice(const void*, uint32, void*, uint32, uint32 *w, uint32) override { if (w) *w = 0; return (EVoiceResult)0; }
+    uint32 GetVoiceOptimalSampleRate() override { return 0; }
+    HAuthTicket GetAuthSessionTicket(void*, int, uint32 *t, const SteamNetworkingIdentity*) override { if (t) *t = 0; return 0; }
+    HAuthTicket GetAuthTicketForWebApi(const char*) override { return 0; }
+    EBeginAuthSessionResult BeginAuthSession(const void*, int, CSteamID) override { return (EBeginAuthSessionResult)0; }
+    void EndAuthSession(CSteamID) override {}
+    void CancelAuthTicket(HAuthTicket) override {}
+    EUserHasLicenseForAppResult UserHasLicenseForApp(CSteamID, AppId_t) override { return (EUserHasLicenseForAppResult)0; }
+    bool BIsBehindNAT() override { return false; }
+    void AdvertiseGame(CSteamID, uint32, uint16) override {}
+    SteamAPICall_t RequestEncryptedAppTicket(void*, int) override { return 0; }
+    bool GetEncryptedAppTicket(void*, int, uint32 *t) override { if (t) *t = 0; return false; }
+    int GetGameBadgeLevel(int, bool) override { return 0; }
+    int GetPlayerSteamLevel() override { return 0; }
+    SteamAPICall_t RequestStoreAuthURL(const char*) override { return 0; }
+    bool BIsPhoneVerified() override { return false; }
+    bool BIsTwoFactorEnabled() override { return false; }
+    bool BIsPhoneIdentifying() override { return false; }
+    bool BIsPhoneRequiringVerification() override { return false; }
+    SteamAPICall_t GetMarketEligibility() override { return 0; }
+    SteamAPICall_t GetDurationControl() override { return 0; }
+    bool BSetDurationControlOnlineState(EDurationControlOnlineState) override { return false; }
+};
+StubSteamUser g_stubSteamUser;
+}
+
+S_API void *S_CALLTYPE SteamInternal_FindOrCreateUserInterface( HSteamUser /*hSteamUser*/, const char *pszVersion )
 {
-    return nullptr;
+    if (pszVersion && !strcmp(pszVersion, STEAMUSER_INTERFACE_VERSION))
+        return &g_stubSteamUser;
+    return nullptr;   // other user interfaces remain unstubbed (engine guards them)
 }
 
 S_API void *S_CALLTYPE SteamInternal_FindOrCreateGameServerInterface( HSteamUser /*hSteamUser*/, const char * /*pszVersion*/ )
