@@ -18,16 +18,30 @@
 #include <cstring>
 #include <cstdio>
 #include <csignal>
-#include <execinfo.h>
 #include <cstdlib>
+#if defined(__EMSCRIPTEN__)
+// musl/wasm has no <execinfo.h> (glibc backtrace) and cannot block in main(): the
+// browser event loop must be driven via emscripten_set_main_loop instead.
+#include <emscripten.h>
+#else
+#include <execinfo.h>
+#endif
 
 // Crash backtrace — the engine's asserts trap via __debugbreak (SIGILL); print where.
+#if defined(__EMSCRIPTEN__)
+static void CrashHandler(int sig) {
+    // No backtrace() on wasm; the browser console / source map give the trace.
+    fprintf(stderr, "\n*** caught signal %d ***\n", sig);
+    fflush(stderr); _exit(128 + sig);
+}
+#else
 static void CrashHandler(int sig) {
     void *bt[40]; int n = backtrace(bt, 40);
     fprintf(stderr, "\n*** caught signal %d — backtrace (%d frames) ***\n", sig, n);
     backtrace_symbols_fd(bt, n, 2);
     fflush(stderr); _exit(128 + sig);
 }
+#endif
 
 // ---- Gamepad: no controller (SDL game-controller support is future work) ----
 const dvar_t *gpad_enabled = nullptr;
@@ -83,6 +97,14 @@ int main(int argc, char **argv) {
     Sys_SetupTLCallbacks(0x900000);
     Com_Init(cmdline);
 
+#if defined(__EMSCRIPTEN__)
+    // Browsers can't block in main(): hand one Com_Frame() per rAF tick to the
+    // event loop. fps=0 => use requestAnimationFrame; simulate_infinite_loop=1
+    // keeps the runtime/stack alive after main() returns. (A future ASYNCIFY-based
+    // variant could instead keep the for(;;) and yield inside the frame.)
+    emscripten_set_main_loop([]{ Com_Frame(); }, 0, 1);
+#else
     for (;;) Com_Frame();
+#endif
     return 0;
 }
