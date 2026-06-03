@@ -22,6 +22,9 @@
 #include <ctime>
 #include <map>
 #include <mutex>
+#ifdef __EMSCRIPTEN__
+#include "web_fs.h"   // File System Access bridge (read-only game data)
+#endif
 
 // ---- Case-insensitive path resolution --------------------------------------
 // The game ships Windows-cased asset paths (e.g. zone/english) on a case-sensitive
@@ -70,6 +73,10 @@ enum Kind { K_FILE, K_THREAD, K_EVENT, K_SEM, K_MUTEX };
 struct KObject {
     Kind kind;
     int  fd = -1;                       // K_FILE
+#ifdef __EMSCRIPTEN__
+    int  webId = 0;                     // K_FILE: File System Access bridge id (0 = use fd)
+    long long webPos = 0;               // K_FILE: current offset for sequential ReadFile
+#endif
     pthread_t thread{};                 // K_THREAD
     LPTHREAD_START_ROUTINE start = nullptr;
     void *param = nullptr;
@@ -221,7 +228,11 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
 BOOL CloseHandle(HANDLE h) {
     if (!valid(h)) return FALSE; KObject *k = obj(h);
     switch (k->kind) {
-    case K_FILE:   if (k->fd >= 0) close(k->fd); break;
+    case K_FILE:
+#ifdef __EMSCRIPTEN__
+                   if (k->webId) kbweb_close(k->webId);
+#endif
+                   if (k->fd >= 0) close(k->fd); break;
     case K_THREAD: pthread_detach(k->thread);
                    pthread_cond_destroy(&k->cond); pthread_mutex_destroy(&k->mtx); break;
     case K_EVENT:
@@ -247,6 +258,20 @@ HANDLE CreateFileA(const char *name, DWORD access, DWORD, void *, DWORD disp, DW
     case OPEN_ALWAYS:   flags |= O_CREAT;           break;
     case OPEN_EXISTING: default:                    break;
     }
+#ifdef __EMSCRIPTEN__
+    // Read-only opens go to the File System Access bridge (the granted Steam
+    // folder). Writes/creates still use Emscripten's writable in-memory FS (MEMFS)
+    // for config/cache. The bridge resolves the path case-insensitively in JS.
+    if (flags == O_RDONLY && kbweb_ready()) {
+        int id = kbweb_open(name);
+        if (id > 0) {
+            KObject *k = new KObject(); k->kind = K_FILE; k->fd = -1;
+            k->webId = id; k->webPos = 0;
+            return static_cast<HANDLE>(k);
+        }
+        // fall through to MEMFS (e.g. a file we wrote earlier this session)
+    }
+#endif
     char resolved[4096]; ResolveCaseInsensitive(name, resolved, sizeof(resolved));
     int fd = open(resolved, flags, 0644);
     if (fd < 0) return INVALID_HANDLE_VALUE;
@@ -254,7 +279,17 @@ HANDLE CreateFileA(const char *name, DWORD access, DWORD, void *, DWORD disp, DW
     return static_cast<HANDLE>(k);
 }
 BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *numRead, OVERLAPPED *) {
-    if (!valid(h)) return FALSE; ssize_t r = read(obj(h)->fd, buf, n);
+    if (!valid(h)) return FALSE;
+#ifdef __EMSCRIPTEN__
+    if (obj(h)->webId) {
+        int r = kbweb_pread(obj(h)->webId, (double)obj(h)->webPos, buf, (int)n);
+        if (r < 0) { if (numRead) *numRead = 0; return FALSE; }
+        obj(h)->webPos += r;
+        if (numRead) *numRead = (DWORD)r;
+        return TRUE;
+    }
+#endif
+    ssize_t r = read(obj(h)->fd, buf, n);
     if (numRead) *numRead = (r < 0) ? 0 : (DWORD)r; return r >= 0;
 }
 // Overlapped read: honour the OVERLAPPED offset (pread doesn't move the file
@@ -263,6 +298,12 @@ BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *numRead, OVERLAPPED *) {
 BOOL ReadFileEx(HANDLE h, void *buf, DWORD n, OVERLAPPED *ov, LPOVERLAPPED_COMPLETION_ROUTINE) {
     if (!valid(h)) return FALSE;
     off_t off = ov ? (off_t)(((unsigned long long)ov->OffsetHigh << 32) | ov->Offset) : 0;
+#ifdef __EMSCRIPTEN__
+    if (obj(h)->webId) {
+        int r = kbweb_pread(obj(h)->webId, (double)off, buf, (int)n);
+        return r >= 0;
+    }
+#endif
     ssize_t r = ov ? pread(obj(h)->fd, buf, n, off) : read(obj(h)->fd, buf, n);
     return r >= 0;
 }
@@ -271,7 +312,17 @@ BOOL WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, OVERLAPPED *)
     if (written) *written = (w < 0) ? 0 : (DWORD)w; return w >= 0;
 }
 DWORD GetFileSize(HANDLE h, DWORD *high) {
-    if (!valid(h)) return (DWORD)-1; struct stat st;
+    if (!valid(h)) return (DWORD)-1;
+#ifdef __EMSCRIPTEN__
+    if (obj(h)->webId) {
+        double sz = kbweb_size(obj(h)->webId);
+        if (sz < 0) return (DWORD)-1;
+        unsigned long long s = (unsigned long long)sz;
+        if (high) *high = (DWORD)(s >> 32);
+        return (DWORD)(s & 0xffffffffu);
+    }
+#endif
+    struct stat st;
     if (fstat(obj(h)->fd, &st) != 0) return (DWORD)-1;
     if (high) *high = (DWORD)((unsigned long long)st.st_size >> 32);
     return (DWORD)(st.st_size & 0xffffffffu);
@@ -279,6 +330,18 @@ DWORD GetFileSize(HANDLE h, DWORD *high) {
 DWORD SetFilePointer(HANDLE h, LONG dist, LONG *distHigh, DWORD method) {
     if (!valid(h)) return (DWORD)-1;
     off_t off = (distHigh ? ((off_t)*distHigh << 32) : 0) | (unsigned)dist;
+#ifdef __EMSCRIPTEN__
+    if (obj(h)->webId) {
+        long long base = (method == FILE_CURRENT) ? obj(h)->webPos
+                       : (method == FILE_END)     ? (long long)kbweb_size(obj(h)->webId)
+                       :                            0;
+        long long np = base + off;
+        if (np < 0) return (DWORD)-1;
+        obj(h)->webPos = np;
+        if (distHigh) *distHigh = (LONG)((unsigned long long)np >> 32);
+        return (DWORD)((unsigned long long)np & 0xffffffffu);
+    }
+#endif
     int whence = method == FILE_CURRENT ? SEEK_CUR : method == FILE_END ? SEEK_END : SEEK_SET;
     off_t r = lseek(obj(h)->fd, off, whence);
     if (r < 0) return (DWORD)-1;
@@ -286,6 +349,14 @@ DWORD SetFilePointer(HANDLE h, LONG dist, LONG *distHigh, DWORD method) {
     return (DWORD)(r & 0xffffffffu);
 }
 DWORD GetFileAttributesA(const char *name) {
+#ifdef __EMSCRIPTEN__
+    if (kbweb_ready()) {
+        int e = kbweb_exists(name);
+        if (e == 2) return FILE_ATTRIBUTE_DIRECTORY;
+        if (e == 1) return FILE_ATTRIBUTE_NORMAL;
+        // not in the granted folder — fall through to MEMFS (session-written files)
+    }
+#endif
     char resolved[4096]; ResolveCaseInsensitive(name, resolved, sizeof(resolved));
     struct stat st; if (stat(resolved, &st) != 0) return INVALID_FILE_ATTRIBUTES;
     return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;

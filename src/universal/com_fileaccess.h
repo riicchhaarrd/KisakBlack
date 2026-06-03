@@ -14,3 +14,6 @@ int __cdecl FS_FileSeek(FILE *file, int offset, int whence);
 int __cdecl FileWrapper_Seek(FILE *h, int offset, int origin);
 int __cdecl FS_FileGetFileSize(FILE *file);
 int __cdecl FileWrapper_GetFileSize(FILE *h);
+#ifdef __EMSCRIPTEN__
+long FileWrapper_Tell(FILE *h);   // ftell() aware of File System Access handles
+#endif

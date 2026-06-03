@@ -2825,7 +2825,13 @@ unsigned int __cdecl FS_FTell(int f)
 {
     if (fsh[f].zipFile)
         return unztell(fsh[f].handleFiles.file.z);
+#ifdef __EMSCRIPTEN__
+    // A File System Access handle is not a real FILE*, so libc ftell() is invalid
+    // on it. FileWrapper_Tell understands both (web position vs ftell).
+    return (unsigned int)FileWrapper_Tell(FS_FileForHandle(f));
+#else
     return ftell(FS_FileForHandle(f));
+#endif
 }
 
 void __cdecl FS_Flush(int f)

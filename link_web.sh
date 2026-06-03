@@ -55,11 +55,17 @@ LINKFLAGS="\
   -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=512MB -sMAXIMUM_MEMORY=2GB \
   -sSTACK_SIZE=8MB \
-  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,stringToUTF8,UTF8ToString,lengthBytesUTF8 \
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,callMain,FS,stringToUTF8,UTF8ToString,lengthBytesUTF8,HEAPU8 \
   -lopenal \
   -sALLOW_TABLE_GROWTH=1 \
   -sASSERTIONS=1 \
+  -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 \
+  -sINVOKE_RUN=0 \
   -O0 -g"
+# ASYNCIFY: the File System Access reads are async (web_fs.js); the EM_ASYNC_JS
+# bridge in web_fs.cpp suspends/resumes the wasm stack around them so the engine's
+# synchronous file I/O blocks. INVOKE_RUN=0 lets the harness call main() only
+# after a data folder is granted.
 
 # Some Win32/CRT-emulation symbols (e.g. SEH, a few rarely-hit kernel calls) may be
 # referenced but never defined for wasm. For the FIRST link pass we want to SEE
@@ -74,7 +80,9 @@ else
 fi
 
 set -o pipefail
-em++ $LINKFLAGS "$OBJDIR"/*.o -o "$OUTDIR/blackops.html" 2> "$OUTDIR/link.log"
+# Emit blackops.js + blackops.wasm (NOT the default .html shell — our harness
+# index.html drives the run after a data folder is granted).
+em++ $LINKFLAGS "$OBJDIR"/*.o -o "$OUTDIR/blackops.js" 2> "$OUTDIR/link.log"
 rc=$?
 if [ $rc -ne 0 ]; then
   echo "LINK FAILED (rc=$rc). Undefined symbols (unique):"
@@ -82,4 +90,10 @@ if [ $rc -ne 0 ]; then
   echo "full log: $OUTDIR/link.log"
   exit $rc
 fi
+
+# Stage the harness (FS-Access bridge + page) next to the module.
+cp -f src/platform/web/index.html "$OUTDIR/index.html"
+cp -f src/platform/web/web_fs.js  "$OUTDIR/web_fs.js"
+
 echo "LINK OK -> $OUTDIR/blackops.wasm ($(du -h "$OUTDIR/blackops.wasm" | cut -f1))"
+echo "  harness: $OUTDIR/index.html (+ web_fs.js). Serve $OUTDIR and open index.html."

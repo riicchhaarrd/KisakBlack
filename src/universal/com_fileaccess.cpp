@@ -4,11 +4,50 @@
 #include "assertive.h"
 #include "q_shared.h"
 
+#ifdef __EMSCRIPTEN__
+// ----- File System Access bridge for the stdio data path (IWDs, configs, …) ---
+// The decompiled engine reads all data files through this small wrapper layer
+// (FileWrapper_Open / FS_FileRead / FS_FileClose / FileWrapper_Seek /
+// FileWrapper_GetFileSize), and unzip.cpp routes its ZIP_f* through the same
+// wrappers. So intercepting them here covers the whole stdio read path. A
+// read-only open against the granted Steam folder returns an opaque WebFile*
+// disguised as a FILE*; a registry distinguishes web handles from real FILE*s so
+// writes/temp files still use Emscripten MEMFS. Reads stream on demand via
+// kbweb_pread (only the requested window is materialized — never the whole .ff).
+#include <platform/sdl/web_fs.h>
+#include <set>
+#include <cstdlib>
+namespace {
+struct WebFile { int id; long long pos; long long size; };
+std::set<FILE *> &webSet() { static std::set<FILE *> s; return s; }
+bool isWeb(FILE *f) { return f && webSet().count(f) != 0; }
+FILE *webOpen(const char *path) {
+    if (!kbweb_ready()) return nullptr;
+    int id = kbweb_open(path);
+    if (id <= 0) return nullptr;
+    WebFile *w = (WebFile *)malloc(sizeof(WebFile));
+    w->id = id; w->pos = 0; w->size = (long long)kbweb_size(id);
+    FILE *h = (FILE *)w; webSet().insert(h);
+    return h;
+}
+} // namespace
+#endif
+
 unsigned int __cdecl FS_FileRead(void *ptr, unsigned int len, FILE *stream)
 {
     unsigned int read_size; // [esp+0h] [ebp-4h]
 
     ProfLoad_BeginTrackedValue(MAP_PROFILE_FILE_READ);
+#ifdef __EMSCRIPTEN__
+    if (isWeb(stream)) {
+        WebFile *w = (WebFile *)stream;
+        int r = kbweb_pread(w->id, (double)w->pos, ptr, (int)len);
+        if (r < 0) r = 0;
+        w->pos += r;
+        ProfLoad_EndTrackedValue(MAP_PROFILE_FILE_READ);
+        return (unsigned int)r;
+    }
+#endif
     read_size = fread(ptr, 1u, len, stream);
     ProfLoad_EndTrackedValue(MAP_PROFILE_FILE_READ);
     return read_size;
@@ -26,6 +65,15 @@ FILE *__cdecl FileWrapper_Open(const char *ospath, const char *mode)
     const char *v5; // eax
     FILE *file; // [esp+0h] [ebp-4h]
 
+#ifdef __EMSCRIPTEN__
+    // Read-only opens ("rb"/"rt"/"r") -> File System Access bridge (the granted
+    // Steam folder). Write/append modes fall through to MEMFS.
+    if (mode && (mode[0] == 'r')) {
+        FILE *w = webOpen(ospath);
+        if (w) return w;
+        // not found in the granted folder; fall through to MEMFS read (rare)
+    }
+#endif
     *_errno() = 0;
     file = fopen(ospath, mode);
     if ( file != (FILE *)-1 )
@@ -94,6 +142,15 @@ FILE *__cdecl FS_FileOpenWriteText(const char *filename)
 
 void __cdecl FS_FileClose(FILE *stream)
 {
+#ifdef __EMSCRIPTEN__
+    if (isWeb(stream)) {
+        WebFile *w = (WebFile *)stream;
+        kbweb_close(w->id);
+        webSet().erase(stream);
+        free(w);
+        return;
+    }
+#endif
     fclose(stream);
 }
 
@@ -111,6 +168,18 @@ int __cdecl FileWrapper_Seek(FILE *h, int offset, int origin)
 {
     const char *v4; // eax
 
+#ifdef __EMSCRIPTEN__
+    // Web handle: same origin remap as the stdio path below (0->CUR, 1->END,
+    // 2->SET). Returns 0 on success, like fseek.
+    if (isWeb(h)) {
+        WebFile *w = (WebFile *)h;
+        long long base = (origin == 0) ? w->pos : (origin == 1) ? w->size : 0;
+        long long np = base + offset;
+        if (np < 0) return -1;
+        w->pos = np;
+        return 0;
+    }
+#endif
     switch ( origin )
     {
         case 0:
@@ -140,10 +209,22 @@ int __cdecl FileWrapper_GetFileSize(FILE *h)
     int startPos; // [esp+0h] [ebp-8h]
     int fileSize; // [esp+4h] [ebp-4h]
 
+#ifdef __EMSCRIPTEN__
+    if (isWeb(h)) return (int)((WebFile *)h)->size;
+#endif
     startPos = ftell(h);
     fseek(h, 0, 2);
     fileSize = ftell(h);
     fseek(h, startPos, 0);
     return fileSize;
 }
+
+#ifdef __EMSCRIPTEN__
+// ftell() that understands both a File System Access web handle and a real FILE*.
+long FileWrapper_Tell(FILE *h)
+{
+    if (isWeb(h)) return (long)((WebFile *)h)->pos;
+    return ftell(h);
+}
+#endif
 

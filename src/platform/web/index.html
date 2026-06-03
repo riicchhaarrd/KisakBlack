@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<!--
+  KisakBlack — WebGL2/WASM boot harness.
+
+  Flow: the page loads web_fs.js (the File System Access bridge), then the user
+  clicks "Pick Steam folder" to grant the local "Call of Duty Black Ops" install.
+  Only after a folder is granted (or the fake-file smoke FS is enabled) is the
+  wasm started, so the engine's first synchronous file reads find data.
+
+  Serve cross-origin-isolated only if you later switch to -pthread; the current
+  single-threaded + Asyncify build does NOT require COOP/COEP.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>KisakBlack (WebGL2)</title>
+<style>
+  body { margin: 0; background: #111; color: #ddd; font-family: system-ui, sans-serif; }
+  #bar { padding: 8px 12px; background: #1c1c1c; display: flex; gap: 12px; align-items: center; }
+  #bar button { padding: 6px 14px; cursor: pointer; }
+  #status { font-size: 13px; color: #9c9; }
+  #canvas { display: block; width: 100vw; height: calc(100vh - 44px); background: #000; }
+  canvas.emscripten { outline: none; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <button id="pick">Pick Steam "Call of Duty Black Ops" folder</button>
+    <label><input type="checkbox" id="fake" /> fake-file smoke test (no data)</label>
+    <span id="status">waiting for a data folder…</span>
+  </div>
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+  <!-- Emscripten Module config MUST exist before blackops.js loads. -->
+  <script>
+    window.Module = {
+      canvas: (function () { return document.getElementById('canvas'); })(),
+      arguments: [],                 // engine cmdline (e.g. "+set r_fullscreen 0")
+      noInitialRun: true,            // we call run() ourselves after data is ready
+      print:    (t) => console.log(t),
+      printErr: (t) => console.warn(t),
+      setStatus: (t) => { if (t) document.getElementById('status').textContent = t; },
+    };
+  </script>
+  <script src="web_fs.js"></script>
+  <script src="blackops.js"></script>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    function setStatus(t) { statusEl.textContent = t; }
+
+    function startEngine() {
+      setStatus("starting engine…");
+      // Module.run() is provided by blackops.js once the runtime is initialized.
+      if (Module.calledRun) { Module.callMain(Module.arguments); }
+      else { Module.onRuntimeInitialized = () => Module.callMain(Module.arguments); }
+    }
+
+    document.getElementById('pick').addEventListener('click', async () => {
+      try {
+        if (!window.showDirectoryPicker) { setStatus("File System Access API unavailable — use Chrome/Edge."); return; }
+        setStatus("indexing folder…");
+        const n = await Module.KBFS.pick();
+        setStatus(`granted: ${n} files indexed. booting…`);
+        startEngine();
+      } catch (e) { console.error(e); setStatus("folder pick cancelled/failed: " + e.message); }
+    });
+
+    // Fake-file smoke FS: replaces KBFS with a tiny in-memory provider so the
+    // sync bridge (open/size/pread/close + Asyncify) can be exercised end-to-end
+    // without a real Steam install. It serves one zero-filled file of a chosen
+    // size for ANY requested path, so you can confirm the read path round-trips.
+    document.getElementById('fake').addEventListener('change', (ev) => {
+      if (!ev.target.checked) return;
+      const FAKE_SIZE = 64 * 1024; // 64 KB synthetic file
+      Module.KBFS = {
+        ready: true,
+        _open: new Map(), _id: 1,
+        exists() { return 1; },
+        async open() { const id = this._id++; this._open.set(id, 0); return id; },
+        async size() { return FAKE_SIZE; },
+        async pread(id, offset, len) {
+          const end = Math.min(offset + len, FAKE_SIZE);
+          if (end <= offset) return new Uint8Array(0);
+          return new Uint8Array(end - offset); // zero-filled
+        },
+        close(id) { this._open.delete(id); },
+      };
+      setStatus("fake-file smoke FS enabled. booting…");
+      startEngine();
+    });
+  </script>
+</body>
+</html>
