@@ -136,7 +136,10 @@
       // (webkitdirectory fallback). Both yield a File we can Blob.slice() lazily.
       const file = (typeof entry.getFile === "function") ? await entry.getFile() : entry;
       const id = this.nextId++;
-      this.open_.set(id, { file });
+      // Per-file 256KB block cache: the engine parses each .iwd's zip central
+      // directory with thousands of tiny sequential reads; without caching that's
+      // thousands of async round-trips. One block read serves them all.
+      this.open_.set(id, { file, cache: new Map(), blockSize: 262144 });
       return id;
     },
 
@@ -146,14 +149,37 @@
     },
 
     // Return a Uint8Array of the [offset, offset+len) slice (clamped to EOF).
+    // Small/clustered reads go through the block cache; large bulk reads (a whole
+    // fastfile region) bypass it and stream directly (caching wouldn't help).
     async pread(id, offset, len) {
       const e = this.open_.get(id);
       if (!e) return null;
-      const end = Math.min(offset + len, e.file.size);
+      const size = e.file.size;
+      const end = Math.min(offset + len, size);
       if (end <= offset) return new Uint8Array(0);
-      const blob = e.file.slice(offset, end);
-      const buf = await blob.arrayBuffer();
-      return new Uint8Array(buf);
+
+      if ((this._reads = (this._reads || 0) + 1) % 5000 === 0)
+        console.log(`[KBFS] ${this._reads} reads served`);
+
+      const BS = e.blockSize;
+      if (end - offset > BS)
+        return new Uint8Array(await e.file.slice(offset, end).arrayBuffer());
+
+      const out = new Uint8Array(end - offset);
+      for (let pos = offset; pos < end; ) {
+        const bi = Math.floor(pos / BS), bStart = bi * BS;
+        let blk = e.cache.get(bi);
+        if (blk) { e.cache.delete(bi); e.cache.set(bi, blk); }   // LRU touch
+        else {
+          blk = new Uint8Array(await e.file.slice(bStart, Math.min(bStart + BS, size)).arrayBuffer());
+          e.cache.set(bi, blk);
+          if (e.cache.size > 8) e.cache.delete(e.cache.keys().next().value);
+        }
+        const from = pos - bStart, n = Math.min(blk.length - from, end - pos);
+        out.set(blk.subarray(from, from + n), pos - offset);
+        pos += n;
+      }
+      return out;
     },
 
     close(id) { this.open_.delete(id); },
