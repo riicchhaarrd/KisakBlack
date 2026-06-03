@@ -167,7 +167,13 @@ void  Sys_UpdateHotkeyBlock() {}
 
 // ---- Networking: minimal (offline) -----------------------------------------
 void NET_Init() {}
+#if defined(__EMSCRIPTEN__)
+// Cooperative build: yield to the fiber scheduler instead of blocking the OS thread.
+extern void WebFiber_Yield(void);
+void NET_Sleep(unsigned int /*msec*/) { WebFiber_Yield(); }
+#else
 void NET_Sleep(unsigned int msec) { if (msec) usleep(msec * 1000u); }
+#endif
 void NET_RestartDebug() {}
 void NET_ShutdownDebug() {}
 char Sys_SendPacket(unsigned int, unsigned char *, netadr_t) { return 1; }

@@ -59,13 +59,22 @@ LINKFLAGS="\
   -lopenal \
   -sALLOW_TABLE_GROWTH=1 \
   -sASSERTIONS=1 \
-  -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 \
+  -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=262144 \
   -sINVOKE_RUN=0 \
   -O0 -g"
 # ASYNCIFY: the File System Access reads are async (web_fs.js); the EM_ASYNC_JS
 # bridge in web_fs.cpp suspends/resumes the wasm stack around them so the engine's
 # synchronous file I/O blocks. INVOKE_RUN=0 lets the harness call main() only
 # after a data folder is granted.
+#
+# ASYNCIFY + COOPERATIVE FIBERS (web_fibers.cpp): every engine "thread" runs as a
+# fiber on one OS thread via emscripten_fiber_swap (itself an Asyncify async op).
+# Each fiber carries its OWN 512 KB Asyncify stack (allocated in web_fibers.cpp), so
+# an FS read INSIDE a worker fiber unwinds/rewinds against that fiber's stack. This
+# global ASYNCIFY_STACK_SIZE governs the ROOT context's asyncify stack and any
+# non-fiber sleeps; bumped 64 KB -> 256 KB for headroom on the deeper boot-path call
+# trees (DB_TryLoadXFile -> fastfile inflate -> nested FS reads) that unwind here
+# before/around fiber bring-up.
 
 # Some Win32/CRT-emulation symbols (e.g. SEH, a few rarely-hit kernel calls) may be
 # referenced but never defined for wasm. For the FIRST link pass we want to SEE

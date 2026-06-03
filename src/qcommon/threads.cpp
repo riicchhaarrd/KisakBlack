@@ -9,6 +9,33 @@
 #include <gfx_d3d/rb_resource.h>
 #include <win32/win_common.h>
 
+#if defined(__EMSCRIPTEN__)
+#include "../platform/sdl/web_fibers.h"   // cooperative green-thread scheduler (single OS thread)
+
+// One fiber per engine thread context (index by ThreadContext_t). NULL until
+// Sys_CreateThread builds it.
+static WebFiber *g_webFiber[15] = {0};
+
+// Synthetic per-context thread id (non-zero, unique, never collides with a real
+// pthread-derived id). Used so the cooperative fibers are distinguishable even
+// though they all share one OS thread.
+static inline unsigned int Sys_Web_SynthThreadId(int ctx)
+{
+    return 0x57EB0000u | (unsigned int)(ctx & 0xFF);
+}
+
+// Forward: Sys_ThreadMain is the engine thread entry (defined later in this file).
+DWORD WINAPI Sys_ThreadMain(LPVOID parameter);
+
+// Fiber entry trampoline: the scheduler calls this (with the context as arg) the
+// first time the fiber is scheduled. It runs the normal engine thread entry, which
+// initializes the thread's TLS and then enters threadFunc[ctx] (an infinite loop).
+static void Sys_Web_FiberEntry(unsigned int threadContext)
+{
+    Sys_ThreadMain((LPVOID)threadContext);
+}
+#endif
+
 const char *s_threadNames[15] =
 {
   "Main",
@@ -97,10 +124,21 @@ unsigned int __cdecl Sys_GetCpuCount()
     return s_cpuCount;
 }
 
+#if defined(__EMSCRIPTEN__)
+extern "C" void Sys_Web_OnFiberSwitch(int ctx);   // defined below; forward for init
+#endif
+
 void __cdecl Sys_InitMainThread()
 {
     HANDLE process; // [esp+8h] [ebp-Ch]
     HANDLE pseudoHandle; // [esp+Ch] [ebp-8h]
+
+#if defined(__EMSCRIPTEN__)
+    // Bring up the cooperative fiber scheduler and adopt THIS (the OS entry) context
+    // as the main fiber, BEFORE recording threadId[0]. After this, Sys_Web_OnFiberSwitch
+    // has run for the main fiber, so Sys_GetCurrentThreadId() returns the main id.
+    WebFiber_Init(&Sys_Web_OnFiberSwitch);
+#endif
 
     threadId[0] = Sys_GetCurrentThreadId();
     process = GetCurrentProcess();
@@ -112,8 +150,35 @@ void __cdecl Sys_InitMainThread()
     Com_InitThreadData(0);
 }
 
+#if defined(__EMSCRIPTEN__)
+// Cooperative-fiber identity. All engine "threads" run as fibers on ONE OS thread,
+// so pthread_self() (and thus GetCurrentThreadId()) is identical for every fiber and
+// cannot distinguish them. Instead the fiber scheduler reports the running fiber's
+// engine thread context on each swap (WebFiber_OnSwitch -> Sys_Web_OnFiberSwitch),
+// and we synthesize a distinct, non-zero thread id per context. Sys_GetCurrentThreadId
+// then returns the *current fiber's* id, so Sys_Is{Render,Database,...}Thread() — which
+// compare against threadId[ctx] — behave exactly as on a real multithreaded build.
+static unsigned int g_webCurrentThreadId = 0;          // running fiber's synthetic id
+// (Sys_Web_SynthThreadId is defined near the top of this file.)
+// Registered with the scheduler; runs every time a fiber becomes current. ctx == -1
+// is the main fiber, which keeps the main thread's real id recorded in threadId[0].
+extern "C" void Sys_Web_OnFiberSwitch(int ctx)
+{
+    if (ctx < 0)
+        g_webCurrentThreadId = threadId[0] ? threadId[0] : Sys_Web_SynthThreadId(0);
+    else
+        g_webCurrentThreadId = Sys_Web_SynthThreadId(ctx);
+}
+#endif
+
 unsigned int __cdecl Sys_GetCurrentThreadId()
 {
+#if defined(__EMSCRIPTEN__)
+    // Before the scheduler is initialized (very early boot, all on the main thread)
+    // g_webCurrentThreadId is 0; fall through to the real id so threadId[0] is sane.
+    if (g_webCurrentThreadId)
+        return g_webCurrentThreadId;
+#endif
     if (!g_currentThreadId)
     {
         g_currentThreadId = GetCurrentThreadId();
@@ -237,22 +302,21 @@ void __cdecl Sys_CreateThread(void (__cdecl *function)(unsigned int), unsigned i
     threadFunc[threadContext] = function;
 
 #if defined(__EMSCRIPTEN__)
-    // SINGLE-THREADED WEB BUILD (milestone 3 decision: SMP-off inline seam).
-    // wasm32 without -pthread has no Web Workers, and the engine already supports
-    // running with sys_smp_allowed=0 (CpuCount==1 path): the render backend runs
-    // inline on the main thread via R_HandOffToBackend()->R_SyncRenderThread, and
-    // the SMP-gated waits (R_SyncRenderThread, Sys_WaitRenderer) are skipped.
+    // SINGLE-OS-THREAD WEB BUILD: run every engine "thread" as a cooperative fiber
+    // (web_fibers.*). wasm32 without -pthread has no Web Workers, so we can't spawn a
+    // real OS thread — but the engine genuinely needs these worker threads to run
+    // (e.g. the DATABASE thread loads fastfiles while the main thread blocks on
+    // databaseCompletedEvent). We create a fiber bound to this context that, when
+    // first scheduled, runs Sys_ThreadMain(threadContext) (== Sys_InitThread + the
+    // engine thread entry). It is created NOT runnable; Sys_ResumeThread queues it.
     //
-    // So: do NOT spawn an OS thread. Record a non-null sentinel handle (so the
-    // Com_Error(ERR_FATAL,"Failed to create render thread") guard and the
-    // threadHandle null-checks pass) and leave threadId[ctx] == 0. Because
-    // Sys_Is{Render,Database,...}Thread() compare the *current* thread id against
-    // threadId[ctx] and the current (main) thread's id is non-zero, those all
-    // return false — i.e. the main thread is never mistaken for a worker, and the
-    // engine takes its inline path everywhere.
-    static int s_webThreadSentinel; // address used purely as a non-null handle
-    threadHandle[threadContext] = (HANDLE)&s_webThreadSentinel;
-    threadId[threadContext] = 0;
+    // threadId[ctx] gets a distinct synthetic id so Sys_Is{Render,Database,...}Thread()
+    // can tell the running fiber apart (the scheduler sets g_webCurrentThreadId to the
+    // running fiber's synthetic id on every swap — see Sys_GetCurrentThreadId).
+    threadId[threadContext] = Sys_Web_SynthThreadId((int)threadContext);
+    WebFiber *f = WebFiber_Create(&Sys_Web_FiberEntry, threadContext);
+    g_webFiber[threadContext] = f;
+    threadHandle[threadContext] = (HANDLE)f;   // non-null handle; also the join target
     return;
 #else
     unsigned int LastError; // eax
@@ -466,10 +530,13 @@ void __cdecl Sys_InitWorkerThreadContext()
 void __cdecl Sys_ResumeThread(unsigned int threadContext)
 {
 #if defined(__EMSCRIPTEN__)
-    // Single-threaded web build: Sys_CreateThread installed a sentinel handle and
-    // spawned no OS thread, so there is nothing to resume. (Resuming would deref
-    // the sentinel as a KObject.) The work runs inline on the main thread.
-    (void)threadContext;
+    // Cooperative web build: Sys_CreateThread built a fiber (NOT runnable). Mark it
+    // runnable now — the scheduler will run it the next time the current fiber yields
+    // or blocks (e.g. when the main thread blocks on databaseCompletedEvent). We do
+    // NOT swap into it here: the engine expects ResumeThread to return immediately,
+    // and the worker should not run until the caller next waits.
+    if (threadContext < THREAD_CONTEXT_COUNT && g_webFiber[threadContext])
+        WebFiber_Resume(g_webFiber[threadContext]);
     return;
 #else
     if ( !threadHandle[threadContext]

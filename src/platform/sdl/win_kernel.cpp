@@ -23,7 +23,8 @@
 #include <map>
 #include <mutex>
 #ifdef __EMSCRIPTEN__
-#include "web_fs.h"   // File System Access bridge (read-only game data)
+#include "web_fs.h"      // File System Access bridge (read-only game data)
+#include "web_fibers.h"  // cooperative green-thread scheduler (single OS thread)
 #endif
 
 // ---- Case-insensitive path resolution --------------------------------------
@@ -86,6 +87,13 @@ struct KObject {
     bool signaled = false;             // K_EVENT
     long count = 0;                    // K_SEM
     bool suspended = false;            // K_THREAD: CREATE_SUSPENDED start-gate
+#ifdef __EMSCRIPTEN__
+    // Cooperative-fiber backing (single OS thread): events/mutexes/threads are run
+    // through the fiber scheduler, NOT pthreads. The KObject pointer itself is the
+    // scheduler's wait token, so blocked fibers are matched to the object they wait on.
+    WebFiber *fiber = nullptr;         // K_THREAD: the fiber created for this "thread"
+    bool      locked = false;          // K_MUTEX: cooperatively held (single OS thread)
+#endif
 };
 
 inline KObject *obj(HANDLE h) { return reinterpret_cast<KObject *>(h); }
@@ -114,6 +122,28 @@ void *thread_thunk(void *arg) {
     return nullptr;
 }
 
+#ifdef __EMSCRIPTEN__
+// Generic Win32 CreateThread() calls (jobqueue workers via _jqStart, mjpeg, etc.)
+// also become cooperative fibers. They have no fixed engine thread context, so we
+// hand out synthetic contexts starting past the engine's 15 (THREAD_CONTEXT_COUNT)
+// — the engine's Sys_Is*Thread() checks only the fixed contexts, so these never
+// collide. WebFiber_Create passes the synthetic ctx to the entry; we map ctx ->
+// KObject so the entry can find its LPTHREAD_START_ROUTINE + param.
+static int                  g_webGenericCtx = 64;     // next synthetic ctx
+static std::map<int, KObject *> g_webCtxToThread;     // ctx -> K_THREAD KObject
+
+void web_thread_fiber_entry(unsigned int ctx) {
+    auto it = g_webCtxToThread.find((int)ctx);
+    if (it == g_webCtxToThread.end()) return;
+    KObject *k = it->second;
+    if (k->start) k->start(k->param);
+    // The routine returned: mark the K_THREAD signaled so a join (WaitForSingleObject)
+    // unblocks, and wake any fiber waiting on this object.
+    k->signaled = true;
+    WebFiber_Wake(k);
+}
+#endif
+
 } // namespace
 
 // ---- Threads ---------------------------------------------------------------
@@ -123,8 +153,21 @@ void *thread_thunk(void *arg) {
 // never observes its id table slot before it is written.
 HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, DWORD flags, DWORD *threadId) {
     KObject *k = new KObject(); k->kind = K_THREAD; k->start = start; k->param = param;
-    pthread_mutex_init(&k->mtx, nullptr); pthread_cond_init(&k->cond, nullptr);
     k->suspended = (flags & CREATE_SUSPENDED) != 0;
+#ifdef __EMSCRIPTEN__
+    // Cooperative single-OS-thread build: back this Win32 thread with a fiber. Assign
+    // a synthetic context past the engine's fixed contexts and register it so the
+    // fiber entry can find this KObject's start/param. If NOT suspended, queue it
+    // runnable immediately (it still won't run until the caller next yields/blocks).
+    int ctx = g_webGenericCtx++;
+    g_webCtxToThread[ctx] = k;
+    k->signaled = false;                 // becomes true when the routine returns (join)
+    k->fiber = WebFiber_Create(&web_thread_fiber_entry, (unsigned int)ctx);
+    if (!k->suspended) WebFiber_Resume(k->fiber);
+    if (threadId) *threadId = 0x57EB0000u | (unsigned int)(ctx & 0xFFFF);
+    return static_cast<HANDLE>(k);
+#else
+    pthread_mutex_init(&k->mtx, nullptr); pthread_cond_init(&k->cond, nullptr);
     if (pthread_create(&k->thread, nullptr, thread_thunk, k) != 0) {
         pthread_cond_destroy(&k->cond); pthread_mutex_destroy(&k->mtx); delete k; return nullptr;
     }
@@ -134,14 +177,21 @@ HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, D
     // k->thread — so report that here, NOT 0.
     if (threadId) *threadId = (DWORD)(uintptr_t)k->thread;
     return static_cast<HANDLE>(k);
+#endif
 }
 DWORD ResumeThread(HANDLE h) {
     if (!valid(h)) return 0;
     KObject *k = obj(h);
+#ifdef __EMSCRIPTEN__
+    bool was = k->suspended; k->suspended = false;
+    if (k->fiber) WebFiber_Resume(k->fiber);
+    return was ? 1 : 0;
+#else
     pthread_mutex_lock(&k->mtx);
     bool was = k->suspended; k->suspended = false; pthread_cond_broadcast(&k->cond);
     pthread_mutex_unlock(&k->mtx);
     return was ? 1 : 0;   // prior suspend count
+#endif
 }
 DWORD SuspendThread(HANDLE) { return 0; }
 
@@ -154,18 +204,35 @@ HANDLE CreateEventA(void *, BOOL manualReset, BOOL initialState, const char *) {
 }
 BOOL SetEvent(HANDLE h) {
     if (!valid(h)) return FALSE; KObject *k = obj(h);
+#ifdef __EMSCRIPTEN__
+    // Cooperative: set signaled and wake every fiber blocked on this event. The woken
+    // fibers run when the current fiber next yields/blocks. (No OS-thread wakeups.)
+    k->signaled = true;
+    WebFiber_Wake(k);
+    return TRUE;
+#else
     pthread_mutex_lock(&k->mtx); k->signaled = true;
     if (k->manualReset) pthread_cond_broadcast(&k->cond); else pthread_cond_signal(&k->cond);
     pthread_mutex_unlock(&k->mtx); return TRUE;
+#endif
 }
 BOOL ResetEvent(HANDLE h) {
     if (!valid(h)) return FALSE; KObject *k = obj(h);
+#ifdef __EMSCRIPTEN__
+    k->signaled = false; return TRUE;
+#else
     pthread_mutex_lock(&k->mtx); k->signaled = false; pthread_mutex_unlock(&k->mtx); return TRUE;
+#endif
 }
 BOOL PulseEvent(HANDLE h) {
     if (!valid(h)) return FALSE; KObject *k = obj(h);
+#ifdef __EMSCRIPTEN__
+    // Wake current waiters, then immediately clear (matches Win32 PulseEvent).
+    k->signaled = true; WebFiber_Wake(k); k->signaled = false; return TRUE;
+#else
     pthread_mutex_lock(&k->mtx); k->signaled = true; pthread_cond_broadcast(&k->cond);
     k->signaled = false; pthread_mutex_unlock(&k->mtx); return TRUE;
+#endif
 }
 
 // ---- Semaphores ------------------------------------------------------------
@@ -176,29 +243,95 @@ HANDLE CreateSemaphoreA(void *, LONG initialCount, LONG, const char *) {
 }
 BOOL ReleaseSemaphore(HANDLE h, LONG releaseCount, LONG *prevCount) {
     if (!valid(h)) return FALSE; KObject *k = obj(h);
+#ifdef __EMSCRIPTEN__
+    if (prevCount) *prevCount = (LONG)k->count;
+    k->count += releaseCount; WebFiber_Wake(k);
+    return TRUE;
+#else
     pthread_mutex_lock(&k->mtx);
     if (prevCount) *prevCount = (LONG)k->count;
     k->count += releaseCount; pthread_cond_signal(&k->cond);
     pthread_mutex_unlock(&k->mtx); return TRUE;
+#endif
 }
 
 // ---- Mutexes (recursive, matching Win32 semantics) -------------------------
 HANDLE CreateMutexA(void *, BOOL initialOwner, const char *) {
     KObject *k = new KObject(); k->kind = K_MUTEX;
+#ifdef __EMSCRIPTEN__
+    // Cooperative mutex: just a flag. With one OS thread there is no real contention,
+    // but a fiber CAN hold the lock across a yield, so another fiber must wait (the
+    // wait yields until ReleaseMutex wakes it). Recursive ownership isn't tracked
+    // (the engine uses CRITICAL_SECTIONs for its recursive locks); a re-lock by the
+    // same fiber while held would deadlock — none of the boot-path mutexes do that.
+    k->locked = initialOwner ? true : false;
+    return static_cast<HANDLE>(k);
+#else
     pthread_mutexattr_t a; pthread_mutexattr_init(&a);
     pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&k->mtx, &a); pthread_mutexattr_destroy(&a);
     if (initialOwner) pthread_mutex_lock(&k->mtx);
     return static_cast<HANDLE>(k);
+#endif
 }
 BOOL ReleaseMutex(HANDLE h) {
-    if (!valid(h)) return FALSE; pthread_mutex_unlock(&obj(h)->mtx); return TRUE;
+    if (!valid(h)) return FALSE;
+#ifdef __EMSCRIPTEN__
+    obj(h)->locked = false; WebFiber_Wake(obj(h)); return TRUE;
+#else
+    pthread_mutex_unlock(&obj(h)->mtx); return TRUE;
+#endif
 }
 
 // ---- Wait / close / duplicate ----------------------------------------------
+#ifdef __EMSCRIPTEN__
+// Cooperative wait: never blocks the OS thread. For an unsignaled INFINITE wait we
+// block this fiber and yield to the scheduler, which runs the worker fiber that will
+// signal us. For a finite/zero wait we allow a "deadlock return" (WAIT_TIMEOUT) so a
+// 1ms spin-wait loop (e.g. Sys_SyncDatabase) keeps the app responsive instead of
+// hanging when nothing else can run.
+static DWORD WaitForSingleObjectWeb(KObject *k, DWORD ms) {
+    const bool finite = (ms != INFINITE);     // ms==0 or ms>0 => allow timeout return
+    switch (k->kind) {
+    case K_THREAD:
+        // Join: wait until the fiber's routine returns (k->signaled set by the
+        // fiber entry trampoline). For a finite wait, poll-yield once.
+        for (;;) {
+            if (k->signaled) return WAIT_OBJECT_0;
+            if (!WebFiber_WaitOn(k, finite)) return WAIT_TIMEOUT;
+        }
+    case K_MUTEX:
+        // Cooperative lock: take it if free; otherwise yield until ReleaseMutex.
+        for (;;) {
+            if (!k->locked) { k->locked = true; return WAIT_OBJECT_0; }
+            if (!WebFiber_WaitOn(k, finite)) return WAIT_TIMEOUT;
+        }
+    case K_EVENT:
+        for (;;) {
+            if (k->signaled) {
+                if (!k->manualReset) k->signaled = false;   // auto-reset consumes
+                return WAIT_OBJECT_0;
+            }
+            if (ms == 0) return WAIT_TIMEOUT;               // poll with no block
+            if (!WebFiber_WaitOn(k, finite)) return WAIT_TIMEOUT;
+        }
+    case K_SEM:
+        for (;;) {
+            if (k->count > 0) { k->count--; return WAIT_OBJECT_0; }
+            if (ms == 0) return WAIT_TIMEOUT;
+            if (!WebFiber_WaitOn(k, finite)) return WAIT_TIMEOUT;
+        }
+    default: return WAIT_OBJECT_0;
+    }
+}
+#endif
+
 DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
     if (!valid(h)) return WAIT_TIMEOUT;
     KObject *k = obj(h);
+#ifdef __EMSCRIPTEN__
+    return WaitForSingleObjectWeb(k, ms);
+#else
     switch (k->kind) {
     case K_MUTEX: pthread_mutex_lock(&k->mtx); return WAIT_OBJECT_0;
     case K_THREAD: pthread_join(k->thread, nullptr); return WAIT_OBJECT_0;
@@ -224,6 +357,7 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
     }
     default: return WAIT_OBJECT_0;
     }
+#endif
 }
 BOOL CloseHandle(HANDLE h) {
     if (!valid(h)) return FALSE; KObject *k = obj(h);
@@ -233,12 +367,29 @@ BOOL CloseHandle(HANDLE h) {
                    if (k->webId) kbweb_close(k->webId);
 #endif
                    if (k->fd >= 0) close(k->fd); break;
+#ifdef __EMSCRIPTEN__
+    // Cooperative fibers/events/mutexes carry no pthread primitives to destroy. The
+    // WebFiber itself is intentionally NOT freed here: an engine "thread" runs for the
+    // life of the process, and the engine closes/duplicates these handles freely; the
+    // fiber's stacks are reclaimed only at exit. (Boot-path handles are long-lived.)
+    case K_THREAD:
+    case K_EVENT:
+    case K_SEM:
+    case K_MUTEX:  break;
+#else
     case K_THREAD: pthread_detach(k->thread);
                    pthread_cond_destroy(&k->cond); pthread_mutex_destroy(&k->mtx); break;
     case K_EVENT:
     case K_SEM:    pthread_cond_destroy(&k->cond);  pthread_mutex_destroy(&k->mtx); break;
     case K_MUTEX:  pthread_mutex_destroy(&k->mtx); break;
+#endif
     }
+#ifdef __EMSCRIPTEN__
+    // Do NOT free a K_THREAD KObject: its fiber (still referenced via g_webCtxToThread
+    // and possibly mid-run) would be left dangling. These are long-lived engine
+    // threads; the small leak is intentional and bounded.
+    if (k->kind == K_THREAD) return TRUE;
+#endif
     delete k; return TRUE;
 }
 // Win32 duplicates create a second reference; the engine only uses the duplicate as
