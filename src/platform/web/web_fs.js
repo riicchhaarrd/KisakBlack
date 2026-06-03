@@ -35,7 +35,21 @@
       return s.toLowerCase();
     },
 
-    // Let the user pick the Steam game folder and build the path index.
+    // Pick the Steam folder, choosing the best API for the page's context:
+    //   * showDirectoryPicker() — needs a SECURE CONTEXT (https or localhost).
+    //   * <input webkitdirectory> — works over plain HTTP/LAN (no secure context),
+    //     so it's the fallback when the page is served from http://<lan-ip>.
+    // Both build the same normalized-path index (handles vs File objects).
+    async pickFolder() {
+      if (window.isSecureContext && window.showDirectoryPicker) {
+        try { return await this.pick(); }
+        catch (e) { if (e && e.name === "AbortError") throw e;
+                    console.warn("[KBFS] showDirectoryPicker failed; falling back to <input webkitdirectory>", e); }
+      }
+      return await this.pickViaInput();
+    },
+
+    // Let the user pick the Steam game folder and build the path index (secure ctx).
     async pick() {
       this.rootHandle = await window.showDirectoryPicker({ id: "kisak-blackops", mode: "read" });
       this.rootName = this.rootHandle.name;
@@ -44,6 +58,39 @@
       this.ready = true;
       console.log(`[KBFS] indexed ${this.index.size} files under "${this.rootName}"`);
       return this.index.size;
+    },
+
+    // Insecure-context fallback (LAN/HTTP): a directory <input>. The browser hands
+    // back a FileList whose .webkitRelativePath is "<picked-folder>/sub/file"; we
+    // strip the leading folder segment so keys match _walk's relative convention.
+    // File objects stream the same way (Blob.slice) — multi-GB is never resident.
+    pickViaInput() {
+      return new Promise((resolve, reject) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.webkitdirectory = true;
+        input.multiple = true;
+        input.style.display = "none";
+        input.addEventListener("change", () => {
+          const files = input.files;
+          input.remove();
+          if (!files || !files.length) { reject(new Error("no folder selected")); return; }
+          this.index.clear(); this.dirs.clear(); this.rootName = "";
+          for (const f of files) {
+            const parts = (f.webkitRelativePath || f.name).split("/");
+            if (!this.rootName && parts.length > 1) this.rootName = parts[0];
+            const key = (parts.length > 1 ? parts.slice(1).join("/") : parts[0]).toLowerCase();
+            this.index.set(key, f);
+            const kp = key.split("/");
+            for (let i = 1; i < kp.length; i++) this.dirs.add(kp.slice(0, i).join("/"));
+          }
+          this.ready = true;
+          console.log(`[KBFS] indexed ${this.index.size} files (webkitdirectory) under "${this.rootName}"`);
+          resolve(this.index.size);
+        });
+        document.body.appendChild(input);   // must run inside the pickFolder() user gesture
+        input.click();
+      });
     },
 
     async _walk(dirHandle, prefix) {
@@ -83,11 +130,13 @@
 
     async open(p) {
       const np = this.norm(p);
-      const handle = this._resolve(np);
-      if (!handle) return 0;
-      const file = await handle.getFile();
+      const entry = this._resolve(np);
+      if (!entry) return 0;
+      // entry is a FileSystemFileHandle (secure-ctx path) OR already a File
+      // (webkitdirectory fallback). Both yield a File we can Blob.slice() lazily.
+      const file = (typeof entry.getFile === "function") ? await entry.getFile() : entry;
       const id = this.nextId++;
-      this.open_.set(id, { handle, file });
+      this.open_.set(id, { file });
       return id;
     },
 

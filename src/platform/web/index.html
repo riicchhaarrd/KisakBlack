@@ -58,9 +58,10 @@
 
     document.getElementById('pick').addEventListener('click', async () => {
       try {
-        if (!window.showDirectoryPicker) { setStatus("File System Access API unavailable — use Chrome/Edge."); return; }
-        setStatus("indexing folder…");
-        const n = await Module.KBFS.pick();
+        setStatus("select your Steam \"Call of Duty Black Ops\" folder…");
+        // pickFolder() uses showDirectoryPicker() on a secure context (https/
+        // localhost) and falls back to <input webkitdirectory> over plain HTTP/LAN.
+        const n = await Module.KBFS.pickFolder();
         setStatus(`granted: ${n} files indexed. booting…`);
         startEngine();
       } catch (e) { console.error(e); setStatus("folder pick cancelled/failed: " + e.message); }
