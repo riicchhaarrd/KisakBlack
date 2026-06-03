@@ -19,7 +19,18 @@ extern "C" char *getenv(const char *) noexcept;
 
 static inline HRESULT SHGetFolderPathA(HWND, int /*csidl*/, HANDLE, DWORD, char *pszPath) {
     if (!pszPath) return (HRESULT)-1;
-    const char *home = getenv("HOME"); const char *base = home ? home : "/tmp";
+    const char *home = getenv("HOME");
+#ifdef __EMSCRIPTEN__
+    // Emscripten MEMFS: '/home/web_user' is created by the runtime at init (and is
+    // the default $HOME). NEVER fall back to '/tmp' with this CSIDL path — the engine
+    // appends "\Activision\CoD" and later writes config/screenshots there; if the
+    // base dir doesn't exist a write throws ErrnoError 44 (ENOENT) and can wedge an
+    // Asyncify resume. '/home/web_user' is guaranteed to exist (the boot preRun in
+    // index.html also mkdirTree's the full home tree as belt-and-suspenders).
+    const char *base = (home && *home) ? home : "/home/web_user";
+#else
+    const char *base = home ? home : "/tmp";
+#endif
     int n = 0; while (base[n] && n < MAX_PATH - 1) { pszPath[n] = base[n]; ++n; }
     pszPath[n] = '\0';
     return 0;  // S_OK

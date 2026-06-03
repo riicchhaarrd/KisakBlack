@@ -40,6 +40,25 @@
       print:    (t) => console.log(t),
       printErr: (t) => console.warn(t),
       setStatus: (t) => { if (t) document.getElementById('status').textContent = t; },
+      // NOTE: Emscripten's default $HOME is already '/home/web_user' (see getEnvStrings),
+      // so getenv("HOME") is non-empty and SHGetFolderPathA() resolves the engine's
+      // "user documents" base to /home/web_user/Activision/CoD — never /tmp.
+      // preRun: create every writable path the engine touches at boot in MEMFS so a
+      // config/log/screenshot write never throws ErrnoError 44 (ENOENT). Game-asset
+      // READS still go through the File System Access bridge (KBFS); these MEMFS dirs
+      // only back the engine's WRITES (console_mp.log, players/, config). FS is on the
+      // EXPORTED_RUNTIME_METHODS list, so it's available here in preRun.
+      preRun: [function () {
+        try {
+          var mk = (p) => { try { FS.mkdirTree(p); } catch (e) {} };
+          mk('/tmp');                       // (runtime already makes it; harmless)
+          mk('/home/web_user');             // $HOME (userDocuments base)
+          mk('/home/web_user/Activision/CoD');   // FS_GetOsFolderPath(CSIDL_*) target
+          mk('/main');                      // fs_homepath=/ + gamedir "main" (logs/config)
+          mk('/players');                   // FS_FOpenFileWriteToDir(..,"players",..)
+          mk('/screenshots');               // screenshot writes
+        } catch (e) { console.warn('[KBFS] preRun mkdir failed', e); }
+      }],
     };
   </script>
   <script src="web_fs.js"></script>
