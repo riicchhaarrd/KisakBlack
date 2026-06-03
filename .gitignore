@@ -446,3 +446,6 @@ build_al32/
 
 # Whole-engine Linux build output
 build_linux/
+
+# Vendored Emscripten SDK clone (third-party, ~400MB) — never commit
+emscripten/
