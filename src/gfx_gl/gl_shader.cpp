@@ -27,6 +27,7 @@ enum {  // opcodes (token & 0xFFFF) — D3DSIO_*
 enum {  // register types
     RT_TEMP = 0, RT_INPUT = 1, RT_CONST = 2, RT_TEXTURE = 3, RT_RASTOUT = 4,
     RT_ATTROUT = 5, RT_OUTPUT = 6, RT_COLOROUT = 8, RT_DEPTHOUT = 9, RT_SAMPLER = 10,
+    RT_MISCTYPE = 17,   // ps_3.0 vPos (reg 0 = pixel position) / vFace (reg 1)
 };
 
 struct Operand { int type, reg, swizzle, writemask, mod, dmod; };
@@ -103,6 +104,10 @@ std::string regName(Ctx &c, const Operand &o, bool isDest) {
         case RT_RASTOUT:  return "gl_Position";
         case RT_COLOROUT: return "gl_FragColor";
         case RT_SAMPLER:  { std::ostringstream s; s << "s" << o.reg; return s.str(); }
+        case RT_MISCTYPE: // vPos (pixel position) / vFace (front-facing). vPos was
+                          // unhandled (-> vec4(0)), breaking every screen-space sample
+                          // (light/refraction passes read the scene buffer at vPos*texel).
+            return o.reg == 1 ? "vec4(gl_FrontFacing ? 1.0 : -1.0)" : "gl_FragCoord";
         default: (void)isDest; return "vec4(0.0)";
     }
 }
