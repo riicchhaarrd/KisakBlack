@@ -9,6 +9,14 @@
 #include <sys/stat.h>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
+
+#ifdef __EMSCRIPTEN__
+// On the web build the game data lives in the File System Access index (web_fs),
+// not in MEMFS — so enumerate that instead of opendir/readdir. Returns a malloc'd
+// '\n'-joined name list (caller frees), 0 if empty. (defined in web_fs.cpp)
+extern "C" char *kbweb_listdir(const char *dir, const char *ext, const char *filter, int wantsubs);
+#endif
 
 char __cdecl Com_FilterPath(const char *filter, const char *name, int casesensitive);  // qcommon
 
@@ -64,6 +72,28 @@ HunkUser **Sys_ListFiles(char *directory, char *extension, char *filter, int *nu
     char *list[16384]; int n = 0;
     HunkUser *user = Hunk_UserCreate(0x20000, HU_SCHEME_DEFAULT, 0, 0, "Sys_ListFiles", 3);
 
+#ifdef __EMSCRIPTEN__
+    // Enumerate the File System Access index (the game's iwd/asset files are not
+    // in MEMFS). The JS side replicates filter/extension/want-dirs semantics.
+    {
+        char *joined = kbweb_listdir(directory,
+                                     filter ? "" : (extension ? extension : ""),
+                                     filter ? filter : "",
+                                     wantsubs);
+        if (joined) {
+            for (char *p = joined; *p && n < 16383; ) {
+                char *nl = strchr(p, '\n');
+                int len = nl ? (int)(nl - p) : (int)strlen(p);
+                char *copy = (char *)Hunk_UserAlloc(user, len + 1, 1, "");
+                memcpy(copy, p, len); copy[len] = 0;
+                list[n++] = copy;
+                if (!nl) break;
+                p = nl + 1;
+            }
+            free(joined);
+        }
+    }
+#else
     if (filter) {
         Sys_ListFilteredFiles(user, directory, "", filter, list, &n);
     } else {
@@ -86,6 +116,7 @@ HunkUser **Sys_ListFiles(char *directory, char *extension, char *filter, int *nu
             closedir(d);
         }
     }
+#endif
 
     if (numfiles) *numfiles = n;
     if (n == 0) { Hunk_UserDestroy(user); return 0; }

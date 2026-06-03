@@ -74,6 +74,18 @@ EM_JS(int, kbweb_exists, (const char *cpath), {
     return Module.KBFS.exists(UTF8ToString(cpath));
 });
 
+// Directory listing for Sys_ListFiles. Synchronous (the index is already in JS
+// memory). Returns a malloc'd '\n'-joined UTF8 string of names — the C caller
+// must free() it — or 0 if empty. See KBFS.listDir() for the dir/ext/filter
+// semantics; this is how the engine discovers iw_*.iwd archives in main/.
+EM_JS(char *, kbweb_listdir, (const char *cdir, const char *cext, const char *cfilter, int wantsubs), {
+    if (!Module.KBFS || !Module.KBFS.listDir) return 0;
+    const names = Module.KBFS.listDir(UTF8ToString(cdir), UTF8ToString(cext),
+                                      UTF8ToString(cfilter), wantsubs);
+    if (!names || !names.length) return 0;
+    return stringToNewUTF8(names.join("\n"));
+});
+
 } // extern "C"
 
 #endif // __EMSCRIPTEN__

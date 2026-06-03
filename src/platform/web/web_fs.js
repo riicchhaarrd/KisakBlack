@@ -157,6 +157,44 @@
     },
 
     close(id) { this.open_.delete(id); },
+
+    // Directory listing for Sys_ListFiles — synchronous against the prebuilt
+    // index (the game data lives here, not in MEMFS). Mirrors the engine's
+    // Sys_ListFiles semantics:
+    //   * filter set    -> recursive; wildcard-match the path RELATIVE to dir;
+    //                      return relative paths.
+    //   * ext === "/"   -> return immediate subdirectory names.
+    //   * else          -> immediate child files ending ".ext" (plus immediate
+    //                      subdir names if wantsubs); return base names.
+    listDir(dir, ext, filter, wantsubs) {
+      let d = String(dir || "").replace(/\\/g, "/")
+                .replace(/^\.?\/+/, "").replace(/\/+$/, "").toLowerCase();
+      const prefix = d ? d + "/" : "";
+      if (filter) {
+        const rx = new RegExp("^" +
+          String(filter).toLowerCase().replace(/[.+^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
+        const out = [];
+        for (const k of this.index.keys()) {
+          if (prefix && !k.startsWith(prefix)) continue;
+          const rel = prefix ? k.slice(prefix.length) : k;
+          if (rx.test(rel)) out.push(rel);
+        }
+        return out;
+      }
+      const files = []; const dirs = new Set();
+      for (const k of this.index.keys()) {
+        if (prefix && !k.startsWith(prefix)) continue;
+        const rel = prefix ? k.slice(prefix.length) : k;
+        const slash = rel.indexOf("/");
+        if (slash < 0) files.push(rel); else dirs.add(rel.slice(0, slash));
+      }
+      if (ext === "/") return [...dirs];
+      const e = (ext || "").toLowerCase();
+      let out = e ? files.filter(n => n.toLowerCase().endsWith("." + e)) : files.slice();
+      if (wantsubs) out = out.concat([...dirs]);
+      return out;
+    },
   };
 
   // Expose on the Emscripten Module (created by blackops.js).
