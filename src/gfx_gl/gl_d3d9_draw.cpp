@@ -104,6 +104,13 @@ HRESULT WINAPI GLDevice::CreateVolumeTexture(UINT Width, UINT Height, UINT Depth
     return D3D_OK;
 }
 
+HRESULT WINAPI GLDevice::CreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format,
+                                           D3DPOOL Pool, IDirect3DCubeTexture9 **ppCubeTexture, HANDLE *) {
+    if (!ppCubeTexture) return E_INVALIDARG;
+    *ppCubeTexture = new GLCubeTexture(this, EdgeLength, Levels, Usage, Format, Pool);
+    return D3D_OK;
+}
+
 HRESULT WINAPI GLDevice::CreateVertexBuffer(UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool,
                                             IDirect3DVertexBuffer9 **ppVB, HANDLE *) {
     if (!ppVB) return E_INVALIDARG;

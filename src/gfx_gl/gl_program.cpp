@@ -83,9 +83,9 @@ void GLDevice::useDrawProgram() {
         int loc = glGetUniformLocation(lp.prog, name);
         if (loc < 0) continue;
         glUniform1i(loc, i);
-        if (boundTex_[i]) {
+        if (boundTexName_[i]) {
             glActiveTexture(GL_TEXTURE0 + i);
-            glBindTexture(GL_TEXTURE_2D, boundTex_[i]->glName());
+            glBindTexture(boundTexTarget_[i], boundTexName_[i]);
         }
     }
 }

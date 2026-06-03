@@ -260,6 +260,87 @@ HRESULT WINAPI GLVolumeTexture::UnlockBox(UINT Level) {
     return D3D_OK;
 }
 
+// ---- GLCubeTexture (GL_TEXTURE_CUBE_MAP) ----------------------------------
+GLCubeTexture::GLCubeTexture(IDirect3DDevice9 *device, UINT edgeLen, UINT levels,
+                             DWORD usage, D3DFORMAT format, D3DPOOL pool)
+    : device_(device), edge_(edgeLen),
+      levels_(levels ? levels : FullMipCount(edgeLen, edgeLen)), usage_(usage), format_(format), pool_(pool) {
+    glGenTextures(1, &tex_);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER,
+                    levels_ > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, levels_ - 1);
+    for (auto &face : levelShadow_) face.resize(levels_);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+}
+GLCubeTexture::~GLCubeTexture() { if (tex_) glDeleteTextures(1, &tex_); }
+
+HRESULT WINAPI GLCubeTexture::GetDevice(IDirect3DDevice9 **ppDevice) {
+    if (!ppDevice) return E_INVALIDARG;
+    *ppDevice = device_; if (device_) device_->AddRef(); return D3D_OK;
+}
+HRESULT WINAPI GLCubeTexture::GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) {
+    if (!pDesc || Level >= levels_) return E_INVALIDARG;
+    *pDesc = D3DSURFACE_DESC{};
+    pDesc->Format = format_; pDesc->Type = D3DRTYPE_SURFACE; pDesc->Usage = usage_; pDesc->Pool = pool_;
+    pDesc->MultiSampleType = D3DMULTISAMPLE_NONE;
+    UINT e = edge_ >> Level ? edge_ >> Level : 1;
+    pDesc->Width = e; pDesc->Height = e;
+    return D3D_OK;
+}
+HRESULT WINAPI GLCubeTexture::GetCubeMapSurface(D3DCUBEMAP_FACES, UINT, IDirect3DSurface9 **ppSurface) {
+    // The engine uploads faces via LockRect/UnlockRect, not via face surfaces.
+    if (ppSurface) *ppSurface = nullptr;
+    return E_NOTIMPL;
+}
+HRESULT WINAPI GLCubeTexture::LockRect(D3DCUBEMAP_FACES FaceType, UINT Level,
+                                       D3DLOCKED_RECT *pLockedRect, const RECT *, DWORD) {
+    if (!pLockedRect || (unsigned)FaceType >= 6 || Level >= levels_) return E_INVALIDARG;
+    UINT e = edge_ >> Level ? edge_ >> Level : 1;
+    std::vector<unsigned char> &shadow = levelShadow_[FaceType][Level];
+    int blockBytes = 0;
+    if (D3DCompressedGLFormat(format_, &blockBytes)) {
+        UINT bw = (e + 3) / 4, bh = (e + 3) / 4;
+        shadow.assign((size_t)bw * bh * blockBytes, 0);
+        pLockedRect->Pitch = (int)(bw * blockBytes);
+    } else {
+        int bpp = D3DFormatBpp(format_);
+        shadow.assign((size_t)e * e * bpp, 0);
+        pLockedRect->Pitch = (int)(e * bpp);
+    }
+    dirty_ = true;
+    pLockedRect->pBits = shadow.data();
+    return D3D_OK;
+}
+HRESULT WINAPI GLCubeTexture::UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) {
+    if ((unsigned)FaceType >= 6 || Level >= levels_ || !dirty_) return D3D_OK;
+    UINT e = edge_ >> Level ? edge_ >> Level : 1;
+    std::vector<unsigned char> &shadow = levelShadow_[FaceType][Level];
+    GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + (unsigned)FaceType;
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
+    int blockBytes = 0; unsigned cfmt = D3DCompressedGLFormat(format_, &blockBytes);
+    if (cfmt) {
+        glCompressedTexImage2D(target, Level, cfmt, e, e, 0,
+                               (GLsizei)shadow.size(), shadow.data());
+    } else {
+        unsigned internal, format, type; int bpp;
+        if (!D3DToGLFormat(format_, &internal, &format, &type, &bpp)) {
+            fprintf(stderr, "[gl] GLCubeTexture: unsupported format 0x%x (face %d level %d not uploaded)\n",
+                    format_, (int)FaceType, (int)Level);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, 0); dirty_ = false; return D3D_OK;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(target, Level, internal, e, e, 0, format, type, shadow.data());
+    }
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    dirty_ = false;
+    return D3D_OK;
+}
+
 // ---- GLSurface ------------------------------------------------------------
 GLSurface::GLSurface(GLTexture *owner, UINT level)
     : owner_(owner), level_(level),

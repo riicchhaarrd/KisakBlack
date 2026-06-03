@@ -73,7 +73,7 @@ private:
 
 class GLSurface;
 
-// 2D texture. Cube/volume textures will follow the same pattern.
+// 2D texture. Cube/volume textures follow the same pattern.
 class GLTexture final : public GLObject<IDirect3DTexture9> {
 public:
     GLTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT levels,
@@ -131,6 +131,9 @@ public:
     HRESULT WINAPI GetLevelDesc(UINT Level, D3DVOLUME_DESC *pDesc) override;
     HRESULT WINAPI LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, const D3DBOX *, DWORD) override;
     HRESULT WINAPI UnlockBox(UINT Level) override;
+
+    unsigned  glName() const { return tex_; }
+    D3DFORMAT format() const { return format_; }
 private:
     IDirect3DDevice9 *device_;
     unsigned          tex_ = 0;
@@ -139,6 +142,49 @@ private:
     D3DFORMAT         format_;
     D3DPOOL           pool_;
     std::vector<std::vector<unsigned char>> levelShadow_;
+    bool              dirty_ = false;
+};
+
+// A cube texture (sky / reflection probes). Maps to a GL_TEXTURE_CUBE_MAP; D3D's
+// six D3DCUBEMAP_FACES (POSITIVE_X..NEGATIVE_Z = 0..5) line up exactly with GL's
+// consecutive GL_TEXTURE_CUBE_MAP_POSITIVE_X..NEGATIVE_Z targets. Faces are square
+// (edgeLen x edgeLen). Per-face/per-level CPU shadow backs LockRect like GLTexture.
+class GLCubeTexture final : public GLObject<IDirect3DCubeTexture9> {
+public:
+    GLCubeTexture(IDirect3DDevice9 *device, UINT edgeLen, UINT levels,
+                  DWORD usage, D3DFORMAT format, D3DPOOL pool);
+    ~GLCubeTexture() override;
+
+    // IDirect3DResource9
+    HRESULT WINAPI GetDevice(IDirect3DDevice9 **ppDevice) override;
+    D3DRESOURCETYPE WINAPI GetType() override { return D3DRTYPE_CUBETEXTURE; }
+    DWORD   WINAPI SetPriority(DWORD) override { return 0; }
+    DWORD   WINAPI GetPriority() override { return 0; }
+    void    WINAPI PreLoad() override {}
+    // IDirect3DBaseTexture9
+    DWORD   WINAPI SetLOD(DWORD) override { return 0; }
+    DWORD   WINAPI GetLOD() override { return 0; }
+    DWORD   WINAPI GetLevelCount() override { return levels_; }
+    // IDirect3DCubeTexture9
+    HRESULT WINAPI GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) override;
+    HRESULT WINAPI GetCubeMapSurface(D3DCUBEMAP_FACES FaceType, UINT Level,
+                                     IDirect3DSurface9 **ppCubeMapSurface) override;
+    HRESULT WINAPI LockRect(D3DCUBEMAP_FACES FaceType, UINT Level, D3DLOCKED_RECT *pLockedRect,
+                            const RECT *pRect, DWORD Flags) override;
+    HRESULT WINAPI UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) override;
+
+    unsigned  glName() const { return tex_; }
+    UINT      edgeLength() const { return edge_; }
+    D3DFORMAT format() const { return format_; }
+
+private:
+    IDirect3DDevice9 *device_;
+    unsigned          tex_ = 0;
+    UINT              edge_, levels_;
+    DWORD             usage_;
+    D3DFORMAT         format_;
+    D3DPOOL           pool_;
+    std::vector<std::vector<unsigned char>> levelShadow_[6];  // [face][level] CPU mirror
     bool              dirty_ = false;
 };
 

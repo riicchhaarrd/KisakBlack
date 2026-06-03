@@ -92,7 +92,8 @@ public:
                                  IDirect3DTexture9 **ppTexture, HANDLE *) override;
     HRESULT WINAPI CreateVolumeTexture(UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage,
                                        D3DFORMAT Format, D3DPOOL Pool, IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *) override;
-    HRESULT WINAPI CreateCubeTexture(UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DCubeTexture9 **pp, HANDLE *) override { return ni(pp); }
+    HRESULT WINAPI CreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format,
+                                     D3DPOOL Pool, IDirect3DCubeTexture9 **ppCubeTexture, HANDLE *) override;
     HRESULT WINAPI CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE,
                                       DWORD, BOOL, IDirect3DSurface9 **ppSurface, HANDLE *) override;
     HRESULT WINAPI CreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL,
@@ -147,7 +148,10 @@ private:
     GLIndexBuffer       *ib_   = nullptr;
     GLVertexDeclaration *decl_ = nullptr;
 
-    GLTexture     *boundTex_[kMaxStages] = {};
+    // Bound textures, resolved to a GL name + target in SetTexture so the bind
+    // path is texture-type aware (2D / cube / volume) without a blind downcast.
+    unsigned       boundTexName_[kMaxStages]   = {};   // GL texture object (0 = none)
+    unsigned       boundTexTarget_[kMaxStages] = {};   // GL_TEXTURE_2D / _CUBE_MAP / _3D
     GLSamplerState samplers_[kMaxStages];
 
     // Blend factors are set by two separate render states but applied together.

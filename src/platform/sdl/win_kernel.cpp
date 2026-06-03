@@ -12,11 +12,13 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/mman.h>   // mmap/munmap/madvise — page-aligned virtual memory
 #include <glob.h>
 #include <dirent.h>
 #include <strings.h>   // strcasecmp (safe here — this TU includes no engine 'index' globals)
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <ctime>
 #include <map>
 #include <mutex>
@@ -298,32 +300,46 @@ DWORD GetModuleFileNameA(HMODULE, char *buf, DWORD size) {
     buf[n] = '\0'; return (DWORD)n;
 }
 
-// ---- Virtual / global memory (malloc-backed) -------------------------------
+// ---- Virtual / global memory (mmap-backed) ---------------------------------
 // The engine's Z_Virtual* layer reserves an address range then commits sub-ranges,
-// and Z_VirtualFree walks the committed regions via VirtualQuery before releasing. We
-// model that by tracking each (base -> size) allocation: reserve allocates the whole
-// range eagerly (commit then just returns the base inside it), and VirtualQuery reports
-// the owning allocation so the free-walk's asserts (AllocationBase==ptr, RegionSize>0)
-// hold.
+// and Z_VirtualFree walks the committed regions via VirtualQuery before releasing.
+// Win32 VirtualAlloc always returns PAGE-ALIGNED memory; the engine's hunk relies on
+// that (it page-aligns sub-ranges with `& 0xFFFFF000` and asserts allocations are
+// 32-byte aligned). calloc only guarantees 16-byte alignment (a malloc-chunk header
+// sits between the page start and the returned pointer), which broke the hunk's
+// alignment assert during map load. So we back the reservation with mmap(MAP_ANONYMOUS):
+// page-aligned, demand-zero, lazily committed — matching Win32 reserve/commit semantics.
+// We track each (base -> size) so MEM_RELEASE can munmap and VirtualQuery can report
+// the owning allocation (its free-walk asserts AllocationBase==ptr, RegionSize>0).
 namespace { std::map<char *, size_t> g_vallocs; std::mutex g_vmutex; }
 void *VirtualAlloc(void *addr, SIZE_T size, DWORD, DWORD) {
-    if (addr) return addr;                          // commit within an already-reserved range
-    void *p = calloc(1, size ? size : 1);
-    if (p) { std::lock_guard<std::mutex> lk(g_vmutex); g_vallocs[(char *)p] = size ? size : 1; }
+    if (addr) return addr;                          // commit within an already-reserved range (lazy)
+    size_t n = size ? size : 1;
+    void *p = mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return nullptr;
+    { std::lock_guard<std::mutex> lk(g_vmutex); g_vallocs[(char *)p] = n; }
     return p;
 }
 BOOL VirtualFree(void *addr, SIZE_T size, DWORD freeType) {
     if (!addr) return TRUE;
     if (freeType & MEM_RELEASE) {
         // Release the whole reservation; addr is its tracked base.
-        { std::lock_guard<std::mutex> lk(g_vmutex); g_vallocs.erase((char *)addr); }
-        free(addr);
+        size_t n = 0;
+        { std::lock_guard<std::mutex> lk(g_vmutex);
+          auto it = g_vallocs.find((char *)addr);
+          if (it != g_vallocs.end()) { n = it->second; g_vallocs.erase(it); } }
+        if (n) munmap(addr, n);
     } else {
-        // MEM_DECOMMIT: addr/size are a SUB-REGION of a reservation, not a heap
-        // block — freeing it would corrupt the heap. We don't track per-page commit
-        // state, so just discard the contents: Win32 hands back zeroed pages on the
-        // next commit, and Hunk_Clear -> Z_VirtualDecommit relies on that.
-        if (size) memset(addr, 0, size);
+        // MEM_DECOMMIT: addr/size are a page-aligned SUB-REGION of a reservation.
+        // madvise(MADV_DONTNEED) drops the physical pages and faults in fresh zero
+        // pages on next access — exactly Win32's decommit / next-commit contract.
+        // (Hunk_Clear -> Z_VirtualDecommit passes page-aligned ranges.)
+        if (size) {
+            if (((uintptr_t)addr & 0xFFF) == 0 && (size & 0xFFF) == 0)
+                madvise(addr, size, MADV_DONTNEED);
+            else
+                memset(addr, 0, size);
+        }
     }
     return TRUE;
 }

@@ -12,6 +12,10 @@ bool D3DToGLFormat(D3DFORMAT fmt, unsigned *internal, unsigned *format, unsigned
         case D3DFMT_R5G6B5:   *internal = GL_RGB5;  *format = GL_RGB;  *type = GL_UNSIGNED_SHORT_5_6_5;     *bpp = 2; return true;
         case D3DFMT_A8:       *internal = GL_R8;    *format = GL_RED;  *type = GL_UNSIGNED_BYTE;            *bpp = 1; return true;
         case D3DFMT_L8:       *internal = GL_R8;    *format = GL_RED;  *type = GL_UNSIGNED_BYTE;            *bpp = 1; return true;
+        // A8L8: luminance+alpha. The compatibility context (#version 120 GLSL with
+        // gl_FragColor/texture2D) keeps GL_LUMINANCE_ALPHA, which samples as (L,L,L,A)
+        // exactly like D3D — so shaders reading .rgb (luminance) and .a (alpha) match.
+        case D3DFMT_A8L8:     *internal = GL_LUMINANCE8_ALPHA8; *format = GL_LUMINANCE_ALPHA; *type = GL_UNSIGNED_BYTE; *bpp = 2; return true;
         default: return false;
     }
 }

@@ -110,8 +110,28 @@ HRESULT WINAPI GLDevice::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type
 
 HRESULT WINAPI GLDevice::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) {
     if (Stage >= (DWORD)kMaxStages) return D3D_OK;
-    // The engine only ever binds GLTexture (2D) here for now.
-    boundTex_[Stage] = static_cast<GLTexture *>(static_cast<IDirect3DTexture9 *>(pTexture));
+    // Resolve to a GL name + target now (via the resource's D3D type) so the bind
+    // path stays type-correct for 2D, cube and volume textures alike — a blind
+    // downcast to GLTexture would read tex_ at the wrong offset for cube/volume.
+    unsigned name = 0, target = GL_TEXTURE_2D;
+    if (pTexture) {
+        switch (pTexture->GetType()) {
+        case D3DRTYPE_CUBETEXTURE:
+            name   = static_cast<GLCubeTexture *>(static_cast<IDirect3DCubeTexture9 *>(pTexture))->glName();
+            target = GL_TEXTURE_CUBE_MAP;
+            break;
+        case D3DRTYPE_VOLUMETEXTURE:
+            name   = static_cast<GLVolumeTexture *>(static_cast<IDirect3DVolumeTexture9 *>(pTexture))->glName();
+            target = GL_TEXTURE_3D;
+            break;
+        default:  // D3DRTYPE_TEXTURE
+            name   = static_cast<GLTexture *>(static_cast<IDirect3DTexture9 *>(pTexture))->glName();
+            target = GL_TEXTURE_2D;
+            break;
+        }
+    }
+    boundTexName_[Stage]   = name;
+    boundTexTarget_[Stage] = target;
     return D3D_OK;
 }
 
@@ -125,14 +145,14 @@ HRESULT WINAPI GLDevice::SetScissorRect(const RECT *pRect) {
 // Bind the stage-0 texture for the built-in single-texture program. Returns true
 // if a texture is bound (caller flips the program's uUseTexture uniform).
 bool GLDevice::applyTextures() {
-    GLTexture *t = boundTex_[0];
-    if (!t) return false;
+    unsigned name = boundTexName_[0], target = boundTexTarget_[0];
+    if (!name) return false;
     const GLSamplerState &s = samplers_[0];
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, t->glName());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, glFilter(s.minFilter));
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, glFilter(s.magFilter));
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     glWrap(s.addressU));
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     glWrap(s.addressV));
+    glBindTexture(target, name);
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, glFilter(s.minFilter));
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, glFilter(s.magFilter));
+    glTexParameteri(target, GL_TEXTURE_WRAP_S,     glWrap(s.addressU));
+    glTexParameteri(target, GL_TEXTURE_WRAP_T,     glWrap(s.addressV));
     return true;
 }
