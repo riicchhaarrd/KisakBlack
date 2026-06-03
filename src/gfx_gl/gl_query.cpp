@@ -4,6 +4,17 @@
 
 #include <GL/glew.h>
 
+// WebGL2/GLES3 has no GL_SAMPLES_PASSED (exact sample count) occlusion target — only
+// the boolean GL_ANY_SAMPLES_PASSED. Using the wrong target throws GL_INVALID_ENUM on
+// every glBeginQuery/glEndQuery (the sun-sprite calibration flooded the console with
+// these). Use the boolean target on Emscripten and synthesize a large/zero "count" in
+// GetData so the engine's sample-count thresholds still resolve to visible / occluded.
+#if defined(__EMSCRIPTEN__)
+static constexpr GLenum KB_OCCLUSION_TARGET = GL_ANY_SAMPLES_PASSED;
+#else
+static constexpr GLenum KB_OCCLUSION_TARGET = GL_SAMPLES_PASSED;
+#endif
+
 GLQuery::GLQuery(IDirect3DDevice9 *device, D3DQUERYTYPE type) : device_(device), type_(type) {
     if (type_ == D3DQUERYTYPE_OCCLUSION) glGenQueries(1, &glQuery_);
 }
@@ -22,8 +33,8 @@ HRESULT WINAPI GLQuery::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT WINAPI GLQuery::Issue(DWORD dwIssueFlags) {
     if (type_ == D3DQUERYTYPE_OCCLUSION) {
-        if (dwIssueFlags & D3DISSUE_BEGIN) glBeginQuery(GL_SAMPLES_PASSED, glQuery_);
-        if (dwIssueFlags & D3DISSUE_END)   glEndQuery(GL_SAMPLES_PASSED);
+        if (dwIssueFlags & D3DISSUE_BEGIN) glBeginQuery(KB_OCCLUSION_TARGET, glQuery_);
+        if (dwIssueFlags & D3DISSUE_END)   glEndQuery(KB_OCCLUSION_TARGET);
     } else if (type_ == D3DQUERYTYPE_EVENT) {
         if (dwIssueFlags & D3DISSUE_END) {
             if (sync_) glDeleteSync(static_cast<GLsync>(sync_));
@@ -42,6 +53,11 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
         if (!available && !flush) return S_FALSE;       // not ready yet
         GLuint samples = 0;
         glGetQueryObjectuiv(glQuery_, GL_QUERY_RESULT, &samples);  // blocks if flush
+#if defined(__EMSCRIPTEN__)
+        // GL_ANY_SAMPLES_PASSED yields 0/1, not a count — expand to a large "visible"
+        // count so threshold tests (e.g. samples > N) read as visible when any passed.
+        samples = samples ? 0xFFFFu : 0u;
+#endif
         if (pData) *static_cast<DWORD *>(pData) = samples;
         return S_OK;
     }
