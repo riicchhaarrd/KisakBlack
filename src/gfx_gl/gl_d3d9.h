@@ -111,7 +111,11 @@ public:
     HRESULT WINAPI CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) override;
 
 private:
-    static const int kMaxStages = 8;
+    // ps_3_0 addresses 16 sampler stages (s0..s15). The lit world/material
+    // shaders use the high samplers (s11 lightmap, s15 lookup, s12..s14) — with
+    // fewer stages those bind to nothing and sample unit 0, turning lightmapped
+    // surfaces magenta while low-sampler models render fine.
+    static const int kMaxStages = 16;
 
     template <class T> static HRESULT ni(T **pp) { if (pp) *pp = nullptr; return E_NOTIMPL; }
     void ensureBuiltinProgram();  // lazily compile the built-in pre-transformed-vertex shader

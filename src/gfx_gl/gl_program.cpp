@@ -79,7 +79,8 @@ void GLDevice::useDrawProgram() {
 
     // Bind each referenced sampler s# to texture unit # and the matching texture.
     for (int i = 0; i < kMaxStages; ++i) {
-        char name[3] = {'s', char('0' + i), 0};
+        char name[4];                     // "s0".."s15" — two digits need 4 bytes
+        snprintf(name, sizeof(name), "s%d", i);
         int loc = glGetUniformLocation(lp.prog, name);
         if (loc < 0) continue;
         glUniform1i(loc, i);
