@@ -130,15 +130,29 @@ void Sys_LoadingKeepAlive() { Sys_PumpSDLEvents(Sys_Milliseconds()); }
 // otherwise; its return value (recenterMouse) requests relative/captured mode,
 // which maps cleanly to SDL's relative mouse mode.
 void IN_Frame() {
-    int x = 0, y = 0;
-    SDL_GetMouseState(&x, &y);            // window-relative pixel coordinates
-    static int oldX = 0, oldY = 0;
-    static bool primed = false;
-    if (!primed) { oldX = x; oldY = y; primed = true; }
-    int dx = x - oldX, dy = y - oldY;
-    oldX = x; oldY = y;
+    // In-game look uses relative-mouse mode: SDL captures and recenters the cursor,
+    // so absolute SDL_GetMouseState positions jump around and differencing them gives
+    // garbage deltas (the view "teleports" while looking). Use SDL_GetRelativeMouseState
+    // for motion when captured; only the menu path needs the absolute cursor position.
+    static bool relative = false;
+    int x = 0, y = 0, dx = 0, dy = 0;
+    if (relative) {
+        SDL_GetRelativeMouseState(&dx, &dy);   // accumulated look deltas since last call
+        SDL_GetMouseState(&x, &y);             // position (unused in-game, but harmless)
+    } else {
+        SDL_GetMouseState(&x, &y);             // absolute window-relative cursor (menu)
+        static int oldX = 0, oldY = 0;
+        static bool primed = false;
+        if (!primed) { oldX = x; oldY = y; primed = true; }
+        dx = x - oldX; dy = y - oldY;
+        oldX = x; oldY = y;
+    }
     int recenter = CL_MouseEvent(x, y, dx, dy);
-    SDL_SetRelativeMouseMode(recenter ? SDL_TRUE : SDL_FALSE);
+    if ((bool)recenter != relative) {
+        relative = recenter != 0;
+        SDL_SetRelativeMouseMode(relative ? SDL_TRUE : SDL_FALSE);
+        if (relative) SDL_GetRelativeMouseState(nullptr, nullptr);  // drop the entry-frame jump
+    }
 }
 void IN_SetCursorPos(unsigned int x, unsigned int y) { SDL_WarpMouseInWindow(nullptr, (int)x, (int)y); }
 void IN_ShowSystemCursor(bool show) { SDL_ShowCursor(show ? SDL_ENABLE : SDL_DISABLE); }
