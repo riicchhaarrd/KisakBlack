@@ -11,10 +11,14 @@
 namespace {
 
 // --- DX9 bytecode constants (documented format) ---
-enum {  // opcodes (token & 0xFFFF)
-    OP_MOV = 1, OP_ADD = 2, OP_MAD = 4, OP_MUL = 5, OP_RCP = 6, OP_RSQ = 7,
-    OP_DP3 = 8, OP_DP4 = 9, OP_MIN = 10, OP_MAX = 11, OP_FRC = 19,
-    OP_TEXLD = 66, OP_DCL = 31, OP_DEF = 81, OP_COMMENT = 0xFFFE, OP_END = 0xFFFF,
+enum {  // opcodes (token & 0xFFFF) — D3DSIO_*
+    OP_MOV = 1, OP_ADD = 2, OP_SUB = 3, OP_MAD = 4, OP_MUL = 5, OP_RCP = 6, OP_RSQ = 7,
+    OP_DP3 = 8, OP_DP4 = 9, OP_MIN = 10, OP_MAX = 11, OP_SLT = 12, OP_SGE = 13,
+    OP_EXP = 14, OP_LOG = 15, OP_LRP = 18, OP_FRC = 19,
+    OP_POW = 32, OP_ABS = 35, OP_NRM = 36, OP_SINCOS = 37, OP_MOVA = 46,
+    OP_TEXKILL = 65, OP_TEXLD = 66, OP_CMP = 88, OP_DP2ADD = 90,
+    OP_TEXLDD = 93, OP_TEXLDL = 95,
+    OP_DCL = 31, OP_DEF = 81, OP_COMMENT = 0xFFFE, OP_END = 0xFFFF,
 };
 enum {  // register types
     RT_TEMP = 0, RT_INPUT = 1, RT_CONST = 2, RT_TEXTURE = 3, RT_RASTOUT = 4,
@@ -107,20 +111,43 @@ std::string srcExpr(Ctx &c, const Operand &o) {
 void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
                std::ostringstream &body) {
     auto s = [&](int i) { return srcExpr(c, src[i]); };
+    // TEXKILL discards the fragment when any of the tested register's xyz < 0; it has
+    // no destination, so handle it before the dst<mask>= path below.
+    if (op == OP_TEXKILL) {
+        body << "  if (any(lessThan((" << regName(c, dst, true) << ").xyz, vec3(0.0)))) discard;\n";
+        return;
+    }
+    // MOVA writes the address register a0 (for relative addressing, which we don't
+    // implement); it has no GLSL lvalue, so skip it rather than emit `vec4(0)=...`.
+    if (op == OP_MOVA) return;
     std::string expr;
     switch (op) {
         case OP_MOV:   expr = s(0); break;
         case OP_ADD:   expr = s(0) + " + " + s(1); break;
+        case OP_SUB:   expr = s(0) + " - " + s(1); break;
         case OP_MUL:   expr = s(0) + " * " + s(1); break;
         case OP_MAD:   expr = s(0) + " * " + s(1) + " + " + s(2); break;
+        case OP_LRP:   expr = "mix(" + s(2) + ", " + s(1) + ", " + s(0) + ")"; break;  // dst = src2 + src0*(src1-src2)
         case OP_MIN:   expr = "min(" + s(0) + ", " + s(1) + ")"; break;
         case OP_MAX:   expr = "max(" + s(0) + ", " + s(1) + ")"; break;
         case OP_FRC:   expr = "fract(" + s(0) + ")"; break;
+        case OP_ABS:   expr = "abs(" + s(0) + ")"; break;
+        case OP_SLT:   expr = "vec4(lessThan(" + s(0) + ", " + s(1) + "))"; break;
+        case OP_SGE:   expr = "vec4(greaterThanEqual(" + s(0) + ", " + s(1) + "))"; break;
+        case OP_CMP:   expr = "mix(" + s(2) + ", " + s(1) + ", vec4(greaterThanEqual(" + s(0) + ", vec4(0.0))))"; break;  // src0>=0 ? src1 : src2
         case OP_RCP:   expr = "vec4(1.0 / (" + s(0) + ").x)"; break;
         case OP_RSQ:   expr = "vec4(inversesqrt((" + s(0) + ").x))"; break;
+        case OP_EXP:   expr = "vec4(exp2((" + s(0) + ").x))"; break;
+        case OP_LOG:   expr = "vec4(log2(abs((" + s(0) + ").x)))"; break;
+        case OP_POW:   expr = "vec4(pow(abs((" + s(0) + ").x), (" + s(1) + ").x))"; break;
+        case OP_NRM:   expr = "vec4(normalize((" + s(0) + ").xyz), 0.0)"; break;
+        case OP_SINCOS:expr = "vec4(cos((" + s(0) + ").x), sin((" + s(0) + ").x), 0.0, 0.0)"; break;
         case OP_DP3:   expr = "vec4(dot((" + s(0) + ").xyz, (" + s(1) + ").xyz))"; break;
         case OP_DP4:   expr = "vec4(dot(" + s(0) + ", " + s(1) + "))"; break;
-        case OP_TEXLD: expr = "texture2D(" + regName(c, src[1], false) + ", (" + s(0) + ").xy)"; break;
+        case OP_DP2ADD:expr = "vec4(dot((" + s(0) + ").xy, (" + s(1) + ").xy) + (" + s(2) + ").x)"; break;
+        case OP_TEXLD:
+        case OP_TEXLDL:
+        case OP_TEXLDD:expr = "texture2D(" + regName(c, src[1], false) + ", (" + s(0) + ").xy)"; break;
         default: (void)nsrc; return;
     }
     std::string dn = regName(c, dst, true);
