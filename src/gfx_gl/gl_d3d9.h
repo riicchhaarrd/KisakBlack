@@ -123,6 +123,7 @@ private:
     void useDrawProgram();        // pick shader program (if vs+ps bound) or built-in; set uniforms
     void applyVertexState();      // set up VAO attribs from decl_ + streams_
     bool applyTextures();         // bind stage-0 texture + sampler state; returns true if sampling
+    void applyStageSampler(unsigned stage, unsigned target); // apply stage's filter/wrap to bound tex
     GLSurface *backBufferSurface(); // lazily create the back-buffer surface (FBO 0 view)
 
     GLContext *ctx_ = nullptr;

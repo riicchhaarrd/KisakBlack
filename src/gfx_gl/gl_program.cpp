@@ -87,6 +87,7 @@ void GLDevice::useDrawProgram() {
         if (boundTexName_[i]) {
             glActiveTexture(GL_TEXTURE0 + i);
             glBindTexture(boundTexTarget_[i], boundTexName_[i]);
+            applyStageSampler(i, boundTexTarget_[i]);
         }
     }
 }

@@ -167,3 +167,17 @@ bool GLDevice::applyTextures() {
     glTexParameteri(target, GL_TEXTURE_WRAP_T,     glWrap(s.addressV));
     return true;
 }
+
+// Apply a sampler stage's D3D filter/wrap to the texture currently bound on that
+// unit (the shader path binds s0..s15 itself). Without this only stage 0 got its
+// state, so lookup/lightmap textures that need CLAMP wrapped as REPEAT and read
+// wrong edge values — wrong lighting and edge artifacts. Min filter stays
+// non-mipmapped to match texture completeness (not every level is guaranteed).
+void GLDevice::applyStageSampler(unsigned stage, unsigned target) {
+    if (stage >= (unsigned)kMaxStages) return;
+    const GLSamplerState &s = samplers_[stage];
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, glFilter(s.minFilter));
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, glFilter(s.magFilter));
+    glTexParameteri(target, GL_TEXTURE_WRAP_S,     glWrap(s.addressU));
+    glTexParameteri(target, GL_TEXTURE_WRAP_T,     glWrap(s.addressV));
+}
