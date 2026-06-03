@@ -18,7 +18,11 @@ struct SentientGlobals // sizeof=0x28
                                         // G_InitSentients(void)+17/w ...
     int sampleTime[2];                  // XREF: G_InitSentients(void)+30/w
                                         // G_InitSentients(void)+35/w
-} glob;
+};
+// File-local: this `glob` is referenced only within sentient.cpp. Internal
+// linkage avoids a wasm-ld symbol-type clash with POSIX glob() (a FUNCTION
+// symbol pulled in by win_kernel.cpp's <glob.h> and libc).
+static SentientGlobals glob;
 
 sentient_s *__cdecl Sentient_Alloc()
 {
