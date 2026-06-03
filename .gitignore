@@ -447,5 +447,8 @@ build_al32/
 # Whole-engine Linux build output
 build_linux/
 
+# Whole-engine Web (Emscripten/WASM) build output
+build_web/
+
 # Vendored Emscripten SDK clone (third-party, ~400MB) — never commit
 emscripten/
