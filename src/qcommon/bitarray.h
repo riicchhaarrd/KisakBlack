@@ -15,7 +15,10 @@ struct bitarray // sizeof=0x10
     {
         unsigned int v2; // kr00_4
         int i; // [esp+0h] [ebp-Ch]
-        char *argList; // [esp+8h] [ebp-4h]
+        // Hex-Rays typed argList as `char*` (true for the i386 va_list ABI). On
+        // non-x86 targets (e.g. wasm32) va_list is a distinct builtin type, so use
+        // a real va_list here for portability.
+        va_list argList; // [esp+8h] [ebp-4h]
         va_list va; // [esp+1Ch] [ebp+10h] BYREF
 
         va_start(va, first);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <new>  // non-allocating placement new (libc++/musl needs the explicit include)
 
 #include <DemonWare/bdCore/bdMemory/bdMemory.h>
 
@@ -8,7 +9,7 @@
 
 /*
 ===============================================================================
-  bdArray<T> — binary-faithful implementation
+  bdArray<T> ï¿½ binary-faithful implementation
 ===============================================================================
 */
 
