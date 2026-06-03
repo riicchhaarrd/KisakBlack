@@ -165,6 +165,40 @@ inline void kbw_wait(KbwMailbox *m) {
         emscripten_atomic_wait_u32(&m->doorbell, (uint32_t)KBW_PENDING, /*nsec*/ -1);
     }
 }
+
+// Worker-local read cache. The engine parses each .iwd's zip central directory with
+// hundreds of thousands of TINY sequential reads; proxying every one to the DOM
+// thread (a futex round-trip each) takes minutes. So each worker caches the 256 KB
+// blocks it has fetched IN ITS OWN JS CONTEXT (globalThis.__kbwB) — repeat reads
+// within a block become pure synchronous HEAP copies, never touching main. Only a
+// true block miss proxies. A 256 KB thread_local scratch receives a fetched block.
+constexpr int KBW_BS = 262144;
+thread_local uint8_t g_kbwScratch[KBW_BS];
+
+// Raw slice fetch [offset,len) -> dst on the DOM thread (used to fill a cache block
+// and for bulk reads). Blocks the worker on the doorbell. Returns bytes, or -1.
+int kbw_proxy_read(int id, double offset, void *dst, int len) {
+    KbwMailbox *m = &g_kbwBox;
+    emscripten_atomic_store_u32(&m->doorbell, (uint32_t)KBW_PENDING);
+    m->result = -1;
+    MAIN_THREAD_ASYNC_EM_ASM({
+        const m = $0;
+        const id = $1;
+        const offset = $2;
+        const dst = $3;
+        const len = $4;
+        const done = (v) => { HEAPF64[(m + 8) >> 3] = v;
+            Atomics.store(HEAP32, m >> 2, 2); Atomics.notify(HEAP32, m >> 2); };
+        if (!Module.KBFS) { done(-1); return; }
+        try { if (Module.KBFS.preadCached) { const u8 = Module.KBFS.preadCached(id, offset, len);
+              if (u8) { HEAPU8.set(u8, dst); done(u8.length); return; } } } catch (e) {}
+        Promise.resolve().then(() => Module.KBFS.pread(id, offset, len))
+            .then((u8) => { if (!u8) { done(0); return; } HEAPU8.set(u8, dst); done(u8.length); })
+            .catch((e) => { console.error("kbweb_pread", id, offset, len, e); done(-1); });
+    }, m, id, offset, dst, len);
+    kbw_wait(m);
+    return (int)m->result;
+}
 } // namespace
 
 extern "C" {
@@ -207,35 +241,63 @@ double kbweb_size(int id) {
     return m->result;
 }
 
-// Pread: proxy to main, which reads the [offset,len) slice (block-cached) and
-// copies the bytes straight into the shared heap at dst, then stores the length.
-// The bytes are visible to this worker (shared SAB heap) once the doorbell fires.
+// Synchronous worker-local cache copy. Assembles [offset,len) from cached 256 KB
+// blocks held in this worker's JS context. Returns bytes copied (clamped at EOF),
+// -1 if any covering block isn't cached (caller fetches + retries), -2 if bulk
+// (> one block; not worth caching — proxy a direct slice instead). NO proxying.
+EM_JS(int, kbw_local, (int id, double offset, void *dst, int len), {
+    const BS = 262144;
+    if (len > BS) return -2;
+    const g = globalThis.__kbwB; if (!g) return -1;
+    const fileMap = g.get(id); if (!fileMap) return -1;
+    const end = offset + len;
+    let pos = offset;
+    let outPos = 0;
+    while (pos < end) {
+        const bi = Math.floor(pos / BS);
+        const bStart = bi * BS;
+        const blk = fileMap.get(bi);
+        if (!blk) return -1;                       // miss
+        const from = pos - bStart;
+        if (from >= blk.length) break;             // past EOF inside this (last) block
+        const n = Math.min(blk.length - from, end - pos);
+        HEAPU8.set(blk.subarray(from, from + n), dst + outPos);
+        outPos += n; pos += n;
+        if (blk.length < BS) break;                // partial (final) block => EOF
+    }
+    return outPos;
+});
+
+// Store a freshly-fetched aligned block (n bytes in the shared scratch) into this
+// worker's private cache, copying it out of the SAB so later reads are stable.
+EM_JS(void, kbw_store, (int id, int blockIdx, void *scratch, int n), {
+    const g = (globalThis.__kbwB || (globalThis.__kbwB = new Map()));
+    let fileMap = g.get(id);
+    if (!fileMap) { fileMap = new Map(); g.set(id, fileMap); }
+    fileMap.set(blockIdx, HEAPU8.slice(scratch, scratch + n));   // private (non-shared) copy
+    if (fileMap.size > 64) fileMap.delete(fileMap.keys().next().value);  // ~16MB/file cap
+});
+
+// Pread: serve from the worker-local block cache when possible (pure sync heap copy,
+// no thread hop); on a miss, fetch the covering aligned 256 KB block(s) from the DOM
+// thread once, cache them, and retry. Bulk reads bypass the cache (direct proxy).
 int kbweb_pread(int id, double offset, void *dst, int len) {
-    KbwMailbox *m = &g_kbwBox;
-    emscripten_atomic_store_u32(&m->doorbell, (uint32_t)KBW_PENDING);
-    m->result = -1; m->dst = dst; m->len = len;
-    MAIN_THREAD_ASYNC_EM_ASM({
-        const m = $0;
-        const id = $1;
-        const offset = $2;
-        const dst = $3;
-        const len = $4;
-        const done = (val) => { HEAPF64[(m + 8) >> 3] = val;
-            Atomics.store(HEAP32, m >> 2, 2); Atomics.notify(HEAP32, m >> 2); };
-        if (!Module.KBFS) { done(-1); return; }
-        // Try the synchronous block-cache fast path first (no await on a cache hit).
-        try {
-            if (Module.KBFS.preadCached) {
-                const u8 = Module.KBFS.preadCached(id, offset, len);
-                if (u8) { HEAPU8.set(u8, dst); done(u8.length); return; }
-            }
-        } catch (e) { /* fall through to async */ }
-        Promise.resolve().then(() => Module.KBFS.pread(id, offset, len))
-            .then((u8) => { if (!u8) { done(0); return; } HEAPU8.set(u8, dst); done(u8.length); })
-            .catch((e) => { console.error("kbweb_pread", id, offset, len, e); done(-1); });
-    }, m, id, offset, dst, len);
-    kbw_wait(m);
-    return (int)m->result;
+    int r = kbw_local(id, offset, dst, len);
+    if (r >= 0) return r;
+    if (r == -2) return kbw_proxy_read(id, offset, dst, len);   // bulk: uncached slice
+    // Cache miss: fetch the covering block(s) (a small read spans at most two).
+    long long bi0 = (long long)(offset / (double)KBW_BS);
+    double end = offset + (double)len;
+    for (long long bi = bi0; (double)bi * (double)KBW_BS < end; ++bi) {
+        double bStart = (double)bi * (double)KBW_BS;
+        int n = kbw_proxy_read(id, bStart, g_kbwScratch, KBW_BS);
+        if (n < 0) return (bStart <= offset) ? n : 0;   // error on the first block
+        if (n == 0) break;                              // EOF at/after this block
+        kbw_store(id, (int)bi, g_kbwScratch, n);
+        if (n < KBW_BS) break;                          // last (partial) block
+    }
+    r = kbw_local(id, offset, dst, len);
+    return r >= 0 ? r : 0;
 }
 
 // Close: synchronous on main (no async; just drops the handle).
