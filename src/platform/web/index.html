@@ -7,8 +7,15 @@
   Only after a folder is granted (or the fake-file smoke FS is enabled) is the
   wasm started, so the engine's first synchronous file reads find data.
 
-  Serve cross-origin-isolated only if you later switch to -pthread; the current
-  single-threaded + Asyncify build does NOT require COOP/COEP.
+  Two builds share this harness:
+   * Single-threaded + Asyncify (build_web/link_web): does NOT require COOP/COEP;
+     serve with any static server (python3 -m http.server).
+   * Multithreaded + pthreads (build_web_mt/link_web_mt): REQUIRES cross-origin
+     isolation (COOP: same-origin, COEP: require-corp) + a secure context for
+     SharedArrayBuffer. Serve with serve_web_mt.py (over HTTPS on a LAN). The render
+     backend runs on its own Web Worker and owns the WebGL2 context (proxied to this
+     canvas); main() runs on a proxied worker. The <canvas id="canvas"> below stays on
+     this DOM thread — the worker's GL context targets "#canvas" and proxies to it.
 -->
 <html lang="en">
 <head>

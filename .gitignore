@@ -450,5 +450,8 @@ build_linux/
 # Whole-engine Web (Emscripten/WASM) build output
 build_web/
 
+# Multithreaded (Emscripten pthreads / Web Workers) Web build output
+build_web_mt/
+
 # Vendored Emscripten SDK clone (third-party, ~400MB) — never commit
 emscripten/
