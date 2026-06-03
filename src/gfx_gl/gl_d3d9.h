@@ -189,6 +189,10 @@ private:
     // Alpha test (func + ref are set separately but applied together via glAlphaFunc).
     DWORD alphaFunc_ = D3DCMP_ALWAYS;
     DWORD alphaRef_  = 0;
+    // On WebGL2/GLES (no fixed-function GL_ALPHA_TEST) the cutout is emulated with
+    // discard in the translated fragment shaders, fed by uAlphaTestFunc/uAlphaRef.
+    // alphaTestOn_ mirrors D3DRS_ALPHATESTENABLE so useDrawProgram can upload them.
+    bool  alphaTestOn_ = false;
 
     // Programmable shader path: bound shaders, c# constant registers, and a cache
     // of linked (vs,ps) programs keyed by (vsShaderId<<32 | psShaderId).
@@ -196,7 +200,8 @@ private:
     GLPixelShader  *ps_ = nullptr;
     float           vsConst_[256 * 4] = {};
     float           psConst_[256 * 4] = {};
-    struct LinkedProgram { unsigned prog; int vscLoc; int pscLoc; };
+    struct LinkedProgram { unsigned prog; int vscLoc; int pscLoc;
+                           int alphaFuncLoc = -1; int alphaRefLoc = -1; };
     std::map<uint64_t, LinkedProgram> progCache_;
 };
 

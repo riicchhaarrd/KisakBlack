@@ -69,6 +69,11 @@ void GLDevice::useDrawProgram() {
         LinkedProgram lp{prog,
                          glGetUniformLocation(prog, "vsc"),
                          glGetUniformLocation(prog, "psc")};
+#ifdef __EMSCRIPTEN__
+        // Alpha-test-via-discard uniforms (present only in ES fragment shaders).
+        lp.alphaFuncLoc = glGetUniformLocation(prog, "uAlphaTestFunc");
+        lp.alphaRefLoc  = glGetUniformLocation(prog, "uAlphaRef");
+#endif
         it = progCache_.emplace(key, lp).first;
     }
 
@@ -76,6 +81,15 @@ void GLDevice::useDrawProgram() {
     glUseProgram(lp.prog);
     if (lp.vscLoc >= 0) glUniform4fv(lp.vscLoc, 256, vsConst_);
     if (lp.pscLoc >= 0) glUniform4fv(lp.pscLoc, 256, psConst_);
+
+#ifdef __EMSCRIPTEN__
+    // Feed the in-shader alpha test. uAlphaTestFunc carries the D3DCMP_* value
+    // (1..8) when enabled, 0 when disabled; uAlphaRef is the normalized [0,1] ref.
+    if (lp.alphaFuncLoc >= 0)
+        glUniform1i(lp.alphaFuncLoc, alphaTestOn_ ? (int)alphaFunc_ : 0);
+    if (lp.alphaRefLoc >= 0)
+        glUniform1f(lp.alphaRefLoc, (float)alphaRef_ / 255.0f);
+#endif
 
     // Bind each referenced sampler s# to texture unit # and the matching texture.
     for (int i = 0; i < kMaxStages; ++i) {

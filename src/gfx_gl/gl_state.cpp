@@ -79,17 +79,26 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
         // state for programmable shaders and mirror it into the built-in shader state.
         case D3DRS_ALPHATESTENABLE:
             alphaTest_.enable = (Value != 0);
+            alphaTestOn_ = (Value != 0);
+#ifndef __EMSCRIPTEN__
             if (Value) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
+#endif
+            // On WebGL2/GLES the cutout is done with discard in-shader (the func/ref
+            // become uAlphaTestFunc/uAlphaRef uniforms uploaded in useDrawProgram).
             break;
         case D3DRS_ALPHAFUNC:
             alphaTest_.func = Value;
             alphaFunc_ = Value;
+#ifndef __EMSCRIPTEN__
             glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f);
+#endif
             break;
         case D3DRS_ALPHAREF:
             alphaTest_.ref = Value & 0xff;
             alphaRef_ = Value & 0xff;
+#ifndef __EMSCRIPTEN__
             glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f);
+#endif
             break;
         case D3DRS_SRCBLEND:  blendSrc_  = Value; glBlendFunc(glBlend(blendSrc_), glBlend(blendDest_)); break;
         case D3DRS_DESTBLEND: blendDest_ = Value; glBlendFunc(glBlend(blendSrc_), glBlend(blendDest_)); break;

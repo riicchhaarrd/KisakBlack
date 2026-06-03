@@ -59,9 +59,23 @@ std::string swizStr(int sw) {  // src swizzle as a 4-component selector, "" if i
     return s;
 }
 
+// GLSL output dialect. The desktop build emits `#version 120` compat GLSL; the
+// WebGL2 build emits `#version 300 es` (GLSL ES 3.00). The translator is
+// parameterized on this — the 120 path is preserved verbatim, not replaced.
+#if defined(__EMSCRIPTEN__)
+static const bool kEmitES_default = true;
+#else
+static const bool kEmitES_default = false;
+#endif
+
 struct Ctx {
     bool isPixel = false;
+    bool emitES = kEmitES_default;              // GLSL ES 3.00 vs #version 120
     const char *cArr() const { return isPixel ? "psc" : "vsc"; }
+    // Pixel-shader color output: gl_FragColor in 120, a declared `out` in ES 3.00.
+    const char *fragColorName() const { return emitES ? "fragColor" : "gl_FragColor"; }
+    // Texture sampler call: texture2D in 120, overloaded texture() in ES 3.00.
+    const char *texFn() const { return emitES ? "texture" : "texture2D"; }
     std::map<int, std::pair<int,int>> inputs;   // reg -> (usage, usageIndex)
     std::map<int, std::pair<int,int>> outputs;  // reg -> (usage, usageIndex)  (vertex)
     std::set<int> samplers;
@@ -102,7 +116,7 @@ std::string regName(Ctx &c, const Operand &o, bool isDest) {
             return o.reg == 0 ? "gl_Position" : "vec4(0.0)";
         }
         case RT_RASTOUT:  return "gl_Position";
-        case RT_COLOROUT: return "gl_FragColor";
+        case RT_COLOROUT: return c.fragColorName();
         case RT_SAMPLER:  { std::ostringstream s; s << "s" << o.reg; return s.str(); }
         case RT_MISCTYPE: // vPos (pixel position) / vFace (front-facing). vPos was
                           // unhandled (-> vec4(0)), breaking every screen-space sample
@@ -174,7 +188,7 @@ void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
         case OP_DP2ADD:expr = "vec4(dot((" + s(0) + ").xy, (" + s(1) + ").xy) + (" + s(2) + ").x)"; break;
         case OP_TEXLD:
         case OP_TEXLDL:
-        case OP_TEXLDD:expr = "texture2D(" + regName(c, src[1], false) + ", (" + s(0) + ").xy)"; break;
+        case OP_TEXLDD:expr = std::string(c.texFn()) + "(" + regName(c, src[1], false) + ", (" + s(0) + ").xy)"; break;
         default: (void)nsrc; return;
     }
     std::string dn = regName(c, dst, true);
@@ -236,6 +250,10 @@ void GLBindAttribLocations(unsigned program) {
 
 bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
     Ctx c;
+    // Diagnostic/test override: KB_GLSL_ES=1 forces GLSL ES 3.00 emit (=0 forces
+    // #version 120) on any build, so the ES output can be dumped + checked offline
+    // without an Emscripten compile. Defaults to kEmitES_default otherwise.
+    if (const char *e = getenv("KB_GLSL_ES")) c.emitES = (e[0] != '0');
     DWORD ver = *tok++;
     c.isPixel = (ver >> 16) == 0xFFFF;
     if (outIsPixel) *outIsPixel = c.isPixel;
@@ -306,17 +324,42 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
         emitInstr(c, op, src, nsrc, dst, body, ind(indent));
     }
 
-    // Assemble the GLSL translation unit.
+    // Assemble the GLSL translation unit. Two dialects, parameterized on c.emitES:
+    //   * #version 120 (desktop compat): attribute/varying, gl_FragColor,
+    //     texture2D, fixed-function GL_ALPHA_TEST does the cutout.
+    //   * #version 300 es (WebGL2): in/out, a declared fragColor out, texture(),
+    //     explicit precision, and alpha test emulated with discard (no
+    //     GL_ALPHA_TEST in ES) against uAlphaTestFunc/uAlphaRef uniforms that the
+    //     state layer feeds in place of glAlphaFunc.
     std::ostringstream o;
-    o << "#version 120\n";
-    if (c.isPixel) {
-        for (auto &in : c.inputs)  o << "varying vec4 " << varyingName(in.second.first, in.second.second) << ";\n";
-        for (int s : c.samplers)   o << "uniform sampler2D s" << s << ";\n";
+    if (c.emitES) {
+        o << "#version 300 es\n";
+        o << "precision highp float;\n";
+        o << "precision highp int;\n";
+        if (c.isPixel) {
+            for (auto &in : c.inputs)  o << "in vec4 " << varyingName(in.second.first, in.second.second) << ";\n";
+            for (int s : c.samplers)   o << "uniform sampler2D s" << s << ";\n";
+            o << "out vec4 " << c.fragColorName() << ";\n";
+            // Alpha-test-via-discard uniforms (D3DCMP_* in uAlphaTestFunc; 0 = off).
+            o << "uniform int uAlphaTestFunc;\n";
+            o << "uniform float uAlphaRef;\n";
+        } else {
+            for (auto &in : c.inputs)  o << "in vec4 " << GLAttribName(in.second.first, in.second.second) << ";\n";
+            for (auto &ou : c.outputs)
+                if (ou.second.first != D3DDECLUSAGE_POSITION && ou.second.first != D3DDECLUSAGE_POSITIONT)
+                    o << "out vec4 " << varyingName(ou.second.first, ou.second.second) << ";\n";
+        }
     } else {
-        for (auto &in : c.inputs)  o << "attribute vec4 " << GLAttribName(in.second.first, in.second.second) << ";\n";
-        for (auto &ou : c.outputs)
-            if (ou.second.first != D3DDECLUSAGE_POSITION && ou.second.first != D3DDECLUSAGE_POSITIONT)
-                o << "varying vec4 " << varyingName(ou.second.first, ou.second.second) << ";\n";
+        o << "#version 120\n";
+        if (c.isPixel) {
+            for (auto &in : c.inputs)  o << "varying vec4 " << varyingName(in.second.first, in.second.second) << ";\n";
+            for (int s : c.samplers)   o << "uniform sampler2D s" << s << ";\n";
+        } else {
+            for (auto &in : c.inputs)  o << "attribute vec4 " << GLAttribName(in.second.first, in.second.second) << ";\n";
+            for (auto &ou : c.outputs)
+                if (ou.second.first != D3DDECLUSAGE_POSITION && ou.second.first != D3DDECLUSAGE_POSITIONT)
+                    o << "varying vec4 " << varyingName(ou.second.first, ou.second.second) << ";\n";
+        }
     }
     if (c.usedConst) o << "uniform vec4 " << c.cArr() << "[256];\n";
     for (auto &d : c.defs)
@@ -325,6 +368,23 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
     o << "void main() {\n";
     for (int r : c.usedTemps) o << "  vec4 r" << r << " = vec4(0.0);\n";
     o << body.str();
+    // ES alpha test: D3D's fixed-function cutout, done in-shader. D3DCMP_*:
+    // 1=NEVER 2=LESS 3=EQUAL 4=LEQUAL 5=GREATER 6=NOTEQUAL 7=GEQUAL 8=ALWAYS.
+    // Discard when the test FAILS. uAlphaTestFunc==0 disables it.
+    if (c.emitES && c.isPixel) {
+        const char *a = c.fragColorName();
+        o << "  if (uAlphaTestFunc != 0) {\n"
+          << "    float aT = " << a << ".a; bool passA = true;\n"
+          << "    if      (uAlphaTestFunc == 1) passA = false;\n"
+          << "    else if (uAlphaTestFunc == 2) passA = (aT <  uAlphaRef);\n"
+          << "    else if (uAlphaTestFunc == 3) passA = (aT == uAlphaRef);\n"
+          << "    else if (uAlphaTestFunc == 4) passA = (aT <= uAlphaRef);\n"
+          << "    else if (uAlphaTestFunc == 5) passA = (aT >  uAlphaRef);\n"
+          << "    else if (uAlphaTestFunc == 6) passA = (aT != uAlphaRef);\n"
+          << "    else if (uAlphaTestFunc == 7) passA = (aT >= uAlphaRef);\n"
+          << "    if (!passA) discard;\n"
+          << "  }\n";
+    }
     o << "}\n";
     out = o.str();
     return true;
