@@ -10,6 +10,87 @@
 #include <SDL2/SDL.h>
 #include <cstdio>
 
+#if defined(__EMSCRIPTEN_PTHREADS__)
+// ---------------------------------------------------------------------------
+// WebGL2 context on the RENDER WORKER (Emscripten pthreads build).
+//
+// Under -pthread + -sPROXY_TO_PTHREAD the engine's render backend (RB_RenderThread)
+// runs on its own Web Worker and is the thread that creates the D3D9 "device" — and
+// therefore the thread that must OWN the GL context. SDL2's Emscripten port creates
+// its WebGL context via Browser.createContext on the page <canvas>, which only works
+// on the browser's main (DOM) thread, so it cannot give a worker an owned context.
+//
+// Instead we bypass SDL here and create the context directly with the Emscripten
+// HTML5 WebGL API, targeting the page canvas selector ("#canvas", matching the
+// harness <canvas id="canvas">). We set proxyContextToMainThread =
+// EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK: if the canvas has NOT been transferred to
+// this worker as an OffscreenCanvas, the runtime transparently PROXIES every GL call
+// to the DOM thread (where the canvas lives) while the GL state/handle is still owned
+// by this worker — so RB_RenderThread keeps issuing draws and swapping while the main
+// thread does the actual GPU submission. (With -sOFFSCREENCANVAS_SUPPORT=1 and a
+// transferred canvas it would instead render directly on the worker; the FALLBACK
+// covers browsers/paths where the transfer didn't happen.)
+//
+// explicitSwapControl=true + emscripten_webgl_commit_frame() gives us a real swap
+// (matching SwapBuffers) rather than the implicit "swap when the rAF callback exits",
+// which does not apply when the loop runs on a worker.
+#include <emscripten/html5.h>
+#include <emscripten/html5_webgl.h>
+
+namespace {
+class EmWebGLContext final : public GLContext {
+public:
+    bool init(const GLContextDesc &desc) {
+        EmscriptenWebGLContextAttributes attrs;
+        emscripten_webgl_init_context_attributes(&attrs);
+        attrs.majorVersion = 2;           // WebGL2 == GLES3
+        attrs.minorVersion = 0;
+        attrs.alpha       = false;
+        attrs.depth       = desc.depthStencil;
+        attrs.stencil     = desc.depthStencil;
+        attrs.antialias   = false;
+        attrs.enableExtensionsByDefault = true;
+        // Worker-owned context: explicit swap + proxy-to-main fallback (see header note).
+        attrs.explicitSwapControl       = true;
+        attrs.renderViaOffscreenBackBuffer = true;
+        attrs.proxyContextToMainThread  = EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK;
+
+        ctx_ = emscripten_webgl_create_context("#canvas", &attrs);
+        if (ctx_ <= 0) {
+            fprintf(stderr, "[gl] emscripten_webgl_create_context(#canvas) failed: %d\n", (int)ctx_);
+            return false;
+        }
+        if (emscripten_webgl_make_context_current(ctx_) != EMSCRIPTEN_RESULT_SUCCESS) {
+            fprintf(stderr, "[gl] emscripten_webgl_make_context_current failed\n");
+            return false;
+        }
+        // GLEW emulation still maps the entry points the engine calls onto the active
+        // WebGL2 context; init it so glew* tables are populated on this worker.
+        glewExperimental = GL_TRUE;
+        GLenum ge = glewInit();
+        if (ge != GLEW_OK)
+            fprintf(stderr, "[gl] glewInit (webgl worker): %s\n", glewGetErrorString(ge));
+        glGetError();
+        return true;
+    }
+    ~EmWebGLContext() override { if (ctx_ > 0) emscripten_webgl_destroy_context(ctx_); }
+    void  MakeCurrent() override        { if (ctx_ > 0) emscripten_webgl_make_context_current(ctx_); }
+    void  SwapBuffers() override        { emscripten_webgl_commit_frame(); }
+    void  Resize(int w, int h) override { emscripten_set_canvas_element_size("#canvas", w, h); }
+    void *GetProcAddress(const char *n) override { return emscripten_webgl_get_proc_address(n); }
+private:
+    EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx_ = 0;
+};
+} // namespace
+
+GLContext *GLContext::Create(const GLContextDesc &desc) {
+    auto *c = new EmWebGLContext();
+    if (!c->init(desc)) { delete c; return nullptr; }
+    return c;
+}
+
+#else // !__EMSCRIPTEN_PTHREADS__  — SDL2 path (desktop + single-thread/fiber web)
+
 namespace {
 
 class SDLGLContext final : public GLContext {
@@ -70,3 +151,5 @@ GLContext *GLContext::Create(const GLContextDesc &desc) {
     if (!c->init(desc)) { delete c; return nullptr; }
     return c;
 }
+
+#endif // __EMSCRIPTEN_PTHREADS__
