@@ -5,6 +5,7 @@
 // non-essential Windows extras (debug sockets, splash/console, hotkeys) are no-ops.
 #include <win32/win_main.h>
 #include <win32/win_common.h>
+#include <universal/dvar.h>   // _Dvar_RegisterBool (sys_SSE registration)
 #include <win32/win_shared.h>
 #include <win32/win_net.h>
 #include <win32/win_input.h>
@@ -85,7 +86,15 @@ void Sys_DirectXFatalError() { fprintf(stderr, "graphics init failed\n"); _exit(
 
 // ---- System info -----------------------------------------------------------
 const dvar_t *sys_SSE = nullptr;   // CPU-SSE dvar (engine builds with -msse)
-void Sys_Init() { EnsureCritInit(); }
+void Sys_Init() {
+    EnsureCritInit();
+    // Windows registers the system-info dvars in Sys_RegisterInfoDvars (win_main.cpp),
+    // which is not compiled on Linux. The engine dereferences sys_SSE without a null
+    // check (e.g. R_SkinXModelCmd's SSE-skinning gate), so register it here. We always
+    // build with SSE/SSE2, so report it available. Com_InitDvars() has already run.
+    sys_SSE = _Dvar_RegisterBool("sys_SSE", true, 0x40u,
+                                 "Operating system allows Streaming SIMD Extensions");
+}
 void Sys_GetInfo(SysInfo *info) { if (info) memset(info, 0, sizeof(*info)); }
 bool Sys_HasConfigureChecksumChanged(int) { return false; }
 bool Sys_HasInfoChanged() { return false; }
