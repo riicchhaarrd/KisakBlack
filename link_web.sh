@@ -60,6 +60,7 @@ LINKFLAGS="\
   -sALLOW_TABLE_GROWTH=1 \
   -sASSERTIONS=1 \
   -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=262144 \
+  -sEMULATE_FUNCTION_POINTER_CASTS=1 \
   -sINVOKE_RUN=0 \
   -O0 -g"
 # ASYNCIFY: the File System Access reads are async (web_fs.js); the EM_ASYNC_JS
