@@ -262,6 +262,8 @@ public:
                            const RGNDATA *dirty, DWORD /*flags*/) override {
         return device_->Present(src, dst, hwnd, dirty);
     }
+    // Read the displayed frame into a system-memory surface (the screenshot path).
+    HRESULT WINAPI GetFrontBufferData(IDirect3DSurface9 *pDestSurface) override;
     HRESULT WINAPI GetBackBuffer(UINT /*iBackBuffer*/, D3DBACKBUFFER_TYPE,
                                  IDirect3DSurface9 **ppBackBuffer) override {
         if (!ppBackBuffer) return E_INVALIDARG;

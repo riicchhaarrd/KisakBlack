@@ -151,6 +151,9 @@ struct IDirect3DSwapChain9 : public IUnknown {
     virtual HRESULT WINAPI Present(const RECT *pSourceRect, const RECT *pDestRect,
                                    HWND hDestWindowOverride, const RGNDATA *pDirtyRegion,
                                    DWORD dwFlags) = 0;
+    // GetFrontBufferData must stay at vtable index 4 (the slot real D3D9 uses): the
+    // screenshot path calls it through a raw vtable offset, so its position matters.
+    virtual HRESULT WINAPI GetFrontBufferData(IDirect3DSurface9 *pDestSurface) = 0;
     virtual HRESULT WINAPI GetBackBuffer(UINT iBackBuffer, D3DBACKBUFFER_TYPE Type,
                                          IDirect3DSurface9 **ppBackBuffer) = 0;
 };

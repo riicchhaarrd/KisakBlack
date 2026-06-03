@@ -40,6 +40,23 @@ HRESULT WINAPI GLDevice::GetSwapChain(UINT, IDirect3DSwapChain9 **pp) {
     return D3D_OK;
 }
 
+// Read the just-rendered frame (default framebuffer, GL_BACK) into a system-memory
+// surface as BGRA8 — the screenshot path: R_TakeScreenshot creates an offscreen
+// A8R8G8B8 surface, calls this, then D3DXSaveSurfaceToFileA writes a TGA. glReadPixels
+// is bottom-up and so is the TGA we emit, so no vertical flip is needed.
+HRESULT WINAPI GLSwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
+    GLSurface *dst = static_cast<GLSurface *>(pDestSurface);
+    if (!dst) return E_FAIL;
+    UINT w = dst->width(), h = dst->height();
+    std::vector<unsigned char> &shadow = dst->shadow();
+    if (shadow.size() < (size_t)w * h * 4) shadow.assign((size_t)w * h * 4, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_BGRA, GL_UNSIGNED_BYTE, shadow.data());
+    return D3D_OK;
+}
+
 HRESULT WINAPI GLDevice::CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format,
                                             D3DMULTISAMPLE_TYPE, DWORD, BOOL,
                                             IDirect3DSurface9 **ppSurface, HANDLE *) {
