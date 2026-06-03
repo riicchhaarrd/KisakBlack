@@ -44,10 +44,21 @@ EM_ASYNC_JS(double, kbweb_size, (int id), {
     catch (e) { console.error("kbweb_size", id, e); return -1; }
 });
 
-// Read up to `len` bytes at absolute `offset` into wasm memory at `dst`.
-// Returns bytes actually read (>=0), or -1 on error. Streams the slice — only
-// the requested window is materialized in JS, then copied into the heap.
-EM_ASYNC_JS(int, kbweb_pread, (int id, double offset, void *dst, int len), {
+// SYNCHRONOUS fast path: copies the slice iff every covering block is already
+// cached (no Asyncify). Returns bytes copied, or -1 to mean "not cached — use
+// the async path". This is what makes the engine's millions of tiny in-block
+// reads cheap (a plain JS<->wasm call instead of an Asyncify stack suspend).
+EM_JS(int, kbweb_pread_sync, (int id, double offset, void *dst, int len), {
+    if (!Module.KBFS || !Module.KBFS.preadCached) return -1;
+    const u8 = Module.KBFS.preadCached(id, offset, len);
+    if (!u8) return -1;
+    HEAPU8.set(u8, dst);
+    return u8.length;
+});
+
+// Async slice read (cache miss / bulk). Fetches+caches the block(s) in JS, then
+// copies into the heap. Suspends/resumes the wasm via Asyncify.
+EM_ASYNC_JS(int, kbweb_pread_async, (int id, double offset, void *dst, int len), {
     if (!Module.KBFS) return -1;
     try {
         const u8 = await Module.KBFS.pread(id, offset, len); // Uint8Array
@@ -56,6 +67,13 @@ EM_ASYNC_JS(int, kbweb_pread, (int id, double offset, void *dst, int len), {
         return u8.length;
     } catch (e) { console.error("kbweb_pread", id, offset, len, e); return -1; }
 });
+
+// Dispatcher the engine calls: try the sync cache first, fall back to async.
+int kbweb_pread(int id, double offset, void *dst, int len) {
+    int r = kbweb_pread_sync(id, offset, dst, len);
+    if (r >= 0) return r;
+    return kbweb_pread_async(id, offset, dst, len);
+}
 
 // Close an open id (idempotent).
 EM_JS(void, kbweb_close, (int id), {

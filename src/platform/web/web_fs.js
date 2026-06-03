@@ -148,6 +148,30 @@
       return e ? e.file.size : -1;
     },
 
+    // Synchronous fast path: return the slice ONLY if every covering block is
+    // already cached (and it's not a bulk read), else null. The C dispatcher
+    // calls this first (no Asyncify), and only falls back to async pread on a
+    // miss — so the engine's millions of tiny in-block reads cost ~nothing.
+    preadCached(id, offset, len) {
+      const e = this.open_.get(id);
+      if (!e) return null;
+      const size = e.file.size;
+      const end = Math.min(offset + len, size);
+      if (end <= offset) return new Uint8Array(0);
+      const BS = e.blockSize;
+      if (end - offset > BS) return null;                 // bulk -> async
+      const out = new Uint8Array(end - offset);
+      for (let pos = offset; pos < end; ) {
+        const bi = Math.floor(pos / BS), bStart = bi * BS;
+        const blk = e.cache.get(bi);
+        if (!blk) return null;                            // miss -> async
+        const from = pos - bStart, n = Math.min(blk.length - from, end - pos);
+        out.set(blk.subarray(from, from + n), pos - offset);
+        pos += n;
+      }
+      return out;
+    },
+
     // Return a Uint8Array of the [offset, offset+len) slice (clamped to EOF).
     // Small/clustered reads go through the block cache; large bulk reads (a whole
     // fastfile region) bypass it and stream directly (caching wouldn't help).
