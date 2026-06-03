@@ -8,7 +8,30 @@
 #include <cstdio>
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/html5_webgl.h>  // emscripten_webgl_get_current_context()
+extern "C" void glClearDepthf(float);             // GLES/WebGL2 depth-clear
+extern "C" void glDepthRangef(float, float);      // GLES/WebGL2 depth-range
 #endif
+
+// glClearDepth/glDepthRange take doubles and are desktop-GL only. Under WebGL2 the
+// render backend runs on a worker whose GL context is PROXIED to the main thread;
+// only the GLES3 core entry points carry proxy wrappers. The desktop double variants
+// are stray compat aliases with NO proxy wrapper — they dereference the integer
+// context handle and throw "GLctx.<fn> is not a function". Route through the GLES
+// *f names (which ARE proxied) on Emscripten; use the native doubles on desktop.
+static inline void KB_glClearDepth(double z) {
+#if defined(__EMSCRIPTEN__)
+    glClearDepthf((float)z);
+#else
+    glClearDepth(z);
+#endif
+}
+static inline void KB_glDepthRange(double n, double f) {
+#if defined(__EMSCRIPTEN__)
+    glDepthRangef((float)n, (float)f);
+#else
+    glDepthRange(n, f);
+#endif
+}
 
 // Default device caps, shared by GLDevice::GetDeviceCaps and GLD3D9::GetDeviceCaps.
 // These advertise an SM3.0-class GPU, which is what the Black Ops renderer expects.
@@ -100,7 +123,7 @@ HRESULT WINAPI GLDevice::Clear(DWORD /*Count*/, const D3DRECT * /*pRects*/, DWOR
                      ((Color >> 24) & 0xff) * inv);  // A
         mask |= GL_COLOR_BUFFER_BIT;
     }
-    if (Flags & D3DCLEAR_ZBUFFER)  { glClearDepth(Z);          mask |= GL_DEPTH_BUFFER_BIT; }
+    if (Flags & D3DCLEAR_ZBUFFER)  { KB_glClearDepth(Z);       mask |= GL_DEPTH_BUFFER_BIT; }
     if (Flags & D3DCLEAR_STENCIL)  { glClearStencil((GLint)Stencil); mask |= GL_STENCIL_BUFFER_BIT; }
 
     // D3D's Clear ignores scissor (when no rects) and the write masks; GL's does
@@ -121,7 +144,7 @@ HRESULT WINAPI GLDevice::SetViewport(const D3DVIEWPORT9 *vp) {
     // D3D viewport origin is top-left; GL is bottom-left — flip Y.
     glViewport((GLint)vp->X, fbHeight_ - (GLint)(vp->Y + vp->Height),
                (GLsizei)vp->Width, (GLsizei)vp->Height);
-    glDepthRange(vp->MinZ, vp->MaxZ);
+    KB_glDepthRange(vp->MinZ, vp->MaxZ);
     return D3D_OK;
 }
 
