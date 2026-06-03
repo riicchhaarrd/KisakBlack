@@ -91,13 +91,18 @@ HRESULT WINAPI GLDevice::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
     return D3D_OK;
 }
 
-// Blit between two renderable surfaces (resolve / scale).
+// Blit between two renderable surfaces (resolve / scale). Either side may be the
+// back buffer (FBO 0) — e.g. capturing the frame-buffer render target into an image
+// for refraction/feedback — so the back buffer binds framebuffer 0 directly instead
+// of a texture-attachment FBO.
 HRESULT WINAPI GLDevice::StretchRect(IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect,
                                      IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
                                      D3DTEXTUREFILTERTYPE Filter) {
     GLSurface *src = static_cast<GLSurface *>(pSourceSurface);
     GLSurface *dst = static_cast<GLSurface *>(pDestSurface);
-    if (!src || !dst || !src->texName() || !dst->texName()) return E_FAIL;
+    if (!src || !dst) return E_FAIL;
+    if ((!src->isBackbuffer() && !src->texName()) ||
+        (!dst->isBackbuffer() && !dst->texName())) return E_FAIL;
 
     int sx0 = 0, sy0 = 0, sx1 = (int)src->width(), sy1 = (int)src->height();
     int dx0 = 0, dy0 = 0, dx1 = (int)dst->width(), dy1 = (int)dst->height();
@@ -105,15 +110,29 @@ HRESULT WINAPI GLDevice::StretchRect(IDirect3DSurface9 *pSourceSurface, const RE
     if (pDestRect)   { dx0 = pDestRect->left;   dy0 = pDestRect->top;   dx1 = pDestRect->right;   dy1 = pDestRect->bottom; }
 
     GLuint fbos[2] = {0, 0};
-    glGenFramebuffers(2, fbos);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbos[0]);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src->texName(), src->level());
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbos[1]);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst->texName(), dst->level());
+    if (src->isBackbuffer()) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glReadBuffer(GL_BACK);
+    } else {
+        glGenFramebuffers(1, &fbos[0]);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbos[0]);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src->texName(), src->level());
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+    }
+    if (dst->isBackbuffer()) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glDrawBuffer(GL_BACK);
+    } else {
+        glGenFramebuffers(1, &fbos[1]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbos[1]);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst->texName(), dst->level());
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    }
     glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, GL_COLOR_BUFFER_BIT,
                       Filter == D3DTEXF_NONE ? GL_NEAREST : GL_LINEAR);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glDeleteFramebuffers(2, fbos);
+    if (fbos[0]) glDeleteFramebuffers(1, &fbos[0]);
+    if (fbos[1]) glDeleteFramebuffers(1, &fbos[1]);
     return D3D_OK;
 }
