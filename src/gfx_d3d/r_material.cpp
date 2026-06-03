@@ -1877,7 +1877,7 @@ unsigned int __cdecl Material_LoadFile(const char *filename, int *file)
 
 bool __cdecl IsValidMaterialHandle(Material *const handle)
 {
-    if ( ((unsigned __int8)handle & 3) != 0
+    if ( ((unsigned __int8)(uintptr_t)handle & 3) != 0
         && !Assert_MyHandler(
                     "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_material.cpp",
                     2407,

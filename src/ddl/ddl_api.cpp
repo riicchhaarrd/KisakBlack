@@ -235,7 +235,7 @@ int DDL_MoveTo(const ddlState_t *searchState, ddlState_t *resultState, int argNu
 {
     const char *v3; // kr00_4
     int i; // [esp+0h] [ebp-Ch]
-    char *args; // [esp+8h] [ebp-4h]
+    va_list args; // [esp+8h] [ebp-4h]
     va_list va; // [esp+20h] [ebp+14h] BYREF
 
     va_start(va, argNum);

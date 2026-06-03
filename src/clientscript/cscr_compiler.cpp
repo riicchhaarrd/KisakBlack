@@ -3524,7 +3524,7 @@ void __cdecl EmitBoolOrExpression(
     {
         __debugbreak();
     }
-    *(_WORD *)pos = (_WORD)offset;
+    *(_WORD *)pos = (_WORD)(uintptr_t)offset;
 }
 
 void __cdecl EmitCastBool(scriptInstance_t inst, sval_u sourcePos)
@@ -3564,7 +3564,7 @@ void __cdecl EmitBoolAndExpression(
     {
         __debugbreak();
     }
-    *(_WORD *)pos = (_WORD)offset;
+    *(_WORD *)pos = (_WORD)(uintptr_t)offset;
 }
 
 char __cdecl EmitOrEvalBinaryOperatorExpression(
@@ -4080,7 +4080,7 @@ void __cdecl EmitIfStatement(
     {
         __debugbreak();
     }
-    *(_WORD *)pos = (_WORD)offset;
+    *(_WORD *)pos = (_WORD)(uintptr_t)offset;
 }
 
 void __cdecl EmitNOP2(scriptInstance_t inst, bool lastStatement, unsigned int endSourcePos, scr_block_s *block)
@@ -4274,7 +4274,7 @@ void __cdecl EmitIfElseStatement(
     {
         __debugbreak();
     }
-    *(_WORD *)pos1 = (_WORD)offset;
+    *(_WORD *)pos1 = (_WORD)(uintptr_t)offset;
     Scr_TransferBlock(block, elseStatBlock->block);
     EmitStatement(inst, stmt2, lastStatement, endSourcePos, elseStatBlock->block);
     EmitNOP2(inst, lastStatement, endSourcePos, elseStatBlock->block);

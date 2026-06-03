@@ -283,7 +283,7 @@ const char *R_Cinematic_CheckBinkError()
                                                          "%s\n\t%s",
                                                          "!binkError || binkError[0] == '\\0'",
                                                          v1);
-        if ( !(_BYTE)result )
+        if ( !(_BYTE)(uintptr_t)result )
             __debugbreak();
     }
     return result;

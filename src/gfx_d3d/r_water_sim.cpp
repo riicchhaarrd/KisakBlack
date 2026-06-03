@@ -1370,7 +1370,7 @@ void __cdecl R_RenderWaterModel(unsigned int viewIndex)
                 *((unsigned int *)modelSurf + 6) = 289;
                 *((unsigned int *)modelSurf + 7) = data.tileTriCount[lod];
                 surfId = modelSurf - (char *)frontEndDataOut;
-                if ( (((_BYTE)modelSurf - (_BYTE)frontEndDataOut) & 3) != 0
+                if ( (((_BYTE)(uintptr_t)modelSurf - (_BYTE)(uintptr_t)frontEndDataOut) & 3) != 0
                     && !Assert_MyHandler(
                                 "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_water_sim.cpp",
                                 1374,

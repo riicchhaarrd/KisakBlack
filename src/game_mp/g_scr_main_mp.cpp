@@ -1691,7 +1691,7 @@ void GScr_AnimHasNotetrack()
     anim = Scr_GetAnim(0, 0, SCRIPTINSTANCE_SERVER).linkPointer;
     name = (unsigned __int16)Scr_GetConstString(1u, SCRIPTINSTANCE_SERVER);
     Anims = Scr_GetAnims(HIWORD(anim), SCRIPTINSTANCE_SERVER);
-    v1 = XAnimNotetrackExists(Anims, (unsigned __int16)anim, name);
+    v1 = XAnimNotetrackExists(Anims, (unsigned __int16)(uintptr_t)anim, name);
     Scr_AddBool(v1, SCRIPTINSTANCE_SERVER);
 }
 
@@ -1705,7 +1705,7 @@ void GScr_GetNotetrackTimes()
     name.intValue = Scr_GetConstString(1u, SCRIPTINSTANCE_SERVER);
     Scr_MakeArray(SCRIPTINSTANCE_SERVER);
     Anims = Scr_GetAnims(HIWORD(anim), SCRIPTINSTANCE_SERVER);
-    XAnimAddNotetrackTimesToScriptArray(Anims, (unsigned __int16)anim, name.stringValue);
+    XAnimAddNotetrackTimesToScriptArray(Anims, (unsigned __int16)(uintptr_t)anim, name.stringValue);
 }
 
 void GScr_GetBrushModelCenter()

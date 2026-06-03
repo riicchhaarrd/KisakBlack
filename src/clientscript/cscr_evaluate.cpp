@@ -16,7 +16,11 @@
 scrEvaluateGlob_t gScrEvaluateGlob[2];
 
 int g_script_error_level[2];
+#ifdef __EMSCRIPTEN__
+int g_script_error[2][33][64]; // widened jmp_buf backing on wasm (see cscr_evaluate.h)
+#else
 int g_script_error[2][33][16];
+#endif
 
 int __cdecl Scr_CompareCanonicalStrings(unsigned int *arg1, unsigned int *arg2)
 {

@@ -226,7 +226,7 @@ void __cdecl jpeg_memory_src(j_decompress_ptr cinfo, const unsigned __int8 *pubD
     src->pub.init_source = init_source;
     src->pub.fill_input_buffer = 0;
     src->pub.skip_input_data = skip_input_data;
-    src->pub.resync_to_restart = (unsigned __int8(__cdecl *)(struct jpeg_decompress_struct *, int))jpeg_resync_to_restart;
+    src->pub.resync_to_restart = (boolean(__cdecl *)(struct jpeg_decompress_struct *, int))jpeg_resync_to_restart;
     src->pub.term_source = NULLSUBB;
     src->pub.bytes_in_buffer = iBytes;
     src->pub.next_input_byte = pubData;

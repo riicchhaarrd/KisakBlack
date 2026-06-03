@@ -5,7 +5,10 @@
 #include <DemonWare/bdPlatform/bdPlatformLog/bdPlatformLog.h>
 #include <libs/libtomcrypt-1.17/src/headers/tomcrypt_misc.h>
 
-static void des3_done(symmetric_key *skey)
+// tomcrypt_cipher.h forward-declares des3_done() with external linkage; Clang
+// rejects a later `static` redefinition (GCC silently takes external linkage).
+// libtomcrypt's own des.c is not compiled here, so this is the sole definition.
+void des3_done(symmetric_key *skey)
 {
     //LTC_UNUSED_PARAM(skey);
     // 3DES has no dynamic key state to free
@@ -15,7 +18,7 @@ static void des3_done(symmetric_key *skey)
 //{
 //    (char *)"3des",            // name
 //    14,                        // ID (LTC_CIPHER_DES3)
-//    24,                        // min key length (3 × 8 bytes)
+//    24,                        // min key length (3 ï¿½ 8 bytes)
 //    24,                        // max key length
 //    8,                         // block length (DES block size)
 //    0,                         // default rounds (0 = use default)

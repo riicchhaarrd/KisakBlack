@@ -125,6 +125,25 @@ static inline char *_ui64toa(unsigned long long value, char *str, int radix) {
 // buffer (not a typed jmp_buf). Bridge straight to glibc's __sigsetjmp primitive
 // (savemask 0): this both casts the buffer and avoids the glibc setjmp<->_setjmp
 // macro recursion that `#define _setjmp setjmp` would trigger.
+#ifdef __EMSCRIPTEN__
+// musl exposes _setjmp/setjmp/longjmp over `struct __jmp_buf_tag` (no glibc
+// __sigsetjmp/_longjmp). The engine's backing buffer (g_script_error) is enlarged
+// to a full jmp_buf under __EMSCRIPTEN__ (see cscr_evaluate.h), so the cast below
+// is valid. setjmp is itself a macro here, so undef before redefining to avoid
+// recursion. NOTE: Emscripten lowers setjmp/longjmp specially; this is the
+// supported, single-threaded path.
+#include <csetjmp>
+extern "C" int _setjmp(struct __jmp_buf_tag *) __attribute__((__returns_twice__));
+#ifndef _setjmp_compat_done
+#define _setjmp_compat_done
+#undef setjmp
+#undef _setjmp
+#undef longjmp
+#define _setjmp(buf)      _setjmp((struct __jmp_buf_tag *)(buf))
+#define setjmp(buf)       setjmp((struct __jmp_buf_tag *)(buf))
+#define longjmp(buf, val) longjmp((struct __jmp_buf_tag *)(buf), (val))
+#endif
+#else
 #ifndef _setjmp
 #define _setjmp(buf) __sigsetjmp((struct __jmp_buf_tag *)(buf), 0)
 #endif
@@ -132,6 +151,7 @@ static inline char *_ui64toa(unsigned long long value, char *str, int radix) {
 // buffer. _longjmp is glibc's non-sigmask variant (pairs with __sigsetjmp(...,0))
 // and isn't a macro, so this doesn't recurse.
 #define longjmp(buf, val) _longjmp((struct __jmp_buf_tag *)(buf), (val))
+#endif
 
 // Structured Exception Handling -> C++ try/catch. GCC has no SEH; the filter
 // expression is dropped (catch-all). This compiles the crash-guard scaffolding;

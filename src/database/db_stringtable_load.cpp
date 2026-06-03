@@ -4,7 +4,7 @@
 
 void __cdecl Load_ScriptStringCustom(unsigned __int16 *var)
 {
-    *var = (unsigned __int16)varXAssetList->stringList.strings[*var];
+    *var = (unsigned __int16)(uintptr_t)varXAssetList->stringList.strings[*var];
 }
 
 void __cdecl Mark_ScriptStringCustom(unsigned __int16 *var)

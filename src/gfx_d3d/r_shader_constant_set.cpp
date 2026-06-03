@@ -400,7 +400,7 @@ void __cdecl R_ShaderConstantShowDebug(
                 colors[5] = colorOrange;
                 colors[6] = colorRed;
                 colors[7] = colorGreen;
-                colorIndex = (unsigned __int8)scs >> 5;
+                colorIndex = (unsigned __int8)(uintptr_t)scs >> 5;
                 color = colors[colorIndex];
                 R_AddDebugLine(&frontEndDataOut->debugGlobals, objOrigin, textOrigin, color, 0);
                 for ( i = 0; i < 7; ++i )

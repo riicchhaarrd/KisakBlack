@@ -227,6 +227,11 @@ typedef struct _OVERLAPPED {
 } OVERLAPPED, *LPOVERLAPPED;
 struct _EXCEPTION_POINTERS;
 
+// Async-read completion routine type (ReadFileEx's 5th arg). Declared explicitly
+// so a function name binds to it directly — Clang won't implicitly convert a
+// function to the prior `void*` parameter (GCC did).
+typedef void (WINAPI *LPOVERLAPPED_COMPLETION_ROUTINE)(DWORD, DWORD, LPOVERLAPPED);
+
 // ---- Kernel objects: file / thread / event / semaphore / mutex -------------
 // All Win32 kernel handles are unified behind one tagged HANDLE, implemented over
 // POSIX/pthreads in src/platform/sdl/win_kernel.cpp; CloseHandle and
@@ -289,7 +294,7 @@ BOOL   DuplicateHandle(HANDLE srcProc, HANDLE src, HANDLE dstProc, HANDLE *dst,
 #endif
 HANDLE CreateFileA(const char *name, DWORD access, DWORD share, void *sec, DWORD disp, DWORD flags, HANDLE tmpl);
 BOOL   ReadFile(HANDLE h, void *buf, DWORD n, DWORD *numRead, OVERLAPPED *ov);
-BOOL   ReadFileEx(HANDLE h, void *buf, DWORD n, OVERLAPPED *ov, void *completion);
+BOOL   ReadFileEx(HANDLE h, void *buf, DWORD n, OVERLAPPED *ov, LPOVERLAPPED_COMPLETION_ROUTINE completion);
 BOOL   WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, OVERLAPPED *ov);
 DWORD  GetFileSize(HANDLE h, DWORD *high);
 DWORD  SetFilePointer(HANDLE h, LONG dist, LONG *distHigh, DWORD method);
@@ -354,11 +359,15 @@ static inline BOOL      SetThreadPriority(HANDLE, int)                       { r
 // bit would force single-threaded rendering — which is wrong for the GL
 // backend, whose context is bound to the render thread and must receive all
 // draw work via the SMP hand-off rather than inline on the main thread.
-static inline BOOL      GetProcessAffinityMask(HANDLE, DWORD_PTR *p, DWORD_PTR *s) {
+// The engine passes DWORD* (not DWORD_PTR*); on i386 these are identical so it
+// compiled, but on wasm32 DWORD(unsigned int) and DWORD_PTR(uintptr_t) are
+// distinct pointer types and Clang rejects the mismatch. Take DWORD* — the mask
+// is 32-bit and the count is capped at 32, so it fits.
+static inline BOOL      GetProcessAffinityMask(HANDLE, DWORD *p, DWORD *s) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     if (n < 1)  n = 1;
     if (n > 32) n = 32;  // the mask is 32-bit; the engine caps the count anyway
-    DWORD_PTR mask = (n >= 32) ? (DWORD_PTR)~0u : (((DWORD_PTR)1 << n) - 1);
+    DWORD mask = (n >= 32) ? (DWORD)~0u : (((DWORD)1 << n) - 1);
     if (p) *p = mask; if (s) *s = mask; return TRUE;
 }
 static inline HANDLE    GetCurrentThread()                                   { return (HANDLE)(intptr_t)-2; }

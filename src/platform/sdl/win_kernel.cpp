@@ -260,7 +260,7 @@ BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *numRead, OVERLAPPED *) {
 // Overlapped read: honour the OVERLAPPED offset (pread doesn't move the file
 // position). The engine's DB loader does these "async" then waits via an alertable
 // SleepEx — which our SleepEx returns from immediately, so the data is ready by then.
-BOOL ReadFileEx(HANDLE h, void *buf, DWORD n, OVERLAPPED *ov, void *) {
+BOOL ReadFileEx(HANDLE h, void *buf, DWORD n, OVERLAPPED *ov, LPOVERLAPPED_COMPLETION_ROUTINE) {
     if (!valid(h)) return FALSE;
     off_t off = ov ? (off_t)(((unsigned long long)ov->OffsetHigh << 32) | ov->Offset) : 0;
     ssize_t r = ov ? pread(obj(h)->fd, buf, n, off) : read(obj(h)->fd, buf, n);

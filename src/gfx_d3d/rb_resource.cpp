@@ -109,7 +109,7 @@ void __cdecl RB_Resource_Callback(void (__cdecl *callback)())
         __debugbreak();
     }
     action->action = ACTION_CALLBACK;
-    action->resource = callback;
+    action->resource = reinterpret_cast<void *>(callback);
     RB_Resource_Unlock();
 }
 
@@ -125,7 +125,7 @@ void __cdecl RB_Resource_CallbackParam(void (__cdecl *callback)(void *), void *d
         __debugbreak();
     }
     action->action = ACTION_CALLBACKPARAM;
-    action->resource = callback;
+    action->resource = reinterpret_cast<void *>(callback);
     action->data = data;
     RB_Resource_Unlock();
 }
@@ -343,10 +343,10 @@ void RB_Resource_Update_Internal()
                 Z_VirtualFree(action->data, 20);
                 goto LABEL_2;
             case ACTION_CALLBACK:
-                ((void (*)(void))action->resource)();
+                (reinterpret_cast<void (*)(void)>(action->resource))();
                 goto LABEL_2;
             case ACTION_CALLBACKPARAM:
-                ((void (__cdecl *)(void *))action->resource)(action->data);
+                (reinterpret_cast<void (__cdecl *)(void *)>(action->resource))(action->data);
                 goto LABEL_2;
             case ACTION_CREATEVERTEXDECL:
                 dx.device->CreateVertexDeclaration(

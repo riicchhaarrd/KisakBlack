@@ -79,7 +79,7 @@ struct StreamVoice : IXAudio2VoiceCallback // sizeof=0x50
     // The buffer can now be reused or destroyed.
     STDMETHOD_(void, OnBufferEnd) (THIS_ void *pBufferContext)
     {
-        iSND_ReleaseStreamBuffer((unsigned int)pBufferContext >> 8, (unsigned __int8)pBufferContext);
+        iSND_ReleaseStreamBuffer((unsigned int)(uintptr_t)pBufferContext >> 8, (unsigned __int8)(uintptr_t)pBufferContext);
     }
 
     // Called when this voice has just reached the end position of a loop.

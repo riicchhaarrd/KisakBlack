@@ -1,4 +1,7 @@
 #include "r_water.h"
+#ifdef __EMSCRIPTEN__
+#include <xmmintrin.h> // _mm_prefetch (compat macro is suppressed on wasm)
+#endif
 #include "r_material.h"
 #include <universal/q_shared.h>
 #include "r_image_load_common.h"

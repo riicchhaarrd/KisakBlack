@@ -1,6 +1,7 @@
 #pragma once
 #include <universal/assertive.h>
 #include <cstring>
+#include <new> // placement new (Clang requires the header; MSVC/GCC are lax)
 
 #include <Windows.h> // interlockedxchg
 #include <cmath>

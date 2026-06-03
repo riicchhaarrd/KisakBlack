@@ -151,4 +151,12 @@ void __cdecl Scr_FreeDebugExprValue(scriptInstance_t inst, sval_u val);
 
 
 extern int g_script_error_level[2];
+// The inner dimension is a setjmp buffer. On i386 glibc 16 ints (64 B) suffice;
+// Emscripten/musl's jmp_buf is 184 B (__jmp_buf[6]+__fl+__ss[16]) so widen it to
+// 64 ints (256 B) under wasm to avoid setjmp clobbering adjacent slots. Only ever
+// passed to setjmp/longjmp, so the size change is otherwise invisible.
+#ifdef __EMSCRIPTEN__
+extern int g_script_error[2][33][64];
+#else
 extern int g_script_error[2][33][16];
+#endif

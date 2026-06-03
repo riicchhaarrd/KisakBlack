@@ -192,11 +192,16 @@
         #endif
       #endif
 
-  #elif defined(linux) || defined(__linux__)
+  #elif defined(linux) || defined(__linux__) || defined(__EMSCRIPTEN__)
 
+      // Emscripten/wasm32 is not "linux" but Bink is stubbed on the web build, so
+      // treat it as the Linux RAD target purely to satisfy RAD's platform-detect
+      // (no x86/MMX on wasm; the actual Bink codec is never linked here).
       #define __RADLINUX__
+      #ifndef __EMSCRIPTEN__
       #define __RADX86__
       #define __RADMMX__
+      #endif
       #define __RAD32__
       #define __RADLITTLEENDIAN__
       #define RADINLINE inline

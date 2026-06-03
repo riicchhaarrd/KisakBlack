@@ -168,7 +168,7 @@ public:
 class Scr_ScriptWindow : public UI_LinesComponent // sizeof=0x20
 {
 public:
-    void *operator new(unsigned int size)
+    void *operator new(size_t size)
     {
         return Hunk_UserAlloc(g_DebugHunkUser, size, 4, "Scr_ScriptWindow");
     }

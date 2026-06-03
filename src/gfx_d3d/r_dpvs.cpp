@@ -1684,7 +1684,7 @@ int __cdecl R_DrawBModel(
         newPlacement->scale = 1.0f;
         bmodelSurf = (BModelSurface *)&newPlacement[1];
         surfId = (char *)&newPlacement[1] - (char *)frontEndDataOut;
-        if ( (((_BYTE)newPlacement + 32 - (_BYTE)frontEndDataOut) & 3) != 0
+        if ( (((_BYTE)(uintptr_t)newPlacement + 32 - (_BYTE)(uintptr_t)frontEndDataOut) & 3) != 0
             && !Assert_MyHandler("C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_dpvs.cpp", 2154, 0, "%s", "!(surfId & 3)") )
         {
             __debugbreak();

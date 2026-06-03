@@ -1804,7 +1804,7 @@ void __cdecl R_AddDObjSurfacesCamera(
                         skinnedSurf->info.lightingHandle = lightingHandle;
                         skinnedSurf->info.dobjModelIndex = modelIndex;
                         surfId = (_BYTE *)modelSurf - (_BYTE *)frontEndDataOut;
-                        if ( (((_BYTE)modelSurf - (_BYTE)frontEndDataOut) & 3) != 0
+                        if ( (((_BYTE)(uintptr_t)modelSurf - (_BYTE)(uintptr_t)frontEndDataOut) & 3) != 0
                             && !Assert_MyHandler(
                                         "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_scene.cpp",
                                         1588,
@@ -2018,7 +2018,7 @@ LABEL_24:
                     HIDWORD(newDrawSurf.packed) = HIDWORD(newDrawSurf.packed) & 0xFE7FFFFF | 0x1000000;
                 }
                 surfId = (_BYTE *)modelSurf - (_BYTE *)frontEndDataOut;
-                if ( (((_BYTE)modelSurf - (_BYTE)frontEndDataOut) & 3) != 0
+                if ( (((_BYTE)(uintptr_t)modelSurf - (_BYTE)(uintptr_t)frontEndDataOut) & 3) != 0
                     && !Assert_MyHandler(
                                 "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_scene.cpp",
                                 1779,

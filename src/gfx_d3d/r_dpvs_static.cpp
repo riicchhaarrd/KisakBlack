@@ -565,7 +565,7 @@ float (*__cdecl TestOccludersPartial(const float (*bounds)[3], int *numOccluders
     __int64 min_8; // [esp+E88h] [ebp-10h]
     int planeIdx; // [esp+E94h] [ebp-4h]
 
-    if ( ((unsigned __int8)plane & 0xF) != 0
+    if ( ((unsigned __int8)(uintptr_t)plane & 0xF) != 0
         && !Assert_MyHandler(
                     "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_dpvs_static.cpp",
                     288,

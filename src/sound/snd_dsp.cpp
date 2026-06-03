@@ -1,4 +1,7 @@
 #include "snd_dsp.h"
+#ifdef __EMSCRIPTEN__
+#include <xmmintrin.h> // _mm_prefetch (compat macro is suppressed on wasm)
+#endif
 #include <universal/com_math.h>
 #include "snd.h"
 
@@ -28,7 +31,7 @@ void __cdecl SND_DspScale(unsigned int count, float a, float *c)
     {
         __debugbreak();
     }
-    if ( ((unsigned __int8)c & 0xF) != 0
+    if ( ((unsigned __int8)(uintptr_t)c & 0xF) != 0
         && !Assert_MyHandler("C:\\projects_pc\\cod\\codsrc\\src\\sound\\snd_dsp.cpp", 161, 0, "%s", "(((int)c)&15) == 0") )
     {
         __debugbreak();
@@ -101,7 +104,7 @@ void __cdecl SND_DspScale(unsigned int count, float a, const float *b, float *c)
     {
         __debugbreak();
     }
-    if ( ((unsigned __int8)c & 0xF) != 0
+    if ( ((unsigned __int8)(uintptr_t)c & 0xF) != 0
         && !Assert_MyHandler("C:\\projects_pc\\cod\\codsrc\\src\\sound\\snd_dsp.cpp", 201, 0, "%s", "(((int)c)&15) == 0") )
     {
         __debugbreak();

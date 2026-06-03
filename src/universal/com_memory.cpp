@@ -826,7 +826,7 @@ unsigned int __cdecl Hunk_AllocateTempMemoryHigh(int size, const char *name)
         Com_Error(ERR_DROP, "Hunk_AllocateTempMemoryHigh: failed on %i bytes (total %i MB, low %i MB, high %i MB)", size, s_hunkTotal / 0x100000, hunk_low.temp / 0x100000, hunk_high.temp / 0x100000);
     }
     buf = (unsigned int)&s_hunkData[s_hunkTotal - hunk_high.temp];
-    if ( (((_BYTE)s_hunkTotal + (_BYTE)s_hunkData - LOBYTE(hunk_high.temp)) & 0xF) != 0
+    if ( (((_BYTE)s_hunkTotal + (_BYTE)(uintptr_t)s_hunkData - LOBYTE(hunk_high.temp)) & 0xF) != 0
         && !Assert_MyHandler(
                     "C:\\projects_pc\\cod\\codsrc\\src\\universal\\com_memory.cpp",
                     1352,
@@ -997,7 +997,7 @@ unsigned int *__cdecl Hunk_AllocateTempMemory(int size, const char *name)
     }
     hdr = (hunkHeader_t *)buf;
     bufa = buf + 16;
-    if ( ((unsigned __int8)bufa & 0xF) != 0
+    if ( ((unsigned __int8)(uintptr_t)bufa & 0xF) != 0
         && !Assert_MyHandler(
                     "C:\\projects_pc\\cod\\codsrc\\src\\universal\\com_memory.cpp",
                     1550,

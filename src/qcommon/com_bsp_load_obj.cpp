@@ -996,7 +996,7 @@ ComPrimaryLight *Com_LoadPrimaryLights_Version14()
                                                                     1,
                                                                     "%s",
                                                                     "comWorld.primaryLights[0].type == GFX_LIGHT_TYPE_NONE");
-        if ( !(_BYTE)result )
+        if ( !(_BYTE)(uintptr_t)result )
             __debugbreak();
     }
     comWorld.primaryLights[1].type = 1;

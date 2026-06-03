@@ -1294,7 +1294,7 @@ GfxImage *R_InitRawImage()
                                                      1,
                                                      "%s",
                                                      "rgp.rawImage");
-        if ( !(_BYTE)result )
+        if ( !(_BYTE)(uintptr_t)result )
             __debugbreak();
     }
     return result;
@@ -1394,7 +1394,7 @@ GfxImage *R_InitCodeImages()
                                                      1,
                                                      "%s",
                                                      "rgp.r32fWhiteImage");
-        if ( !(_BYTE)result )
+        if ( !(_BYTE)(uintptr_t)result )
             __debugbreak();
     }
     rgp.heatMapImage = 0;

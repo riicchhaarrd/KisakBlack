@@ -14140,12 +14140,12 @@ char __cdecl EvaluateExpression(
         if ( type == 1 )
         {
             i->type = 2;
-            i->data.cmd = rpnFunctions[Expression_GetFunctionForOp(i->data.cmdIdx)];
-            ((void (__cdecl *)(const int, itemDef_s *, OperandStack *))i->data.cmd)(localClientNum, item, &dataStack);
+            i->data.cmd = reinterpret_cast<void *>(rpnFunctions[Expression_GetFunctionForOp(i->data.cmdIdx)]);
+            (reinterpret_cast<void (__cdecl *)(const int, itemDef_s *, OperandStack *)>(i->data.cmd))(localClientNum, item, &dataStack);
             continue;
         }
         if ( type == 2 )
-            ((void(__cdecl *)(const int, itemDef_s *, OperandStack *))i->data.cmd)(localClientNum, item, &dataStack);
+            (reinterpret_cast<void(__cdecl *)(const int, itemDef_s *, OperandStack *)>(i->data.cmd))(localClientNum, item, &dataStack);
     }
 
 

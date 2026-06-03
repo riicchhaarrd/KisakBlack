@@ -2211,7 +2211,7 @@ void __cdecl MultiplePointDistSqFromBounds(
     {
         __debugbreak();
     }
-    if ( ((unsigned __int8)mip0mins & 0xF) != 0
+    if ( ((unsigned __int8)(uintptr_t)mip0mins & 0xF) != 0
         && !Assert_MyHandler(
                     "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_stream.cpp",
                     3469,
@@ -2221,7 +2221,7 @@ void __cdecl MultiplePointDistSqFromBounds(
     {
         __debugbreak();
     }
-    if ( ((unsigned __int8)mip0maxs & 0xF) != 0
+    if ( ((unsigned __int8)(uintptr_t)mip0maxs & 0xF) != 0
         && !Assert_MyHandler(
                     "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_stream.cpp",
                     3470,
