@@ -84,6 +84,11 @@ ddlMemberDef_t *__cdecl DDL_Lookup_FindMemberDef(const char *memberName, ddlStru
     int high; // [esp+110h] [ebp-8h]
     int mid; // [esp+114h] [ebp-4h]
 
+    // Defensive: a ddlState_t for a DDL that was never loaded (e.g. an online stats
+    // DDL skipped on the web build) carries a null struct def. Walking it would deref
+    // null at memberCount/members[] (memory access out of bounds). Report no member.
+    if ( !structDef )
+        return 0;
     low = 0;
     high = structDef->memberCount - 1;
     I_strncpyz(lowercaseMemberName, memberName, 256);

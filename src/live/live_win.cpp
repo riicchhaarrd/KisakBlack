@@ -373,6 +373,10 @@ const char *dwUsers[5] =
     "dw_user4",
 };
 
+#if defined(__EMSCRIPTEN__)
+void __cdecl LiveStats_Init();  // live_stats.cpp — stats DDL + rank/unlockable tables
+#endif
+
 void __cdecl Live_InitPlatform()
 {
     int i; // [esp+0h] [ebp-8h]
@@ -432,11 +436,17 @@ void __cdecl Live_InitPlatform()
         g_shouldWeHost = 1;
 #if defined(__EMSCRIPTEN__)
         // The Steam/Live persistent-data backends (leaderboards, cloud storage,
-        // friends) are online-only and unreachable in the web build. They also init
-        // huge decompiled structs (LbGlob etc.) via raw hardcoded byte offsets that
-        // assume the original 32-bit MSVC layout; LB_Init()'s feederText[...] writes
-        // trap on wasm32 (memory access out of bounds). Skip them — nothing on the
-        // render/menu path needs them, and g_lbGlob et al. stay safely zero-inited.
+        // friends) are online-only. LB_Init() in particular seeds huge decompiled
+        // structs (LbGlob, 0x3D528) via raw hardcoded byte offsets baked from the
+        // 32-bit MSVC layout and traps on wasm32 — so skip LB_Init/LiveStorage_Init/
+        // Friends_Init. BUT the menus query player stats (LiveStats_GetIntPlayerStat)
+        // and rely on the stats DDL + rank-XP/unlockable/default-class tables that
+        // LiveStorage_Init normally sets up via LiveStats_Init(). LiveStats_Init() is
+        // just DDL_LoadAsset + DDL_Reset/MoveTo + table builds (no fragile offset
+        // writes), so run it directly; without it g_statsRootState stays null and the
+        // first menu stat lookup walks a null ddlStructDef_t (memory access out of
+        // bounds in DDL_Lookup_FindMemberDef).
+        LiveStats_Init();
 #else
         LB_Init();
         LiveStorage_Init();
