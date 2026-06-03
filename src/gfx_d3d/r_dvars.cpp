@@ -949,8 +949,16 @@ void __cdecl R_RegisterDvars()
                                             1.0,
                                             0x80u,
                                             "Scale 3D viewports by this fraction.    Use this to see if framerate is pixel shader bound.");
+#if defined(__EMSCRIPTEN__)
+    // Single-threaded web build (M3): keep the renderer front/back ends on the
+    // main thread. (sys_smp_allowed is also forced 0 in common.cpp, which already
+    // routes R_HandOffToBackend to the inline path; these match it for clarity.)
+    r_smp_backend = _Dvar_RegisterBool("r_smp_backend", 0, 0, "Process renderer back end in a separate thread");
+    r_smp_worker = _Dvar_RegisterBool("r_smp_worker", 0, 0, "Process renderer front end in a separate thread");
+#else
     r_smp_backend = _Dvar_RegisterBool("r_smp_backend", 1, 0, "Process renderer back end in a separate thread");
     r_smp_worker = _Dvar_RegisterBool("r_smp_worker", 1, 0, "Process renderer front end in a separate thread");
+#endif
     value = Sys_GetDefaultWorkerThreadsCount();
     r_smp_worker_threads = _Dvar_RegisterInt("r_smp_worker_threads", value, 2, 8, 0, "Number of worker threads");
     for ( i = 0; i < r_smp_worker_threads->current.integer; ++i )

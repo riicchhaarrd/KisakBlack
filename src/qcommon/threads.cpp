@@ -231,12 +231,32 @@ void __cdecl Sys_CreateEvent(bool manualReset, bool initialState, void **event)
 
 void __cdecl Sys_CreateThread(void (__cdecl *function)(unsigned int), unsigned int threadContext)
 {
-    unsigned int LastError; // eax
-
     iassert(threadFunc[threadContext] == NULL);
     iassert(threadContext < THREAD_CONTEXT_COUNT);
 
     threadFunc[threadContext] = function;
+
+#if defined(__EMSCRIPTEN__)
+    // SINGLE-THREADED WEB BUILD (milestone 3 decision: SMP-off inline seam).
+    // wasm32 without -pthread has no Web Workers, and the engine already supports
+    // running with sys_smp_allowed=0 (CpuCount==1 path): the render backend runs
+    // inline on the main thread via R_HandOffToBackend()->R_SyncRenderThread, and
+    // the SMP-gated waits (R_SyncRenderThread, Sys_WaitRenderer) are skipped.
+    //
+    // So: do NOT spawn an OS thread. Record a non-null sentinel handle (so the
+    // Com_Error(ERR_FATAL,"Failed to create render thread") guard and the
+    // threadHandle null-checks pass) and leave threadId[ctx] == 0. Because
+    // Sys_Is{Render,Database,...}Thread() compare the *current* thread id against
+    // threadId[ctx] and the current (main) thread's id is non-zero, those all
+    // return false — i.e. the main thread is never mistaken for a worker, and the
+    // engine takes its inline path everywhere.
+    static int s_webThreadSentinel; // address used purely as a non-null handle
+    threadHandle[threadContext] = (HANDLE)&s_webThreadSentinel;
+    threadId[threadContext] = 0;
+    return;
+#else
+    unsigned int LastError; // eax
+
     threadHandle[threadContext] = CreateThread(
         0,
         0,
@@ -253,6 +273,7 @@ void __cdecl Sys_CreateThread(void (__cdecl *function)(unsigned int), unsigned i
         Com_Printf(1, "error %d while creating thread %d\n", LastError, threadContext);
     }
     SetThreadName(threadId[threadContext], s_threadNames[threadContext]);
+#endif
 }
 
 void __cdecl SetThreadName(unsigned int dwThreadID, const char *szThreadName)
@@ -444,6 +465,13 @@ void __cdecl Sys_InitWorkerThreadContext()
 
 void __cdecl Sys_ResumeThread(unsigned int threadContext)
 {
+#if defined(__EMSCRIPTEN__)
+    // Single-threaded web build: Sys_CreateThread installed a sentinel handle and
+    // spawned no OS thread, so there is nothing to resume. (Resuming would deref
+    // the sentinel as a KObject.) The work runs inline on the main thread.
+    (void)threadContext;
+    return;
+#else
     if ( !threadHandle[threadContext]
         && !Assert_MyHandler(
                     "C:\\projects_pc\\cod\\codsrc\\src\\qcommon\\threads.cpp",
@@ -455,6 +483,7 @@ void __cdecl Sys_ResumeThread(unsigned int threadContext)
         __debugbreak();
     }
     ResumeThread(threadHandle[threadContext]);
+#endif
 }
 
 int __cdecl Sys_RendererSleep()
