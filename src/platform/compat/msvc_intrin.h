@@ -41,9 +41,16 @@ static inline unsigned char _BitScanReverse(T *Index, unsigned long Mask) {
 // _mm_prefetch(addr, hint): SSE prefetch. GCC's <xmmintrin.h> version takes an
 // enum _mm_hint (no implicit int->enum in C++), but the decompiled code passes a
 // bare int. Map straight to __builtin_prefetch (the locality arg is advisory).
+//
+// On Emscripten do NOT define this macro: the WASM <compat/xmmintrin.h> shim
+// declares `_mm_prefetch(const void*, int)` as a real always-inline function that
+// already takes a bare int (and is a no-op on WASM). A macro here would mangle that
+// function's definition (-> "incomplete type 'void'") and break every SSE TU.
+#if !defined(__EMSCRIPTEN__)
 #include <xmmintrin.h>
 #ifndef _mm_prefetch
 #define _mm_prefetch(addr, hint) __builtin_prefetch((const void *)(addr))
+#endif
 #endif
 
 #endif // !_MSC_VER

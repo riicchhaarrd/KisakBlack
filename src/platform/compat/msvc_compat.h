@@ -29,8 +29,15 @@
 #include <csetjmp>
 // NOT <strings.h>: it declares index()/rindex(), which collide with the engine's
 // `index` variables. Declare the two case-insensitive compares we need directly.
+// On Emscripten/musl these are declared in <strings.h> WITHOUT noexcept, so a
+// noexcept redeclaration is an error there; drop the spec under __EMSCRIPTEN__.
+#if defined(__EMSCRIPTEN__)
+extern "C" int strcasecmp(const char *, const char *);
+extern "C" int strncasecmp(const char *, const char *, size_t);
+#else
 extern "C" int strcasecmp(const char *, const char *) noexcept;
 extern "C" int strncasecmp(const char *, const char *, size_t) noexcept;
+#endif
 
 #ifndef __debugbreak
 #define __debugbreak() __builtin_trap()
@@ -50,7 +57,13 @@ extern "C" int strncasecmp(const char *, const char *, size_t) noexcept;
 // Wide secure printf variants -> the C wide-char equivalents (CubeMapGen/ErrorMsg).
 #include <cwchar>
 #include <cstdarg>
-extern "C" { void exit(int) noexcept; void *realloc(void *, size_t) noexcept; }  // declared directly (not <cstdlib>: random() clash)
+// declared directly (not <cstdlib>: random() clash). Emscripten/musl declares these
+// without an exception-spec, so the noexcept redeclaration is an error there.
+#if defined(__EMSCRIPTEN__)
+extern "C" { _Noreturn void exit(int); void *realloc(void *, size_t); }
+#else
+extern "C" { void exit(int) noexcept; void *realloc(void *, size_t) noexcept; }
+#endif
 static inline void *_aligned_realloc(void *p, size_t size, size_t /*align*/) { return realloc(p, size); }
 static inline int _vsnwprintf_s(wchar_t *buf, size_t bufsize, size_t /*count*/, const wchar_t *fmt, va_list args) {
     return bufsize ? vswprintf(buf, bufsize, fmt, args) : 0;
@@ -67,10 +80,17 @@ static inline int _snwprintf_s(wchar_t *buf, size_t bufsize, size_t /*count*/, c
 // directly (NOT via <cstdlib>) so we don't pull in POSIX random()/srandom(), which
 // collide with the engine's own random() declaration (only scope-renamed in a few
 // files). These libc symbols are otherwise standard.
+#if defined(__EMSCRIPTEN__)  // musl declares these without an exception-spec
+extern "C" long long          atoll(const char *);
+extern "C" long long          strtoll(const char *, char **, int);
+extern "C" unsigned long long strtoull(const char *, char **, int);
+extern "C" int                putenv(char *);
+#else
 extern "C" long long          atoll(const char *) noexcept;
 extern "C" long long          strtoll(const char *, char **, int) noexcept;
 extern "C" unsigned long long strtoull(const char *, char **, int) noexcept;
 extern "C" int                putenv(char *) noexcept;
+#endif
 static inline long long          _atoi64(const char *s)                    { return atoll(s); }
 static inline long long          _strtoi64(const char *s, char **e, int b)  { return strtoll(s, e, b); }
 static inline unsigned long long _strtoui64(const char *s, char **e, int b) { return strtoull(s, e, b); }
