@@ -74,6 +74,17 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
         case D3DRS_ALPHABLENDENABLE:
             if (Value) glEnable(GL_BLEND); else glDisable(GL_BLEND);
             break;
+        // Alpha test — foliage/grass/fences use an alpha-cutout; without it their
+        // transparent (alpha-0) texels render opaque (black fringes). GL_ALPHA_TEST is
+        // a fixed post-shader stage in the compatibility profile and works with our
+        // GLSL output (it tests gl_FragColor.a against the reference).
+        case D3DRS_ALPHATESTENABLE:
+            if (Value) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
+            break;
+        case D3DRS_ALPHAFUNC:
+            alphaFunc_ = Value; glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f); break;
+        case D3DRS_ALPHAREF:
+            alphaRef_  = Value; glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f); break;
         case D3DRS_SRCBLEND:  blendSrc_  = Value; glBlendFunc(glBlend(blendSrc_), glBlend(blendDest_)); break;
         case D3DRS_DESTBLEND: blendDest_ = Value; glBlendFunc(glBlend(blendSrc_), glBlend(blendDest_)); break;
         case D3DRS_BLENDOP:   glBlendEquation(glBlendEq(Value)); break;

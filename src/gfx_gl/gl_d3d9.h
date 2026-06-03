@@ -158,6 +158,10 @@ private:
     DWORD blendSrc_  = D3DBLEND_ONE;
     DWORD blendDest_ = D3DBLEND_ZERO;
 
+    // Alpha test (func + ref are set separately but applied together via glAlphaFunc).
+    DWORD alphaFunc_ = D3DCMP_ALWAYS;
+    DWORD alphaRef_  = 0;
+
     // Programmable shader path: bound shaders, c# constant registers, and a cache
     // of linked (vs,ps) programs keyed by (vsShaderId<<32 | psShaderId).
     GLVertexShader *vs_ = nullptr;
