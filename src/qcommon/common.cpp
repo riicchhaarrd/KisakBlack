@@ -2781,6 +2781,9 @@ void __cdecl Com_Frame()
 {
     void *Value; // eax
 
+#if defined(__EMSCRIPTEN__)
+    extern unsigned long g_kbComFrames; ++g_kbComFrames;   // main-thread liveness (freeze diag)
+#endif
     proftimer_physics_frame_advance.reset();
     sv_flame_proftimer.reset();
     cl_flame_proftimer.reset();

@@ -1425,6 +1425,9 @@ void __cdecl SV_PreFrame()
 
 int __cdecl SV_Frame(int controllerIndex, int msec)
 {
+#if defined(__EMSCRIPTEN__)
+    extern unsigned long g_kbSvFrames; ++g_kbSvFrames;   // server/physics liveness (freeze diag)
+#endif
     Hunk_CheckTempMemoryClear();
     Hunk_CheckTempMemoryHighClear();
     if ( g_shouldKillLocalServer )

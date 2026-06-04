@@ -30,6 +30,8 @@ unsigned long g_kbDraws       = 0;   // GLDevice::Draw(Indexed)Primitive calls (
 unsigned long g_kbTexUploads  = 0;   // glTex(Compressed)Image2D calls
 unsigned long g_kbTexBytes    = 0;   // bytes of texture data uploaded
 unsigned long g_kbBufBytes    = 0;   // bytes of vertex/index buffer data uploaded
+unsigned long g_kbComFrames   = 0;   // Com_Frame() entries (game/main-thread liveness)
+unsigned long g_kbSvFrames    = 0;   // SV_Frame() entries (server/physics liveness)
 
 #if defined(__EMSCRIPTEN__)
 // Called every 500ms from the DOM-thread heartbeat (linux_main.cpp). Reads the render
@@ -37,8 +39,8 @@ unsigned long g_kbBufBytes    = 0;   // bytes of vertex/index buffer data upload
 // climbing pinpoints WHICH loop the render thread is spinning in (occlusion / fence /
 // draws) or, if all frozen, that it is stuck OUTSIDE the GL layer (physics/SMP/condvar).
 extern "C" EMSCRIPTEN_KEEPALIVE void kb_heartbeat_dump() {
-    fprintf(stderr, "[hb] occl=%lu event=%lu links=%lu draws=%lu\n",
-            g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks, g_kbDraws);
+    fprintf(stderr, "[hb] com=%lu sv=%lu | draws=%lu occl=%lu event=%lu links=%lu\n",
+            g_kbComFrames, g_kbSvFrames, g_kbDraws, g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks);
 }
 #endif
 
