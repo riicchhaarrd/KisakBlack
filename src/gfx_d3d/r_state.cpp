@@ -847,6 +847,15 @@ void __cdecl R_ChangeDepthRange(GfxCmdBufState *state, GfxDepthRangeType depthRa
         v2 = 1.0f;
     state->depthRangeFar = v2;
     device = state->prim.device;
+#if defined(__EMSCRIPTEN__)
+    if (!device) {
+        static int kbDR = 0;
+        if (kbDR++ < 8)
+            fprintf(stderr, "[R_ChangeDepthRange] device NULL: state=%p prim.device=%p dx.device=%p dx.d3d9=%p gfxTmpl.device=%p\n",
+                    (void *)state, (void *)device, (void *)dx.device, (void *)dx.d3d9, (void *)gfxCmdBufState.prim.device);
+        return;   // skip the null-device viewport call so we survive to read the log
+    }
+#endif
     if ( !device && !Assert_MyHandler("C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_state.cpp", 1516, 0, "%s", "device") )
         __debugbreak();
     R_HW_SetViewport(device, &state->viewport, state->depthRangeNear, state->depthRangeFar);
