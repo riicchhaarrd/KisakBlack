@@ -353,6 +353,17 @@ bool __cdecl R_HW_IsFencePending(IDirect3DQuery9 *const *fence)
     HRESULT hr; // [esp+4h] [ebp-Ch]
     unsigned int data; // [esp+8h] [ebp-8h] BYREF
 
+#if defined(__EMSCRIPTEN__)
+    // GPU-frame-pacing fence: report "never pending" on web. The backend otherwise spins
+    // `while (R_HW_IsFencePending())` after Sys_RenderCompleted, polling a swap fence that
+    // never reliably clears on the deferred/proxied GL context -> it never returns to render
+    // the next frame and the frontend deadlocks waiting on the next completion (the spawn
+    // freeze). The fence only throttles the CPU ahead of the GPU; on web commit_frame already
+    // throttles the backend and the proxied command queue keeps GL ops ordered, so skipping
+    // the wait is safe. Return early BEFORE the per-poll device-lock churn this loop caused.
+    (void)fence; (void)hr; (void)data;
+    return false;
+#endif
     if ( *fence )
     {
         //hr = (*(int (__stdcall **)(unsigned int, unsigned int *, int, int))(**(unsigned int **)fence + 28))(*fence, &data, 4, 1);
@@ -673,4 +684,3 @@ void __cdecl CL_CompositeClearLayer(CompositeEmblemLayer *layer)
     layer->colorIdx = 0;
     layer->icon = -1;
 }
-
