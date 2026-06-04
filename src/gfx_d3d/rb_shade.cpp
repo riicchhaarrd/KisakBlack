@@ -5,6 +5,13 @@
 #include "r_state.h"
 #include "r_shade.h"
 
+#if defined(__EMSCRIPTEN__)
+#include <cstdint>
+#include <cstdio>
+// Total wasm linear memory in bytes (pages * 64KB); a valid pointer is below this.
+static inline uintptr_t KB_WasmMemSize() { return (uintptr_t)__builtin_wasm_memory_size(0) << 16; }
+#endif
+
 void __cdecl RB_ClearPixelShader()
 {
     if ( gfxCmdBufState.pixelShader )
@@ -104,6 +111,23 @@ void __cdecl R_SetVertexDecl(GfxCmdBufPrimState *primState, const MaterialVertex
     int hr; // [esp+8h] [ebp-Ch]
     IDirect3DDevice9 *device; // [esp+10h] [ebp-4h]
 
+#if defined(__EMSCRIPTEN__)
+    // DIAGNOSTIC: static-model passes hit here with a wild pass->vertexDecl (OOB). Log the
+    // actual pointer/index and skip the draw instead of trapping, so the frame still renders
+    // and we can see what value the fastfile fixup produced.
+    if ( vertexDecl ) {
+        unsigned int vdt = primState->vertDeclType;
+        uintptr_t vd = (uintptr_t)vertexDecl;
+        if ( vdt >= 18u || vd < 0x400 || vd >= KB_WasmMemSize() ) {
+            static int kbLog = 0;
+            if ( kbLog++ < 24 )
+                fprintf(stderr, "[R_SetVertexDecl] bad pass: vertexDecl=0x%x vertDeclType=%u mem=0x%x\n",
+                        (unsigned)vd, vdt, (unsigned)KB_WasmMemSize());
+            primState->vertexDecl = 0;
+            return;
+        }
+    }
+#endif
     if ( vertexDecl )
         v3 = vertexDecl->routing.decl[primState->vertDeclType];
     else
