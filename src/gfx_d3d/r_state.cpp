@@ -847,15 +847,6 @@ void __cdecl R_ChangeDepthRange(GfxCmdBufState *state, GfxDepthRangeType depthRa
         v2 = 1.0f;
     state->depthRangeFar = v2;
     device = state->prim.device;
-#if defined(__EMSCRIPTEN__)
-    if (!device) {
-        static int kbDR = 0;
-        if (kbDR++ < 8)
-            fprintf(stderr, "[R_ChangeDepthRange] device NULL: state=%p prim.device=%p dx.device=%p dx.d3d9=%p gfxTmpl.device=%p\n",
-                    (void *)state, (void *)device, (void *)dx.device, (void *)dx.d3d9, (void *)gfxCmdBufState.prim.device);
-        return;   // skip the null-device viewport call so we survive to read the log
-    }
-#endif
     if ( !device && !Assert_MyHandler("C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_state.cpp", 1516, 0, "%s", "device") )
         __debugbreak();
     R_HW_SetViewport(device, &state->viewport, state->depthRangeNear, state->depthRangeFar);
@@ -3303,21 +3294,10 @@ void R_DrawCall(
     R_BeginView(source, &viewInfo->sceneDef, viewParms);
 
     R_InitLocalCmdBufState(&cmdBuf);
-    // R_InitLocalCmdBufState copies the global gfxCmdBufState template wholesale (it begins
-    // at refSamplerState, which is offset 0), clobbering prim.device with the template's
-    // value — null/stale on web. Unlike R_InitCmdBufState it does not save/restore the
-    // device, so set this command buffer's authoritative device (from R_InitContext ==
-    // dx.device) AFTER the template copy, or R_ChangeDepthRange derefs a null device.
-    cmdBuf.prim.device = cmdBufEA->device;
-#if defined(__EMSCRIPTEN__)
-    {
-        static int kbDevLog = 0;
-        if (cmdBuf.prim.device == 0 && kbDevLog++ < 8)
-            fprintf(stderr, "[R_DrawCall] device NULL: cmdBufEA=%p cmdBufEA->device=%p dx.device=%p dx.d3d9=%p gfxTmpl.device=%p\n",
-                    (void *)cmdBufEA, (void *)cmdBufEA->device, (void *)dx.device,
-                    (void *)dx.d3d9, (void *)gfxCmdBufState.prim.device);
-    }
-#endif
+    // R_InitLocalCmdBufState copies the gfxCmdBufState template, which sets prim.device from
+    // the template. On web cmdBufEA->device is a stale null (the command buffer was built
+    // before dx.device went live), so set the authoritative live GL device after the copy.
+    cmdBuf.prim.device = dx.device;
 
     R_Set_Texture_SeeThruDecal(source);
     R_SetCodeImageTexture(source, 0x27u, gfxRenderTargets[R_RENDERTARGET_UI3D].image);
@@ -3333,7 +3313,7 @@ void R_DrawCall(
         prepassContext.state = &prepassCmdBuf;
 
         R_InitLocalCmdBufState(&prepassCmdBuf);
-        prepassCmdBuf.prim.device = prepassCmdBufEA->device;  // template copy clobbers it; set real device
+        prepassCmdBuf.prim.device = dx.device;  // template copy + stale cmdBufEA->device; use live device
 
         callback(userData, context, prepassContext);
         memcpy(&gfxCmdBufState, &prepassCmdBuf, sizeof(gfxCmdBufState));
