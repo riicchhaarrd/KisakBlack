@@ -62,32 +62,20 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
         ++g_kbOcclGetData;
         GLint available = 0;
         glGetQueryObjectiv(glQuery_, GL_QUERY_RESULT_AVAILABLE, &available);
-#if defined(__EMSCRIPTEN__)
-        // Proxied web context: glGetQueryObjectuiv(GL_QUERY_RESULT) when the result is
-        // not yet ready forces a full command-queue flush + GPU wait (~500 ms) — the
-        // in-game occlusion stall. But occlusion culling is load-bearing: defaulting
-        // "visible" while waiting floods the renderer and freezes on spawn. So read the
-        // result (which BLOCKS) ONLY on the first-ever read of this query, where there is
-        // no cached value — that keeps spawn culling accurate without flooding. In steady
-        // state `available` is already true (we read last frame's finished query) so the
-        // read does not block; when it is not yet available we reuse the last real result
-        // (1-frame latency) instead of stalling. Never default-open, never force a flush.
-        if (available || !haveResult_) {
-            GLuint samples = 0;
-            glGetQueryObjectuiv(glQuery_, GL_QUERY_RESULT, &samples);
-            // GL_ANY_SAMPLES_PASSED yields 0/1; expand to a large "visible" count.
-            lastResult_ = samples ? 0xFFFFu : 0u;
-            haveResult_ = true;
-        }
-        if (pData) *static_cast<DWORD *>(pData) = lastResult_;
-        return S_OK;
-#else
-        if (!available && !flush) return S_FALSE;       // not ready yet
+        // Defer when the engine is just polling (no FLUSH): never block here, or a wave of
+        // newly-visible objects (look around / spawn) each forces a proxied GPU flush and
+        // the scene freezes. Only the explicit-FLUSH path reads the result (may block).
+        if (!available && !flush) return S_FALSE;
         GLuint samples = 0;
         glGetQueryObjectuiv(glQuery_, GL_QUERY_RESULT, &samples);  // blocks if flush
+#if defined(__EMSCRIPTEN__)
+        // GL_ANY_SAMPLES_PASSED yields 0/1; expand to a large "visible" count.
+        samples = samples ? 0xFFFFu : 0u;
+        lastResult_ = samples;
+        haveResult_ = true;
+#endif
         if (pData) *static_cast<DWORD *>(pData) = samples;
         return S_OK;
-#endif
     }
 
     if (type_ == D3DQUERYTYPE_EVENT) {
