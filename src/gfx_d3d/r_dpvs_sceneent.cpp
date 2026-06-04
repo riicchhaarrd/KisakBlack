@@ -73,7 +73,7 @@ void    R_AddCellSceneEntSurfacesInFrustumCmd(GfxWorldDpvsPlanes *data)
     {
         __debugbreak();
     }
-    viewIndex = scene.dynSModelVisBitsCamera[(unsigned int)entInfo - 4];
+    viewIndex = ((unsigned int)(uintptr_t)scene.dpvs.entInfo[(unsigned int)entInfo]);
     cellIndex = (unsigned int)scene.dpvs.sceneXModelIndex;
     planesEA = (const DpvsPlane *)scene.dpvs.sceneDObjIndex;
     planeCount = LOWORD(worldDpvsPlanes->nodes);
@@ -324,7 +324,7 @@ void R_AddCellSceneEntSurfacesInFrustumCmd(GfxWorldDpvsPlanes *data)
     {
         __debugbreak();
     }
-    entInfo = (GfxEntCellRefInfo *)scene.dynSModelVisBitsCamera[localClientNum - 4];
+    entInfo = (GfxEntCellRefInfo *)scene.dpvs.entInfo[localClientNum];
     sceneXModelIndex = scene.dpvs.sceneXModelIndex;
     sceneDObjIndex = scene.dpvs.sceneDObjIndex;
     viewIndex = dpvsCell->viewIndex;
