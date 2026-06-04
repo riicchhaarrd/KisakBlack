@@ -70,7 +70,7 @@ LINKFLAGS="\
   -sASSERTIONS=1 \
   -sEMULATE_FUNCTION_POINTER_CASTS=1 \
   -sINVOKE_RUN=0 \
-  -O0 -g"
+  -O2 --profiling-funcs"
 # WHY these:
 #   PROXY_TO_PTHREAD: main() (the game loop) runs on a worker so it can block on the
 #     DX-device-ownership lock / Win32 events that RB_RenderThread (another worker)

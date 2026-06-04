@@ -48,14 +48,14 @@ INCS="-I. -Isrc -Isrc/platform/winsdk -Isrc/libs -Isrc/libs/libtomcrypt-1.17/src
 # --- C++ flags --- (build_web.sh CXXFLAGS + -pthread)
 # -pthread makes the TU emit thread-local / atomic codegen and defines
 # __EMSCRIPTEN_PTHREADS__ so the engine selects the real-thread path.
-CXXFLAGS="-std=c++20 -c -g -w -fpermissive -Wno-narrowing \
+CXXFLAGS="-std=c++20 -c -w -fpermissive -Wno-narrowing \
   -pthread \
   -msimd128 -msse -msse2 \
   -include src/platform/compat/msvc_compat.h -DKISAK_MP -DKISAK_WEB"
 
 # Emscripten settings that affect *compilation* (SDL2 + GLES3 headers + pthreads).
 EMFLAGS="-pthread -sUSE_SDL=2 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
-  -sALLOW_MEMORY_GROWTH=1 -O0"
+  -sALLOW_MEMORY_GROWTH=1 -O2"
 
 # --- C flags (bundled zlib + jpeg), mirroring build_web.sh + -pthread ---
 CFLAGS="-std=gnu11 -w -fpermissive -c -pthread -DKISAK_WEB \
