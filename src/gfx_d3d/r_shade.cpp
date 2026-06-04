@@ -897,6 +897,17 @@ void __cdecl R_UpdateVertexDecl(GfxCmdBufState *state)
     const MaterialVertexShader *vertexShader; // [esp+18h] [ebp-4h]
 
     pass = state->pass;
+#if defined(__EMSCRIPTEN__)
+    // Some web static-model materials have a corrupt techset: pass->vertexDecl holds a
+    // wild value (e.g. the ASCII "emsc"...) instead of a pointer. R_SetVertexDecl logs +
+    // skips it, but this function then derefs pass->vertexDecl->routing.decl too. Bail out
+    // for an out-of-range vertexDecl so the rest of the scene still renders.
+    {
+        unsigned long kbVd = (unsigned long)pass->vertexDecl;
+        if ( kbVd < 0x400u || kbVd >= ((unsigned long)__builtin_wasm_memory_size(0) << 16) )
+            return;
+    }
+#endif
     if ( !pass->vertexDecl
         && !Assert_MyHandler("C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_shade.cpp", 1299, 0, "%s", "pass->vertexDecl") )
     {
