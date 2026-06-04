@@ -1923,11 +1923,13 @@ void __cdecl R_StreamUpdateDynamicModels(
             R_StreamUpdateForBModel(
                 viewPos,
                 frame,
-                *(unsigned __int16 *)&scene.glassBrushVisData[40 * entIndexd - 40924],
-                *(const GfxBrushModel **)&scene.glassBrushVisData[40 * entIndexd - 40932],
-                (const float *)&scene.glassBrushVisData[40 * entIndexd - 40944],
+                // [40*entIndexd - K] aliases scene.glassBrush[entIndexd] fields (info/bmodel/
+                // placement/altStreamingMaterial). Integer math dodges the UB out-of-bounds GEP.
+                *(unsigned __int16 *)((uintptr_t)scene.glassBrushVisData + (40 * entIndexd - 40924)),
+                *(const GfxBrushModel **)((uintptr_t)scene.glassBrushVisData + (40 * entIndexd - 40932)),
+                (const float *)((uintptr_t)scene.glassBrushVisData + (40 * entIndexd - 40944)),
                 maxDistSq,
-                *(Material **)&scene.glassBrushVisData[40 * entIndexd - 40928],
+                *(Material **)((uintptr_t)scene.glassBrushVisData + (40 * entIndexd - 40928)),
                 1,
                 distanceScale);
     }

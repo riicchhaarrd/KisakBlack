@@ -2558,7 +2558,8 @@ LABEL_51:
     for ( glassIndex = 0; glassIndex < glassBrushCount; ++glassIndex )
     {
         v1 = views->frustumPlaneCount;
-        //minmax = *(float **)&scene.glassBrushVisData[40 * glassIndex - 40932];
+        // The old negative glassBrushVisData index aliased this bmodel's bounds.
+        // Use the named member so optimized builds cannot poison the address.
         minmax = scene.glassBrush[glassIndex].bmodel->writable.mins;
         v4 = 0;
         v3 = views->frustumPlanes;
@@ -4175,9 +4176,11 @@ void __cdecl R_CullDynamicPointLightsInCameraView()
     for ( lightIndex = 0; lightIndex < scene.addedLightCount; ++lightIndex )
     {
         if ( scene.addedLight[lightIndex].type != 2 || lightIndex )
+            // [368*lightIndex - K] aliases scene.addedLight[lightIndex] (origin/radius).
+            // Compute via integer math to avoid the UB out-of-bounds GEP (poison -> OOB).
             scene.isAddedLightCulled[lightIndex] = R_CullPointAndRadius(
-                                                                                             (const float *)&scene.isAddedLightCulled[368 * lightIndex - 11748],
-                                                                                             *(float *)&scene.isAddedLightCulled[368 * lightIndex - 11736],
+                                                                                             (const float *)((uintptr_t)scene.isAddedLightCulled + (368 * lightIndex - 11748)),
+                                                                                             *(float *)((uintptr_t)scene.isAddedLightCulled + (368 * lightIndex - 11736)),
                                                                                              planes,
                                                                                              planeCount);
     }
