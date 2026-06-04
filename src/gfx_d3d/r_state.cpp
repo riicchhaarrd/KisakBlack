@@ -3293,8 +3293,13 @@ void R_DrawCall(
 
     R_BeginView(source, &viewInfo->sceneDef, viewParms);
 
-    cmdBuf.prim.device = cmdBufEA->device;
     R_InitLocalCmdBufState(&cmdBuf);
+    // R_InitLocalCmdBufState copies the global gfxCmdBufState template wholesale (it begins
+    // at refSamplerState, which is offset 0), clobbering prim.device with the template's
+    // value — null/stale on web. Unlike R_InitCmdBufState it does not save/restore the
+    // device, so set this command buffer's authoritative device (from R_InitContext ==
+    // dx.device) AFTER the template copy, or R_ChangeDepthRange derefs a null device.
+    cmdBuf.prim.device = cmdBufEA->device;
 
     R_Set_Texture_SeeThruDecal(source);
     R_SetCodeImageTexture(source, 0x27u, gfxRenderTargets[R_RENDERTARGET_UI3D].image);
@@ -3310,6 +3315,7 @@ void R_DrawCall(
         prepassContext.state = &prepassCmdBuf;
 
         R_InitLocalCmdBufState(&prepassCmdBuf);
+        prepassCmdBuf.prim.device = prepassCmdBufEA->device;  // template copy clobbers it; set real device
 
         callback(userData, context, prepassContext);
         memcpy(&gfxCmdBufState, &prepassCmdBuf, sizeof(gfxCmdBufState));
