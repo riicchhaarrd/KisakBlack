@@ -199,7 +199,9 @@ HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, D
     if (g_kbTransferCanvasToNextThread) {
         g_kbTransferCanvasToNextThread = false;
         pthread_attr_init(&attr);
-        emscripten_pthread_attr_settransferredcanvases(&attr, "#canvas");
+        int r = emscripten_pthread_attr_settransferredcanvases(&attr, "#canvas");
+        fprintf(stderr, "[kb] backend thread: transfer '#canvas' -> settransferredcanvases=%d "
+                        "(isPthread=%d)\n", r, emscripten_is_main_runtime_thread() ? 0 : 1);
         pattr = &attr;
     }
 #endif

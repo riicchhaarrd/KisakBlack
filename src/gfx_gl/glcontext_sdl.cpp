@@ -42,6 +42,9 @@
 // backbuffer size so it can scale mouse coordinates from CSS pixels.
 extern "C" void WebInput_SetResolution(int w, int h);
 
+// Perf counters defined in gl_query.cpp (global namespace).
+extern unsigned long g_kbOcclGetData, g_kbEventWaits;
+
 namespace {
 class EmWebGLContext final : public GLContext {
 public:
@@ -85,20 +88,33 @@ public:
             fprintf(stderr, "[gl] glewInit (webgl worker): %s\n", glewGetErrorString(ge));
         glGetError();
 
-        // Proxy self-test: glGetError returns a value, so on a PROXIED context every
-        // call must synchronously round-trip to the DOM thread (slow); on a worker-
-        // local (transferred OffscreenCanvas) context it is microseconds. This tells
-        // us up-front whether the canvas transfer to this render worker succeeded.
+        // One-shot proxy cost report: returning vs void call cost (see SwapBuffers dump).
         double t0 = emscripten_get_now();
-        for (int i = 0; i < 200; ++i) glGetError();
-        double per = (emscripten_get_now() - t0) / 200.0;
-        fprintf(stderr, "[gl] WebGL2 ctx=%d on render worker; glGetError %.4f ms/call -> %s\n",
-                (int)ctx_, per, per > 0.02 ? "PROXIED to DOM thread (slow)" : "worker-LOCAL (fast)");
+        for (int i = 0; i < 100; ++i) glGetError();
+        double perGet = (emscripten_get_now() - t0) / 100.0;
+        fprintf(stderr, "[gl] WebGL2 ctx=%d; returning GL call = %.4f ms (proxied)\n",
+                (int)ctx_, perGet);
         return true;
     }
     ~EmWebGLContext() override { if (ctx_ > 0) emscripten_webgl_destroy_context(ctx_); }
     void  MakeCurrent() override        { if (ctx_ > 0) emscripten_webgl_make_context_current(ctx_); }
-    void  SwapBuffers() override        { emscripten_webgl_commit_frame(); }
+    void  SwapBuffers() override {
+        emscripten_webgl_commit_frame();
+        // Per-second dump of frame time + the per-frame count of RETURNING GL calls
+        // (occlusion polls + event-fence waits), the suspected proxy sync-stall source.
+        static double t0 = 0; static int frames = 0;
+        static unsigned long occl0 = 0, ev0 = 0;
+        double now = emscripten_get_now();
+        if (t0 == 0) { t0 = now; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits; }
+        if (++frames >= 30) {
+            double dt = now - t0;
+            fprintf(stderr, "[perf] %.1f fps (%.1f ms/frame) | per-frame returning GL: "
+                            "occlusion=%lu event-fence=%lu\n",
+                    1000.0 * frames / dt, dt / frames,
+                    (g_kbOcclGetData - occl0) / frames, (g_kbEventWaits - ev0) / frames);
+            t0 = now; frames = 0; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits;
+        }
+    }
     void  Resize(int w, int h) override { emscripten_set_canvas_element_size("#canvas", w, h); }
     void *GetProcAddress(const char *n) override { return emscripten_webgl_get_proc_address(n); }
 private:

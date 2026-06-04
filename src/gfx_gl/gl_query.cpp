@@ -15,6 +15,13 @@ static constexpr GLenum KB_OCCLUSION_TARGET = GL_ANY_SAMPLES_PASSED;
 static constexpr GLenum KB_OCCLUSION_TARGET = GL_SAMPLES_PASSED;
 #endif
 
+// Perf instrumentation: every occlusion/event GetData on Emscripten issues a RETURNING
+// GL call that synchronously round-trips to the canvas-owning thread (~0.1-0.8 ms each
+// while proxied) — the suspected source of the in-game 1 FPS. Count them; SwapBuffers
+// dumps the per-frame totals (see glcontext_sdl.cpp).
+unsigned long g_kbOcclGetData = 0;   // glGetQueryObjectiv/uiv pairs (occlusion poll)
+unsigned long g_kbEventWaits  = 0;   // glClientWaitSync (event-fence poll/spin)
+
 GLQuery::GLQuery(IDirect3DDevice9 *device, D3DQUERYTYPE type) : device_(device), type_(type) {
     if (type_ == D3DQUERYTYPE_OCCLUSION) glGenQueries(1, &glQuery_);
 }
@@ -48,6 +55,7 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
     bool flush = (dwGetDataFlags & D3DGETDATA_FLUSH) != 0;
 
     if (type_ == D3DQUERYTYPE_OCCLUSION) {
+        ++g_kbOcclGetData;
         GLint available = 0;
         glGetQueryObjectiv(glQuery_, GL_QUERY_RESULT_AVAILABLE, &available);
         if (!available && !flush) return S_FALSE;       // not ready yet
@@ -68,6 +76,7 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
         // R_FinishGpuFence's `while (GetData == S_FALSE)` spin forever, since the
         // engine waits on dx.flushGpuQuery without ever issuing it.
         if (!sync_) { if (pData) *static_cast<DWORD *>(pData) = TRUE; return S_OK; }
+        ++g_kbEventWaits;
         GLenum r = glClientWaitSync(static_cast<GLsync>(sync_),
                                     flush ? GL_SYNC_FLUSH_COMMANDS_BIT : 0, 0);
         bool done = (r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED);
