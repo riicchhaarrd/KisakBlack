@@ -23,10 +23,10 @@
 #include "../sdl/sdl_events.h"   // Sys_PumpSDLEvents
 #include <SDL2/SDL.h>            // SDL_GetMouseState / relative-mouse mode (IN_Frame)
 #if defined(__EMSCRIPTEN_PTHREADS__)
-#include <emscripten/html5.h>    // pointer lock for in-game look (no SDL window on web)
-#include <emscripten/em_asm.h>   // MAIN_THREAD_EM_ASM (hide OS cursor over the canvas)
-// Mouse state fed by the HTML5 callbacks in sdl_events.cpp (same worker thread).
-extern "C" double g_webMouseX, g_webMouseY, g_webMouseDx, g_webMouseDy;
+#include <emscripten/em_asm.h>   // MAIN_THREAD_ASYNC_EM_ASM (pointer lock + OS cursor)
+// Mouse sampled from the shared input block filled by the DOM-thread JS listeners
+// (src/platform/sdl/sdl_events.cpp): position in engine px + accumulated raw movement.
+extern "C" void WebInput_GetMouse(int *x, int *y, int *dx, int *dy);
 #endif
 
 // Client mouse entry point (src/client_mp/cl_input_mp.cpp). Declared directly to
@@ -137,31 +137,30 @@ void Sys_LoadingKeepAlive() { Sys_PumpSDLEvents(Sys_Milliseconds()); }
 // which maps cleanly to SDL's relative mouse mode.
 void IN_Frame() {
 #if defined(__EMSCRIPTEN_PTHREADS__)
-    // Web has no SDL window; mouse comes from the HTML5 callbacks. Menu uses the
+    // Web has no SDL window; mouse comes from the shared input block. Menu uses the
     // absolute (scaled) cursor; in-game look uses Pointer Lock movement deltas.
     static bool relative = false, primed = false;
-    static double oldX = 0.0, oldY = 0.0;
-    int x = (int)g_webMouseX, y = (int)g_webMouseY, dx = 0, dy = 0;
+    static int oldX = 0, oldY = 0;
+    int x = 0, y = 0, mdx = 0, mdy = 0;
+    WebInput_GetMouse(&x, &y, &mdx, &mdy);   // position (engine px) + accumulated motion
+    int dx, dy;
     if (relative) {
-        dx = (int)g_webMouseDx; dy = (int)g_webMouseDy;
-        g_webMouseDx = 0.0; g_webMouseDy = 0.0;
+        dx = mdx; dy = mdy;
     } else {
-        if (!primed) { oldX = g_webMouseX; oldY = g_webMouseY; primed = true; }
-        dx = (int)(g_webMouseX - oldX); dy = (int)(g_webMouseY - oldY);
-        oldX = g_webMouseX; oldY = g_webMouseY;
+        if (!primed) { oldX = x; oldY = y; primed = true; }
+        dx = x - oldX; dy = y - oldY;
+        oldX = x; oldY = y;
     }
     int recenterWeb = CL_MouseEvent(x, y, dx, dy);
     if ((bool)recenterWeb != relative) {
         relative = recenterWeb != 0;
-        if (relative) {
-            // Pointer lock needs a user gesture; this may no-op until the user clicks,
-            // after which look starts working. Drop the entry-frame delta either way.
-            emscripten_request_pointerlock("#canvas", EM_TRUE);
-            g_webMouseDx = g_webMouseDy = 0.0;
-        } else {
-            emscripten_exit_pointerlock();
-            primed = false;
-        }
+        primed = false;
+        // Pointer lock via an async DOM call so this worker never blocks. The browser
+        // honours the request on the next user click (gesture requirement) for look.
+        if (relative)
+            MAIN_THREAD_ASYNC_EM_ASM({ var c = document.getElementById('canvas'); if (c && c.requestPointerLock) c.requestPointerLock(); });
+        else
+            MAIN_THREAD_ASYNC_EM_ASM({ if (document.exitPointerLock) document.exitPointerLock(); });
     }
     return;
 #else
@@ -196,7 +195,8 @@ void IN_Frame() {
 // cursor over the canvas so the engine's own menu cursor isn't doubled.
 void IN_SetCursorPos(unsigned int, unsigned int) {}
 void IN_ShowSystemCursor(bool show) {
-    MAIN_THREAD_EM_ASM({
+    // Async so the game worker never blocks on the DOM thread.
+    MAIN_THREAD_ASYNC_EM_ASM({
         var c = document.getElementById('canvas');
         if (c) c.style.cursor = $0 ? 'auto' : 'none';
     }, show ? 1 : 0);

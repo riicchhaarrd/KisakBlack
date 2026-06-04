@@ -68,6 +68,68 @@
       }],
     };
   </script>
+
+  <!--
+    Deadlock-free input bridge for the MT build. The engine's render worker proxies
+    every GL call to this DOM thread, so the game worker must NOT make synchronous DOM
+    calls (registering listeners from the worker deadlocks). Instead these listeners run
+    natively here on the DOM thread and write input into a shared int32 block in WASM
+    memory (a SharedArrayBuffer); the game worker only reads it. The C side calls
+    KBInputSetup(base, fbW, fbH) once (via MAIN_THREAD_ASYNC_EM_ASM). Layout / packing
+    must match src/platform/sdl/sdl_events.cpp (KBI_* and the ring-entry encoding).
+  -->
+  <script>
+    window.KBInputSetup = function (base, fbW, fbH) {
+      const KBI_MX = 0, KBI_MY = 1, KBI_DX = 2, KBI_DY = 3, KBI_HEAD = 4;
+      const KBI_RING = 8, KBI_RINGSZ = 256;
+      // base is a byte offset; the shared buffer is not detached on growth (pthreads),
+      // and the block lives in fixed low static data, so this view stays valid.
+      const V = new Int32Array(Module.HEAPU8.buffer, base, KBI_RING + KBI_RINGSZ);
+      const canvas = document.getElementById('canvas');
+
+      function push(kind, down, value) {
+        const h = Atomics.load(V, KBI_HEAD);
+        V[KBI_RING + (h & (KBI_RINGSZ - 1))] =
+          ((kind & 0xFF) << 24) | ((down & 1) << 16) | (value & 0xFFFF);
+        Atomics.store(V, KBI_HEAD, h + 1);   // publish (release) the entry above
+      }
+      function setPos(e) {
+        const r = canvas.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          Atomics.store(V, KBI_MX, ((e.clientX - r.left) * fbW / r.width) | 0);
+          Atomics.store(V, KBI_MY, ((e.clientY - r.top) * fbH / r.height) | 0);
+        }
+      }
+      // Stop scroll/tab-navigation for keys the game consumes; leave Ctrl/Cmd/Alt and
+      // F-keys (reload/devtools) alone for the developer.
+      function maybePD(e) {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        const kc = e.keyCode;
+        if (kc === 9 || kc === 32 || (kc >= 33 && kc <= 40)) e.preventDefault();
+      }
+
+      window.addEventListener('keydown', function (e) {
+        push(0 /*KEY*/, 1, e.keyCode);
+        if (e.key && e.key.length === 1) {
+          const c = e.key.charCodeAt(0);
+          if (c >= 0x20 && c < 0x7F) push(1 /*CHAR*/, 0, c);
+        }
+        maybePD(e);
+      });
+      window.addEventListener('keyup', function (e) { push(0 /*KEY*/, 0, e.keyCode); maybePD(e); });
+      canvas.addEventListener('mousemove', function (e) {
+        setPos(e);
+        Atomics.add(V, KBI_DX, e.movementX | 0);
+        Atomics.add(V, KBI_DY, e.movementY | 0);
+      });
+      canvas.addEventListener('mousedown', function (e) { setPos(e); push(2 /*MBTN*/, 1, e.button); e.preventDefault(); });
+      canvas.addEventListener('mouseup',   function (e) { setPos(e); push(2 /*MBTN*/, 0, e.button); e.preventDefault(); });
+      canvas.addEventListener('wheel',      function (e) { push(3 /*WHEEL*/, e.deltaY < 0 ? 1 : 0, 0); e.preventDefault(); }, { passive: false });
+      canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+      console.log('[KBInput] listeners wired (' + fbW + 'x' + fbH + ')');
+    };
+  </script>
+
   <script src="web_fs.js"></script>
   <script src="blackops.js"></script>
 
