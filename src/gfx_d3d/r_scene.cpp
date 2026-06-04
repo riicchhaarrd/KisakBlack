@@ -3949,15 +3949,7 @@ void __cdecl R_GenerateSortedDrawSurfs(
 
 bool __cdecl R_GetAllowShadowMaps()
 {
-#if defined(__EMSCRIPTEN__)
-    // The shadow-map draw passes (sun + spot) select a wild static-model technique
-    // (state->technique -> pass->vertexDecl garbage -> OOB in R_SetVertexDecl). Disable
-    // all shadow maps on web for now so the main camera view renders; revisit once the
-    // shadow-technique selection in R_SetMaterial is understood.
-    return false;
-#else
     return sm_enable->current.enabled && g_allowShadowMaps;
-#endif
 }
 
 bool __cdecl R_DynamicShadowType()

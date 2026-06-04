@@ -565,10 +565,20 @@ BOOL VirtualFree(void *addr, SIZE_T size, DWORD freeType) {
         // pages on next access — exactly Win32's decommit / next-commit contract.
         // (Hunk_Clear -> Z_VirtualDecommit passes page-aligned ranges.)
         if (size) {
+#if defined(__EMSCRIPTEN__)
+            // Emscripten has no madvise(MADV_DONTNEED) (unsupported syscall -> no-op), so a
+            // decommit would leave STALE bytes and break the Win32 "next commit reads zero"
+            // contract the engine relies on. Freed temp-hunk script text then bleeds into
+            // reused DB/material allocations, and pointer fields read as ASCII (e.g. a
+            // vertexDecl that decodes to "emsc" from an .../emscripten/... path). Zero the
+            // range eagerly to match madvise's lazy zero-fill semantics.
+            memset(addr, 0, size);
+#else
             if (((uintptr_t)addr & 0xFFF) == 0 && (size & 0xFFF) == 0)
                 madvise(addr, size, MADV_DONTNEED);
             else
                 memset(addr, 0, size);
+#endif
         }
     }
     return TRUE;
