@@ -36,6 +36,7 @@ unsigned long g_kbReadbacks   = 0;   // glReadPixels calls (per-frame GPU-sync r
 unsigned long g_kbBlits       = 0;   // StretchRect / glBlitFramebuffer calls
 unsigned long g_kbPresentEnter= 0;   // SwapBuffers entries (before commit_frame)
 unsigned long g_kbDevSpin     = 0;   // frontend spin iterations waiting for the DX device lock
+int           g_kbBackStage   = 0;   // RB_RenderThread loop stage (where the backend is now)
 
 #if defined(__EMSCRIPTEN__)
 // Called every 500ms from the DOM-thread heartbeat (linux_main.cpp). Reads the render
@@ -46,13 +47,13 @@ unsigned long g_kbDevSpin     = 0;   // frontend spin iterations waiting for the
 // fprintf here on the DOM thread can deadlock against a worker that holds the line-buffered
 // stderr lock while blocked on its own proxied write — which itself was freezing the page.
 extern "C" EMSCRIPTEN_KEEPALIVE const char *kb_heartbeat_dump() {
-    static char buf[192];
+    static char buf[224];
     extern int g_AcquisitionCount; extern unsigned long long g_DXDeviceThread;
     snprintf(buf, sizeof(buf),
-             "[hb] com=%lu sv=%lu draws=%lu pres=%lu event=%lu blits=%lu rb=%lu | spin=%lu own=%u acq=%d",
+             "[hb] com=%lu sv=%lu draws=%lu pres=%lu event=%lu blits=%lu rb=%lu | spin=%lu own=%u acq=%d bstage=%d",
              g_kbComFrames, g_kbSvFrames, g_kbDraws, g_kbPresentEnter,
              g_kbEventWaits, g_kbBlits, g_kbReadbacks,
-             g_kbDevSpin, (unsigned)(g_DXDeviceThread & 0xffffu), g_AcquisitionCount);
+             g_kbDevSpin, (unsigned)(g_DXDeviceThread & 0xffffu), g_AcquisitionCount, g_kbBackStage);
     return buf;
 }
 #endif

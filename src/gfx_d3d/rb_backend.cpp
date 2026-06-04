@@ -5285,28 +5285,49 @@ void     RB_RenderThread(unsigned int threadContext)
             Com_ErrorAbort();
         }
     }
+#if defined(__EMSCRIPTEN__)
+    R_ReleaseDXDeviceOwnership();
+    extern int g_kbBackStage;   // freeze diag: which backend-loop step is executing
+#define KBSTAGE(n) (g_kbBackStage = (n))
+#else
+#define KBSTAGE(n) ((void)0)
+#endif
     while ( 1 )
     {
         {
             PROF_SCOPED("R_StreamUpdate_ProcessFileCallbacks"); // LWSS ADD
-            R_StreamAlloc_Lock();
-            R_StreamUpdate_ProcessFileCallbacks();
-            R_StreamAlloc_Unlock();
+            KBSTAGE(1); R_StreamAlloc_Lock();
+            KBSTAGE(2); R_StreamUpdate_ProcessFileCallbacks();
+            KBSTAGE(3); R_StreamAlloc_Unlock();
         }
         {
             PROF_SCOPED("RB_Resource_Update"); // LWSS ADD
-            RB_Resource_Update(5);
+            KBSTAGE(4); RB_Resource_Update(5);
         }
-        Sys_StopRenderer();
-        Sys_StartRenderer();
-
+        KBSTAGE(5); Sys_StopRenderer();
+        KBSTAGE(6); Sys_StartRenderer();
+        KBSTAGE(7);
+#if defined(__EMSCRIPTEN__)
+        if ( Sys_WaitBackendEvent(0) )
+#else
         if ( Sys_WaitBackendEvent(1) )
+#endif
         {
-            data = (GfxBackEndData *)Sys_RendererSleep();
+            KBSTAGE(8); data = (GfxBackEndData *)Sys_RendererSleep();
             if (data)
             {
+#if defined(__EMSCRIPTEN__)
+                KBSTAGE(9); semaphore = R_AcquireDXDeviceOwnership(0);
+                KBSTAGE(10); RB_UpdateDynamicBuffers((GfxBackEndData*)data);
+                KBSTAGE(11); RB_RenderCommandFrame((GfxBackEndData *)data);
+                KBSTAGE(12);
+                if ( semaphore )
+                    R_ReleaseDXDeviceOwnership();
+                KBSTAGE(13);
+#else
                 RB_UpdateDynamicBuffers((GfxBackEndData*)data);
                 RB_RenderCommandFrame((GfxBackEndData *)data);
+#endif
             }
             data = 0;
         }
@@ -5416,26 +5437,43 @@ void __cdecl RB_RenderCommandFrame(const GfxBackEndData *data)
     }
     Name = va("exec cmds c=%d v=%d", clientNum, viewInfoIdx);
 
+#if defined(__EMSCRIPTEN__)
+    extern int g_kbBackStage;
+#define KBSTAGE(n) (g_kbBackStage = (n))
+#else
+#define KBSTAGE(n) ((void)0)
+#endif
     {
         PROF_SCOPED_RUNTIME_NAME(Name);
-        RB_BeginFrame((GfxBackEndData *)data);
-        RB_DrawComposites();
-        RB_Draw3D();
+        KBSTAGE(20); RB_BeginFrame((GfxBackEndData *)data);
+        KBSTAGE(21); RB_DrawComposites();
+        KBSTAGE(22); RB_Draw3D();
         drawType = backEndData->drawType;
-        RB_CallExecuteRenderCommands();
+        KBSTAGE(23); RB_CallExecuteRenderCommands();
         rb_execCmdsMS = Sys_Milliseconds() - renderStartMS;
         backEndData = 0;
     }
 
     {
         PROF_SCOPED("Sys_RenderCompleted()");
-        Sys_RenderCompleted();
+        KBSTAGE(24); Sys_RenderCompleted();
     }
 
+#if defined(__EMSCRIPTEN__)
+    KBSTAGE(25);
+    while (!RB_BackendTimeout((r_glob.backEndFrameCount + dx.gpuCount - 1) % dx.gpuCount))
+    {
+        semaphore = R_ReleaseDXDeviceOwnership();
+        NET_Sleep(1);
+        if (semaphore)
+            R_AcquireDXDeviceOwnership(0);
+    }
+#endif
     {
         PROF_SCOPED("end frame");
-        RB_EndFrame(drawType);
+        KBSTAGE(26); RB_EndFrame(drawType);
     }
+#undef KBSTAGE
     
     rb_swapMS = Sys_Milliseconds() - renderStartMS - rb_execCmdsMS;
 }
@@ -5942,4 +5980,3 @@ void __cdecl R_ResolveSection(GfxCmdBufContext context, GfxImage *image)
     //                "R_ResolveSection(): Not implemented on win32.") )
     //    __debugbreak();
 }
-
