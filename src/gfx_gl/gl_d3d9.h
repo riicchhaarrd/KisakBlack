@@ -137,8 +137,10 @@ private:
 
     template <class T> static HRESULT ni(T **pp) { if (pp) *pp = nullptr; return E_NOTIMPL; }
     void ensureBuiltinProgram();  // lazily compile the built-in pre-transformed-vertex shader
+    struct LinkedProgram;         // defined below
     void bindBuiltinForDraw();    // use built-in program + set frame/texture uniforms
-    void useDrawProgram();        // pick shader program (if vs+ps bound) or built-in; set uniforms
+    bool useDrawProgram();        // bind shader program (or built-in) + set uniforms; false = not linked yet, skip draw
+    bool finalizeProgram(LinkedProgram &lp);  // poll link completion (non-blocking) + cache uniform locations
     void applyVertexState();      // set up VAO attribs from decl_ + streams_
     bool applyTextures();         // bind stage-0 texture + sampler state; returns true if sampling
     void applyStageSampler(unsigned stage, unsigned target); // apply stage's filter/wrap to bound tex
@@ -200,12 +202,15 @@ private:
     GLPixelShader  *ps_ = nullptr;
     float           vsConst_[256 * 4] = {};
     float           psConst_[256 * 4] = {};
-    struct LinkedProgram { unsigned prog; int vscLoc; int pscLoc;
+    struct LinkedProgram { unsigned prog = 0; int vscLoc = -1; int pscLoc = -1;
                            int alphaFuncLoc = -1; int alphaRefLoc = -1;
                            // Sampler uniform locations ("s0".."s15"), queried ONCE at
                            // link. Per-draw glGetUniformLocation is a sync round-trip on
                            // the proxied web context — caching it removes 16 stalls/draw.
-                           int samplerLoc[kMaxStages]; };
+                           int samplerLoc[kMaxStages] = {};
+                           // false until the async link completes and locs are cached;
+                           // draws using it are skipped until then (no DOM-thread stall).
+                           bool ready = false; };
     std::map<uint64_t, LinkedProgram> progCache_;
 };
 

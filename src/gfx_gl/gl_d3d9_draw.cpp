@@ -281,7 +281,7 @@ void GLDevice::applyVertexState() {
 
 HRESULT WINAPI GLDevice::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex,
                                        UINT PrimitiveCount) {
-    useDrawProgram();
+    if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
     applyVertexState();
 
     GLenum mode; GLsizei verts;
@@ -294,7 +294,7 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
                                               UINT /*MinVertexIndex*/, UINT /*NumVertices*/,
                                               UINT startIndex, UINT primCount) {
     if (!ib_) return D3D_OK;
-    useDrawProgram();
+    if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
     applyVertexState();
 
     GLenum mode; GLsizei verts;

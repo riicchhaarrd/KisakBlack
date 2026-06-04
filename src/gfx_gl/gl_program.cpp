@@ -42,12 +42,51 @@ HRESULT WINAPI GLDevice::SetPixelShaderConstantF(UINT StartRegister, const float
     return D3D_OK;
 }
 
+// Poll the async link for completion (NON-blocking on web via KHR_parallel_shader_compile)
+// and, once linked, cache all uniform locations. Returns false while still compiling.
+// Blocking on glGetProgramiv(GL_LINK_STATUS) here would serialize ~120 synchronous shader
+// compiles on the DOM thread on the first 3D frame -> multi-second "page unresponsive".
+bool GLDevice::finalizeProgram(LinkedProgram &lp) {
+#if defined(__EMSCRIPTEN__)
+    static int parallel = -1;               // -1 unknown, 0 unsupported, 1 supported
+    if (parallel < 0) {
+        const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+        parallel = (ext && strstr(ext, "parallel_shader_compile")) ? 1 : 0;
+    }
+    if (parallel) {
+        GLint done = 0;
+        glGetProgramiv(lp.prog, 0x91B1 /*GL_COMPLETION_STATUS_KHR*/, &done);
+        if (!done) return false;            // still compiling -> caller skips the draw
+    }
+#endif
+    GLint ok = 0;
+    glGetProgramiv(lp.prog, GL_LINK_STATUS, &ok);   // ready now (or native): does not stall
+    if (!ok) {
+        char log[1024];
+        glGetProgramInfoLog(lp.prog, sizeof(log), nullptr, log);
+        fprintf(stderr, "[gl] program link failed: %s\n", log);
+    }
+    lp.vscLoc = glGetUniformLocation(lp.prog, "vsc");
+    lp.pscLoc = glGetUniformLocation(lp.prog, "psc");
+#ifdef __EMSCRIPTEN__
+    lp.alphaFuncLoc = glGetUniformLocation(lp.prog, "uAlphaTestFunc");
+    lp.alphaRefLoc  = glGetUniformLocation(lp.prog, "uAlphaRef");
+#endif
+    for (int i = 0; i < kMaxStages; ++i) {
+        char name[4]; snprintf(name, sizeof(name), "s%d", i);
+        lp.samplerLoc[i] = glGetUniformLocation(lp.prog, name);
+    }
+    lp.ready = true;
+    return true;
+}
+
 // Pick the draw program: the linked (vs,ps) pair if both are bound and valid,
 // otherwise the built-in pre-transformed program. Sets the program's uniforms.
-void GLDevice::useDrawProgram() {
+// Returns false if the (vs,ps) program is still linking — caller must skip the draw.
+bool GLDevice::useDrawProgram() {
     if (!(vs_ && ps_ && vs_->ok() && ps_->ok())) {
         bindBuiltinForDraw();
-        return;
+        return true;
     }
 
     uint64_t key = (uint64_t(vs_->glShader()) << 32) | ps_->glShader();
@@ -58,35 +97,17 @@ void GLDevice::useDrawProgram() {
         glAttachShader(prog, ps_->glShader());
         // Match the device's canonical attribute locations (see gl_shader.cpp).
         GLBindAttribLocations(prog);
-        glLinkProgram(prog);
-        GLint ok = 0;
-        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-        if (!ok) {
-            char log[1024];
-            glGetProgramInfoLog(prog, sizeof(log), nullptr, log);
-            fprintf(stderr, "[gl] program link failed: %s\n", log);
-        }
-        LinkedProgram lp{prog,
-                         glGetUniformLocation(prog, "vsc"),
-                         glGetUniformLocation(prog, "psc")};
-#ifdef __EMSCRIPTEN__
-        // Alpha-test-via-discard uniforms (present only in ES fragment shaders).
-        lp.alphaFuncLoc = glGetUniformLocation(prog, "uAlphaTestFunc");
-        lp.alphaRefLoc  = glGetUniformLocation(prog, "uAlphaRef");
-#endif
-        // Query the sampler uniform locations ONCE here, not per-draw: each
-        // glGetUniformLocation is a synchronous round-trip on the proxied web context.
-        for (int i = 0; i < kMaxStages; ++i) {
-            char name[4];                 // "s0".."s15"
-            snprintf(name, sizeof(name), "s%d", i);
-            lp.samplerLoc[i] = glGetUniformLocation(prog, name);
-        }
+        glLinkProgram(prog);                // kicks off the (async on web) link
+        LinkedProgram lp; lp.prog = prog;   // ready=false; finalized once the link completes
         extern unsigned long g_kbProgLinks;
         ++g_kbProgLinks;
         it = progCache_.emplace(key, lp).first;
     }
 
-    const LinkedProgram &lp = it->second;
+    LinkedProgram &lp = it->second;
+    if (!lp.ready && !finalizeProgram(lp))
+        return false;                        // still compiling this frame -> skip the draw
+
     glUseProgram(lp.prog);
     if (lp.vscLoc >= 0) glUniform4fv(lp.vscLoc, 256, vsConst_);
     if (lp.pscLoc >= 0) glUniform4fv(lp.pscLoc, 256, psConst_);
@@ -112,4 +133,5 @@ void GLDevice::useDrawProgram() {
             applyStageSampler(i, boundTexTarget_[i]);
         }
     }
+    return true;
 }
