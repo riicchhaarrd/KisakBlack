@@ -11,6 +11,49 @@
 #include "rb_pixelcost.h"
 #include "rb_shade.h"
 #include "r_reflection_probe.h"
+#include "r_draw_lit.h"
+#include "r_draw_sunshadow.h"
+#include "rb_spotshadow.h"
+#include "rb_depthprepass.h"
+
+#if defined(__EMSCRIPTEN__)
+// Calling an R_DrawCall callback through its function pointer passes the two
+// GfxCmdBufContext arguments BY VALUE through Emscripten's function-pointer-cast
+// emulation (byn$fpcast-emu), which mangles small struct-by-value args — context.state
+// comes out as garbage, so every 3D draw reads a corrupt state (null device, etc.).
+// Dispatch to a DIRECT call (correct struct ABI, no emulation) by matching the known
+// callback; fall back to the indirect call for anything unlisted.
+static void R_InvokeDrawCallback(
+    void(__cdecl *callback)(const void *, GfxCmdBufContext, GfxCmdBufContext),
+    const void *userData, GfxCmdBufContext context, GfxCmdBufContext prepassContext)
+{
+#define KB_CB(fn) if (callback == fn) { fn(userData, context, prepassContext); return; }
+    KB_CB(R_DrawLitCallback)
+    KB_CB(R_DrawLitPostResolveCallback)
+    KB_CB(R_DrawDecalCallback)
+    KB_CB(R_DepthPrepassCallback)
+    KB_CB(R_DrawSunShadowMapCallback)
+    KB_CB(R_DrawSpotShadowMapCallback)
+    KB_CB(R_DrawEmissiveCallback)
+    KB_CB(R_DrawReflectedCallback)
+    KB_CB(R_DrawPointLitSurfsCallback)
+    KB_CB(R_DrawFullbrightLitCallback)
+    KB_CB(R_DrawFullbrightDecalCallback)
+    KB_CB(R_DrawFullbrightEmissiveCallback)
+    KB_CB(R_DrawDebugShaderLitCallback)
+    KB_CB(R_DrawDebugShaderDecalCallback)
+    KB_CB(R_DrawDebugShaderEmissiveCallback)
+#undef KB_CB
+    callback(userData, context, prepassContext);
+}
+#else
+static inline void R_InvokeDrawCallback(
+    void(__cdecl *callback)(const void *, GfxCmdBufContext, GfxCmdBufContext),
+    const void *userData, GfxCmdBufContext context, GfxCmdBufContext prepassContext)
+{
+    callback(userData, context, prepassContext);
+}
+#endif
 
 
 const GfxViewportBehavior s_viewportBehaviorForRenderTarget[44] =
@@ -3315,14 +3358,14 @@ void R_DrawCall(
         R_InitLocalCmdBufState(&prepassCmdBuf);
         prepassCmdBuf.prim.device = dx.device;  // template copy + stale cmdBufEA->device; use live device
 
-        callback(userData, context, prepassContext);
+        R_InvokeDrawCallback(callback, userData, context, prepassContext);
         memcpy(&gfxCmdBufState, &prepassCmdBuf, sizeof(gfxCmdBufState));
     }
     else
     {
         prepassContext.source = NULL;
         prepassContext.state = NULL;
-        callback(userData, context, prepassContext);
+        R_InvokeDrawCallback(callback, userData, context, prepassContext);
     }
     memcpy(gfxCmdBufState.refSamplerState, cmdBuf.refSamplerState, sizeof(gfxCmdBufState));
 }
