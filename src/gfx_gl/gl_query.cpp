@@ -38,9 +38,14 @@ unsigned long g_kbSvFrames    = 0;   // SV_Frame() entries (server/physics liven
 // thread's GL-call counters from shared memory: during a freeze, whether these keep
 // climbing pinpoints WHICH loop the render thread is spinning in (occlusion / fence /
 // draws) or, if all frozen, that it is stuck OUTSIDE the GL layer (physics/SMP/condvar).
-extern "C" EMSCRIPTEN_KEEPALIVE void kb_heartbeat_dump() {
-    fprintf(stderr, "[hb] com=%lu sv=%lu | draws=%lu occl=%lu event=%lu links=%lu\n",
-            g_kbComFrames, g_kbSvFrames, g_kbDraws, g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks);
+// Returns a string for JS to console.log. Uses snprintf (NO stderr FILE lock): calling
+// fprintf here on the DOM thread can deadlock against a worker that holds the line-buffered
+// stderr lock while blocked on its own proxied write — which itself was freezing the page.
+extern "C" EMSCRIPTEN_KEEPALIVE const char *kb_heartbeat_dump() {
+    static char buf[192];
+    snprintf(buf, sizeof(buf), "[hb] com=%lu sv=%lu | draws=%lu occl=%lu event=%lu links=%lu",
+             g_kbComFrames, g_kbSvFrames, g_kbDraws, g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks);
+    return buf;
 }
 #endif
 
