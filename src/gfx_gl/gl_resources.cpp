@@ -134,6 +134,13 @@ GLTexture::GLTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT lev
         unsigned internal, fmt, type; int bpp;
         if (D3DToGLFormat(format_, &internal, &fmt, &type, &bpp))
             glTexImage2D(GL_TEXTURE_2D, 0, internal, width_, height_, 0, fmt, type, nullptr);
+        else
+            // Unsupported RT format (e.g. D3DFMT_G16R16 = 0x22): allocate a renderable
+            // RGBA8 fallback at the real size so the FBO colour attachment is COMPLETE.
+            // Otherwise the texture has no storage (0x0), every draw to it fails with
+            // GL_INVALID_FRAMEBUFFER_OPERATION ("Attachment has zero size"), and the
+            // hundreds of proxied error lines per frame lock up the in-game scene.
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     } else {
         // Give every texture a neutral 1x1 level-0 immediately so it is COMPLETE even
         // before (or if) the engine uploads its pixels — otherwise a not-yet-uploaded

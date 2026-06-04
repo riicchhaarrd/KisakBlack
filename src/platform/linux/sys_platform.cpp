@@ -19,6 +19,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cstring>
 
 #include "../sdl/sdl_events.h"   // Sys_PumpSDLEvents
 #include <SDL2/SDL.h>            // SDL_GetMouseState / relative-mouse mode (IN_Frame)
@@ -78,7 +79,30 @@ int Sys_DirectoryHasContents(const char *dir) {
 }
 
 // ---- Error / exit / print --------------------------------------------------
-void Sys_Print(char *msg) { if (msg) { fputs(msg, stdout); fflush(stdout); } }
+void Sys_Print(char *msg) {
+    if (!msg) return;
+#if defined(__EMSCRIPTEN__)
+    // The decompiled engine emits long runs of identical non-fatal asserts/warnings
+    // in-game (e.g. Vec4IsNormalized, gjk_ray_cast). Each console line is proxied to the
+    // DOM thread, so the spam alone can dominate the frame. Collapse consecutive exact
+    // duplicates per thread, emitting a "(x N)" summary when the run ends.
+    static thread_local char last[512] = {0};
+    static thread_local int  dupCount  = 0;
+    if (std::strncmp(msg, last, sizeof(last) - 1) == 0 && last[0]) {
+        ++dupCount;
+        return;
+    }
+    if (dupCount > 0) {
+        char note[48];
+        int n = snprintf(note, sizeof(note), "   ^ (repeated x%d)\n", dupCount + 1);
+        fwrite(note, 1, (size_t)n, stdout);
+        dupCount = 0;
+    }
+    std::strncpy(last, msg, sizeof(last) - 1); last[sizeof(last) - 1] = 0;
+#endif
+    fputs(msg, stdout);
+    fflush(stdout);
+}
 void Sys_Error(char *error, ...) {
     char buf[4096]; va_list ap; va_start(ap, error); vsnprintf(buf, sizeof(buf), error, ap); va_end(ap);
     fprintf(stderr, "\n********** Sys_Error **********\n%s\n", buf); fflush(stderr);
