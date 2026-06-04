@@ -84,6 +84,15 @@ const char *error_to_string(int) { return "ok"; }
 
 // ---- Entry point -----------------------------------------------------------
 int main(int argc, char **argv) {
+#if defined(__EMSCRIPTEN__)
+    // Console writes are proxied to the DOM thread; with unbuffered stdio that is a
+    // per-CHARACTER round-trip, so the engine's warning spam alone can dominate frame
+    // time. Line-buffer both streams: each message flushes as ONE proxied write at its
+    // newline (output still appears promptly, but the per-character tax is gone).
+    static char kbOutBuf[1 << 16], kbErrBuf[1 << 16];
+    setvbuf(stdout, kbOutBuf, _IOLBF, sizeof(kbOutBuf));
+    setvbuf(stderr, kbErrBuf, _IOLBF, sizeof(kbErrBuf));
+#endif
     char cmdline[2048] = {0};
     for (int i = 1; i < argc; ++i) {
         size_t n = strlen(cmdline);

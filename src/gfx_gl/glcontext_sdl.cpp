@@ -52,7 +52,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B1 (occlusion=blocking baseline) ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B2 (occlusion cached, quiet logs) ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -106,26 +106,19 @@ public:
         emscripten_webgl_commit_frame();
         // Per-second dump of frame time + the per-frame count of RETURNING GL calls
         // (occlusion polls + event-fence waits), the suspected proxy sync-stall source.
-        static double t0 = 0, tPrev = 0; static int frames = 0;
-        static unsigned long occl0 = 0, ev0 = 0, lk0 = 0, lkPrev = 0;
-        static unsigned long txP = 0, txbP = 0, bufP = 0;
+        // One compact [perf] line every 120 frames only — console writes are proxied to
+        // the DOM thread per character, so frequent logging itself costs framerate.
+        static double t0 = 0; static int frames = 0;
+        static unsigned long occl0 = 0, lk0 = 0, buf0 = 0;
         double now = emscripten_get_now();
-        if (t0 == 0) { t0 = tPrev = now; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits; lk0 = lkPrev = g_kbProgLinks; }
-        // Attribute individual stall frames (>100 ms) to link / texture / buffer work.
-        double frameMs = now - tPrev; tPrev = now;
-        if (frameMs > 100.0)
-            fprintf(stderr, "[stall] %.0f ms | links=%lu texUploads=%lu texKB=%lu bufKB=%lu\n",
-                    frameMs, g_kbProgLinks - lkPrev, g_kbTexUploads - txP,
-                    (g_kbTexBytes - txbP) / 1024, (g_kbBufBytes - bufP) / 1024);
-        lkPrev = g_kbProgLinks; txP = g_kbTexUploads; txbP = g_kbTexBytes; bufP = g_kbBufBytes;
-        if (++frames >= 30) {
+        if (t0 == 0) { t0 = now; occl0 = g_kbOcclGetData; lk0 = g_kbProgLinks; buf0 = g_kbBufBytes; }
+        if (++frames >= 120) {
             double dt = now - t0;
-            fprintf(stderr, "[perf] %.1f fps (%.1f ms/frame) | per-frame returning GL: "
-                            "occlusion=%lu event-fence=%lu links=%lu\n",
-                    1000.0 * frames / dt, dt / frames,
-                    (g_kbOcclGetData - occl0) / frames, (g_kbEventWaits - ev0) / frames,
-                    (g_kbProgLinks - lk0) / frames);
-            t0 = now; frames = 0; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits; lk0 = g_kbProgLinks;
+            fprintf(stderr, "[perf] %.1f fps | per-frame occlusion=%lu links=%lu bufKB=%lu\n",
+                    1000.0 * frames / dt,
+                    (g_kbOcclGetData - occl0) / frames, (g_kbProgLinks - lk0) / frames,
+                    (g_kbBufBytes - buf0) / 1024 / frames);
+            t0 = now; frames = 0; occl0 = g_kbOcclGetData; lk0 = g_kbProgLinks; buf0 = g_kbBufBytes;
         }
     }
     void  Resize(int w, int h) override { emscripten_set_canvas_element_size("#canvas", w, h); }
