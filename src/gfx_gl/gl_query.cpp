@@ -96,24 +96,18 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
         // R_FinishGpuFence's `while (GetData == S_FALSE)` spin forever, since the
         // engine waits on dx.flushGpuQuery without ever issuing it.
         if (!sync_) { if (pData) *static_cast<DWORD *>(pData) = TRUE; return S_OK; }
-#if defined(__EMSCRIPTEN__)
-        // Always report signaled on web. The engine's GPU fence (R_FinishGpuFence) exists
-        // to keep the CPU from outrunning the GPU, but the proxied command queue already
-        // serializes every GL op in order, so a stale read can't corrupt an in-flight GPU
-        // read. Returning S_FALSE here made the engine spin `while (GetData==S_FALSE)`,
-        // each iteration a proxied glClientWaitSync round-trip. commit_frame throttles the
-        // backend, so skipping the fence wait costs nothing but removes the per-frame spin.
+        // NOTE: this fence is the engine's GPU throttle (R_FinishGpuFence) — it keeps the
+        // render backend from outrunning the GPU. Reporting it always-signaled on web
+        // removed the throttle and let the proxied command queue flood -> freeze on spawn.
+        // Keep the real poll: glClientWaitSync(timeout=0) is non-blocking, returns S_FALSE
+        // until the GPU passes the fence; the engine's wait loop throttles correctly.
         ++g_kbEventWaits;
-        if (pData) *static_cast<DWORD *>(pData) = TRUE;
-        return S_OK;
-#else
         GLenum r = glClientWaitSync(static_cast<GLsync>(sync_),
                                     flush ? GL_SYNC_FLUSH_COMMANDS_BIT : 0, 0);
         bool done = (r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED);
         if (!done) return S_FALSE;
         if (pData) *static_cast<DWORD *>(pData) = TRUE;
         return S_OK;
-#endif
     }
     return S_OK;
 }
