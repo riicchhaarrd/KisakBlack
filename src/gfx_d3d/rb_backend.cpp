@@ -334,6 +334,41 @@ unsigned int(__cdecl *const rb_tessTable[16])(const GfxDrawSurfListArgs *, GfxCm
   &R_TessGlassMeshList
 };
 
+#if defined(__EMSCRIPTEN__)
+// EMULATE_FUNCTION_POINTER_CASTS mangles the GfxCmdBufContext struct-by-value argument when a tess
+// function is invoked through the cast function pointer (the x86 __cdecl call site splits the struct
+// into two separate pointer args). Direct-dispatch by table index so the by-value struct uses the
+// correct, non-emulated ABI. Mirror rb_tessTable[16] exactly.
+static unsigned int R_InvokeTessFunc(
+    unsigned int idx, const GfxDrawSurfListArgs *listArgs,
+    GfxCmdBufSourceState *prepassSource, GfxCmdBufState *prepassState)
+{
+    GfxCmdBufContext prepassContext;
+    prepassContext.source = prepassSource;
+    prepassContext.state = prepassState;
+    switch ( idx )
+    {
+    case 0:  return R_TessTrianglesList(listArgs, prepassContext);
+    case 1:  return R_TessTrianglesPreTessList(listArgs, prepassContext);
+    case 2:  return R_TessStaticModelRigidDrawSurfList(listArgs, prepassContext);
+    case 3:  return R_TessStaticModelPreTessList(listArgs, prepassContext);
+    case 4:  return R_TessStaticModelCachedList(listArgs, prepassContext);
+    case 5:  return R_TessStaticModelSkinnedDrawSurfList(listArgs, prepassContext);
+    case 6:  return R_TessBModel(listArgs, prepassContext);
+    case 7:  return R_TessXModelRigidDrawSurfList(listArgs, prepassContext);
+    case 8:  return R_TessXModelRigidSkinnedDrawSurfList(listArgs, prepassContext);
+    case 9:  return R_TessXModelSkinnedDrawSurfList(listArgs, prepassContext);
+    case 10: return R_TessXModelWaterList(listArgs, prepassContext);
+    case 11: return R_TessCodeMeshList(listArgs, prepassContext);
+    case 12: return R_TessMarkMeshList(listArgs, prepassContext);
+    case 13: return R_TessParticleCloudList(listArgs, prepassContext);
+    case 14: return R_TessRopeMeshList(listArgs, prepassContext);
+    case 15: return R_TessGlassMeshList(listArgs, prepassContext);
+    default: return rb_tessTable[idx](listArgs, prepassContext);
+    }
+}
+#endif
+
 GfxRenderTarget gfxRenderTargets[R_RENDERTARGET_COUNT];
 
 GfxDrawConsts g_drawConsts;
@@ -1707,10 +1742,18 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                 R_SetupPass(prepassContext, 0);
                 passPrepassContext_4 = prepassContext.state;
             }
+#if defined(__EMSCRIPTEN__)
+            subListCount = R_InvokeTessFunc(
+                                             (drawSurf.packed >> 51) & 0xF,
+                                             listArgs,
+                                             passPrepassContext,
+                                             passPrepassContext_4);
+#else
             subListCount = ((int (__cdecl *)(const GfxDrawSurfListArgs *, GfxCmdBufSourceState *, GfxCmdBufState *))rb_tessTable[(drawSurf.packed >> 51) & 0xF])(
                                              listArgs,
                                              passPrepassContext,
                                              passPrepassContext_4);
+#endif
         }
 
         if ( isPixelCostEnabled )
