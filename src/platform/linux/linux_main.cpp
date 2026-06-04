@@ -92,6 +92,17 @@ int main(int argc, char **argv) {
     static char kbOutBuf[1 << 16], kbErrBuf[1 << 16];
     setvbuf(stdout, kbOutBuf, _IOLBF, sizeof(kbOutBuf));
     setvbuf(stderr, kbErrBuf, _IOLBF, sizeof(kbErrBuf));
+    // Diagnostic heartbeat on the BROWSER (DOM) thread, independent of the engine. If it
+    // keeps logging during a "freeze" the DOM thread is alive (the render thread is stuck);
+    // if it stops, a proxied call is blocking the DOM thread itself. Decides where to look.
+    MAIN_THREAD_EM_ASM({
+        if (!globalThis.__kbHb) {
+            var n = 0;
+            globalThis.__kbHb = setInterval(function() {
+                console.log('[heartbeat] DOM-thread alive #' + (++n) + ' @ ' + (performance.now() | 0) + 'ms');
+            }, 500);
+        }
+    });
 #endif
     char cmdline[2048] = {0};
     for (int i = 1; i < argc; ++i) {

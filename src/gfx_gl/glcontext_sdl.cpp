@@ -52,7 +52,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B5 (async shader link, no spawn freeze) ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B6 (heartbeat diagnostic) ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -112,9 +112,10 @@ public:
         static unsigned long occl0 = 0, lk0 = 0, buf0 = 0;
         double now = emscripten_get_now();
         if (t0 == 0) { t0 = now; occl0 = g_kbOcclGetData; lk0 = g_kbProgLinks; buf0 = g_kbBufBytes; }
-        if (++frames >= 120) {
-            double dt = now - t0;
-            fprintf(stderr, "[perf] %.1f fps | per-frame occlusion=%lu links=%lu bufKB=%lu\n",
+        ++frames;
+        double dt = now - t0;
+        if (dt >= 1000.0) {   // time-based: also a render-thread heartbeat (stops if RB stalls)
+            fprintf(stderr, "[perf/rb] %.1f fps | occlusion=%lu links=%lu bufKB=%lu\n",
                     1000.0 * frames / dt,
                     (g_kbOcclGetData - occl0) / frames, (g_kbProgLinks - lk0) / frames,
                     (g_kbBufBytes - buf0) / 1024 / frames);
