@@ -672,7 +672,14 @@ void __cdecl RB_StandardDrawCommands(GfxViewInfo *viewInfo)
   //if ( needsDepthPrepass )
   // LWSS: wire up this dvar, it's in the game but removed. 
   // It appears at one point that this was optional but it is now mandatory for some rendering (trees on `mp_mountain`)
-  if ( needsDepthPrepass && r_depthPrepass->current.enabled ) 
+  bool allowDepthPrepass = needsDepthPrepass && r_depthPrepass->current.enabled;
+#if defined(__EMSCRIPTEN__)
+  // The depth-prepass static-model path selects a wild technique (state->technique ->
+  // pass->vertexDecl garbage -> OOB in R_SetVertexDecl), likely via rgp.depthPrepassMaterial.
+  // Disable on web for now so the main color pass renders; revisit with shadow maps.
+  allowDepthPrepass = false;
+#endif
+  if ( allowDepthPrepass )
   {
     PROF_SCOPED("R_DepthPrepass");
     R_InitContext(data, &cmdBuf);
