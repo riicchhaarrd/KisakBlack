@@ -3300,6 +3300,15 @@ void R_DrawCall(
     // device, so set this command buffer's authoritative device (from R_InitContext ==
     // dx.device) AFTER the template copy, or R_ChangeDepthRange derefs a null device.
     cmdBuf.prim.device = cmdBufEA->device;
+#if defined(__EMSCRIPTEN__)
+    {
+        static int kbDevLog = 0;
+        if (cmdBuf.prim.device == 0 && kbDevLog++ < 8)
+            fprintf(stderr, "[R_DrawCall] device NULL: cmdBufEA=%p cmdBufEA->device=%p dx.device=%p dx.d3d9=%p gfxTmpl.device=%p\n",
+                    (void *)cmdBufEA, (void *)cmdBufEA->device, (void *)dx.device,
+                    (void *)dx.d3d9, (void *)gfxCmdBufState.prim.device);
+    }
+#endif
 
     R_Set_Texture_SeeThruDecal(source);
     R_SetCodeImageTexture(source, 0x27u, gfxRenderTargets[R_RENDERTARGET_UI3D].image);
