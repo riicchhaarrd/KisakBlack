@@ -99,7 +99,10 @@ int main(int argc, char **argv) {
         if (!globalThis.__kbHb) {
             var n = 0;
             globalThis.__kbHb = setInterval(function() {
-                console.log('[heartbeat] DOM-thread alive #' + (++n) + ' @ ' + (performance.now() | 0) + 'ms');
+                console.log('[heartbeat] DOM-thread alive #' + (++n));
+                // Read the render thread's GL-call counters from shared memory so we can
+                // see, during a freeze, which loop (if any) the render thread is spinning in.
+                try { if (Module['_kb_heartbeat_dump']) Module['_kb_heartbeat_dump'](); } catch (e) {}
             }, 500);
         }
     });

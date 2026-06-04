@@ -3,6 +3,10 @@
 #include "gl_d3d9.h"
 
 #include <GL/glew.h>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#include <cstdio>
+#endif
 
 // WebGL2/GLES3 has no GL_SAMPLES_PASSED (exact sample count) occlusion target — only
 // the boolean GL_ANY_SAMPLES_PASSED. Using the wrong target throws GL_INVALID_ENUM on
@@ -22,9 +26,21 @@ static constexpr GLenum KB_OCCLUSION_TARGET = GL_SAMPLES_PASSED;
 unsigned long g_kbOcclGetData = 0;   // glGetQueryObjectiv/uiv pairs (occlusion poll)
 unsigned long g_kbEventWaits  = 0;   // glClientWaitSync (event-fence poll/spin)
 unsigned long g_kbProgLinks   = 0;   // (vs,ps) program links (lazy, at first draw use)
+unsigned long g_kbDraws       = 0;   // GLDevice::Draw(Indexed)Primitive calls (render-thread liveness)
 unsigned long g_kbTexUploads  = 0;   // glTex(Compressed)Image2D calls
 unsigned long g_kbTexBytes    = 0;   // bytes of texture data uploaded
 unsigned long g_kbBufBytes    = 0;   // bytes of vertex/index buffer data uploaded
+
+#if defined(__EMSCRIPTEN__)
+// Called every 500ms from the DOM-thread heartbeat (linux_main.cpp). Reads the render
+// thread's GL-call counters from shared memory: during a freeze, whether these keep
+// climbing pinpoints WHICH loop the render thread is spinning in (occlusion / fence /
+// draws) or, if all frozen, that it is stuck OUTSIDE the GL layer (physics/SMP/condvar).
+extern "C" EMSCRIPTEN_KEEPALIVE void kb_heartbeat_dump() {
+    fprintf(stderr, "[hb] occl=%lu event=%lu links=%lu draws=%lu\n",
+            g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks, g_kbDraws);
+}
+#endif
 
 GLQuery::GLQuery(IDirect3DDevice9 *device, D3DQUERYTYPE type) : device_(device), type_(type) {
     if (type_ == D3DQUERYTYPE_OCCLUSION) glGenQueries(1, &glQuery_);
