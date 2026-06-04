@@ -45,7 +45,7 @@ extern "C" void WebInput_SetResolution(int w, int h);
 // Perf counters defined in gl_query.cpp (global namespace).
 extern unsigned long g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks;
 extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
-extern unsigned long g_kbDraws, g_kbReadbacks;
+extern unsigned long g_kbDraws, g_kbReadbacks, g_kbPresentEnter;
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -53,7 +53,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B12 (per-frame draw/readback perf probe) ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B13 (stage snapshot: pinpoint stuck stage) ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -104,6 +104,7 @@ public:
     ~EmWebGLContext() override { if (ctx_ > 0) emscripten_webgl_destroy_context(ctx_); }
     void  MakeCurrent() override        { if (ctx_ > 0) emscripten_webgl_make_context_current(ctx_); }
     void  SwapBuffers() override {
+        ++g_kbPresentEnter;            // reached present (before commit_frame) this frame
         emscripten_webgl_commit_frame();
         // Per-second dump of frame time + the per-frame count of RETURNING GL calls
         // (occlusion polls + event-fence waits), the suspected proxy sync-stall source.

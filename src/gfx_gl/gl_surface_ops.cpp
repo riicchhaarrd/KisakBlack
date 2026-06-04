@@ -117,6 +117,7 @@ HRESULT WINAPI GLDevice::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
 HRESULT WINAPI GLDevice::StretchRect(IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect,
                                      IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
                                      D3DTEXTUREFILTERTYPE Filter) {
+    extern unsigned long g_kbBlits; ++g_kbBlits;
     GLSurface *src = static_cast<GLSurface *>(pSourceSurface);
     GLSurface *dst = static_cast<GLSurface *>(pDestSurface);
     if (!src || !dst) return E_FAIL;
