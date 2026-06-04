@@ -37,10 +37,22 @@
 #include <emscripten/html5.h>
 #include <emscripten/html5_webgl.h>
 
+// Defined in src/platform/sdl/sdl_events.cpp — tells the HTML5 input layer the engine
+// backbuffer size so it can scale mouse coordinates from CSS pixels.
+extern "C" void WebInput_SetResolution(int w, int h);
+
 namespace {
 class EmWebGLContext final : public GLContext {
 public:
     bool init(const GLContextDesc &desc) {
+        // The page <canvas> has no width/height attributes, so it defaults to 300x150;
+        // creating the (offscreen-backed) context on it would render at that size and
+        // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
+        // to the engine's resolution first, and tell the input layer so mouse coords
+        // scale from CSS pixels into this space.
+        emscripten_set_canvas_element_size("#canvas", desc.width, desc.height);
+        WebInput_SetResolution(desc.width, desc.height);
+
         EmscriptenWebGLContextAttributes attrs;
         emscripten_webgl_init_context_attributes(&attrs);
         attrs.majorVersion = 2;           // WebGL2 == GLES3
