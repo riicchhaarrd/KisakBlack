@@ -22,6 +22,12 @@
 
 #include "../sdl/sdl_events.h"   // Sys_PumpSDLEvents
 #include <SDL2/SDL.h>            // SDL_GetMouseState / relative-mouse mode (IN_Frame)
+#if defined(__EMSCRIPTEN_PTHREADS__)
+#include <emscripten/html5.h>    // pointer lock for in-game look (no SDL window on web)
+#include <emscripten/em_asm.h>   // MAIN_THREAD_EM_ASM (hide OS cursor over the canvas)
+// Mouse state fed by the HTML5 callbacks in sdl_events.cpp (same worker thread).
+extern "C" double g_webMouseX, g_webMouseY, g_webMouseDx, g_webMouseDy;
+#endif
 
 // Client mouse entry point (src/client_mp/cl_input_mp.cpp). Declared directly to
 // avoid pulling the whole client header into the platform layer; __cdecl is the
@@ -130,6 +136,35 @@ void Sys_LoadingKeepAlive() { Sys_PumpSDLEvents(Sys_Milliseconds()); }
 // otherwise; its return value (recenterMouse) requests relative/captured mode,
 // which maps cleanly to SDL's relative mouse mode.
 void IN_Frame() {
+#if defined(__EMSCRIPTEN_PTHREADS__)
+    // Web has no SDL window; mouse comes from the HTML5 callbacks. Menu uses the
+    // absolute (scaled) cursor; in-game look uses Pointer Lock movement deltas.
+    static bool relative = false, primed = false;
+    static double oldX = 0.0, oldY = 0.0;
+    int x = (int)g_webMouseX, y = (int)g_webMouseY, dx = 0, dy = 0;
+    if (relative) {
+        dx = (int)g_webMouseDx; dy = (int)g_webMouseDy;
+        g_webMouseDx = 0.0; g_webMouseDy = 0.0;
+    } else {
+        if (!primed) { oldX = g_webMouseX; oldY = g_webMouseY; primed = true; }
+        dx = (int)(g_webMouseX - oldX); dy = (int)(g_webMouseY - oldY);
+        oldX = g_webMouseX; oldY = g_webMouseY;
+    }
+    int recenterWeb = CL_MouseEvent(x, y, dx, dy);
+    if ((bool)recenterWeb != relative) {
+        relative = recenterWeb != 0;
+        if (relative) {
+            // Pointer lock needs a user gesture; this may no-op until the user clicks,
+            // after which look starts working. Drop the entry-frame delta either way.
+            emscripten_request_pointerlock("#canvas", EM_TRUE);
+            g_webMouseDx = g_webMouseDy = 0.0;
+        } else {
+            emscripten_exit_pointerlock();
+            primed = false;
+        }
+    }
+    return;
+#else
     // In-game look uses relative-mouse mode: SDL captures and recenters the cursor,
     // so absolute SDL_GetMouseState positions jump around and differencing them gives
     // garbage deltas (the view "teleports" while looking). Use SDL_GetRelativeMouseState
@@ -153,9 +188,23 @@ void IN_Frame() {
         SDL_SetRelativeMouseMode(relative ? SDL_TRUE : SDL_FALSE);
         if (relative) SDL_GetRelativeMouseState(nullptr, nullptr);  // drop the entry-frame jump
     }
+#endif // __EMSCRIPTEN_PTHREADS__
 }
+#if defined(__EMSCRIPTEN_PTHREADS__)
+// No window-relative warp on the web (only Pointer Lock can move the cursor); the
+// menu cursor is driven by absolute position, so warp is a no-op. Hide/show the OS
+// cursor over the canvas so the engine's own menu cursor isn't doubled.
+void IN_SetCursorPos(unsigned int, unsigned int) {}
+void IN_ShowSystemCursor(bool show) {
+    MAIN_THREAD_EM_ASM({
+        var c = document.getElementById('canvas');
+        if (c) c.style.cursor = $0 ? 'auto' : 'none';
+    }, show ? 1 : 0);
+}
+#else
 void IN_SetCursorPos(unsigned int x, unsigned int y) { SDL_WarpMouseInWindow(nullptr, (int)x, (int)y); }
 void IN_ShowSystemCursor(bool show) { SDL_ShowCursor(show ? SDL_ENABLE : SDL_DISABLE); }
+#endif
 
 // ---- Misc Windows extras: no-ops on Linux ----------------------------------
 char *Sys_GetClipboardData() { return nullptr; }
