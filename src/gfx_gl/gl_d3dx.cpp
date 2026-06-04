@@ -11,6 +11,8 @@
 #include "gl_object.h"
 #include "gl_resources.h"
 
+extern unsigned long g_kbReadbacks;      // global-scope decl (the glReadPixels below is in an anon namespace)
+
 #include <GL/glew.h>
 #include <cstdio>
 #include <vector>
@@ -45,7 +47,7 @@ bool ReadSurfaceBGRA(GLSurface *s, int w, int h, std::vector<unsigned char> &out
                            s->texName(), s->level());
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    extern unsigned long g_kbReadbacks; ++g_kbReadbacks;
+    ++g_kbReadbacks;
     glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, out.data());
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbo);
