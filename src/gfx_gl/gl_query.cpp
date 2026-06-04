@@ -22,6 +22,9 @@ static constexpr GLenum KB_OCCLUSION_TARGET = GL_SAMPLES_PASSED;
 unsigned long g_kbOcclGetData = 0;   // glGetQueryObjectiv/uiv pairs (occlusion poll)
 unsigned long g_kbEventWaits  = 0;   // glClientWaitSync (event-fence poll/spin)
 unsigned long g_kbProgLinks   = 0;   // (vs,ps) program links (lazy, at first draw use)
+unsigned long g_kbTexUploads  = 0;   // glTex(Compressed)Image2D calls
+unsigned long g_kbTexBytes    = 0;   // bytes of texture data uploaded
+unsigned long g_kbBufBytes    = 0;   // bytes of vertex/index buffer data uploaded
 
 GLQuery::GLQuery(IDirect3DDevice9 *device, D3DQUERYTYPE type) : device_(device), type_(type) {
     if (type_ == D3DQUERYTYPE_OCCLUSION) glGenQueries(1, &glQuery_);

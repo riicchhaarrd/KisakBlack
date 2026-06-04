@@ -44,6 +44,7 @@ extern "C" void WebInput_SetResolution(int w, int h);
 
 // Perf counters defined in gl_query.cpp (global namespace).
 extern unsigned long g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks;
+extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -104,14 +105,16 @@ public:
         // (occlusion polls + event-fence waits), the suspected proxy sync-stall source.
         static double t0 = 0, tPrev = 0; static int frames = 0;
         static unsigned long occl0 = 0, ev0 = 0, lk0 = 0, lkPrev = 0;
+        static unsigned long txP = 0, txbP = 0, bufP = 0;
         double now = emscripten_get_now();
         if (t0 == 0) { t0 = tPrev = now; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits; lk0 = lkPrev = g_kbProgLinks; }
-        // Flag individual stall frames (>100 ms) with what they linked — the suspected hitch.
+        // Attribute individual stall frames (>100 ms) to link / texture / buffer work.
         double frameMs = now - tPrev; tPrev = now;
         if (frameMs > 100.0)
-            fprintf(stderr, "[stall] %.0f ms frame | program links this frame=%lu\n",
-                    frameMs, g_kbProgLinks - lkPrev);
-        lkPrev = g_kbProgLinks;
+            fprintf(stderr, "[stall] %.0f ms | links=%lu texUploads=%lu texKB=%lu bufKB=%lu\n",
+                    frameMs, g_kbProgLinks - lkPrev, g_kbTexUploads - txP,
+                    (g_kbTexBytes - txbP) / 1024, (g_kbBufBytes - bufP) / 1024);
+        lkPrev = g_kbProgLinks; txP = g_kbTexUploads; txbP = g_kbTexBytes; bufP = g_kbBufBytes;
         if (++frames >= 30) {
             double dt = now - t0;
             fprintf(stderr, "[perf] %.1f fps (%.1f ms/frame) | per-frame returning GL: "

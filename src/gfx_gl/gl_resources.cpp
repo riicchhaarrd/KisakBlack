@@ -6,6 +6,10 @@
 #include <cstdio>
 #include <cstring>
 
+// Perf counters (defined in gl_query.cpp) — attribute per-frame stall frames to
+// texture/buffer upload work; surfaced in glcontext_sdl.cpp's [stall] line.
+extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
+
 // ---- GLVertexBuffer -------------------------------------------------------
 GLVertexBuffer::GLVertexBuffer(IDirect3DDevice9 *device, UINT length, DWORD usage,
                                DWORD fvf, D3DPOOL pool)
@@ -42,6 +46,7 @@ HRESULT WINAPI GLVertexBuffer::Unlock() {
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferSubData(GL_ARRAY_BUFFER, lockOffset_, lockSize_, shadow_.data() + lockOffset_);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
+        g_kbBufBytes += lockSize_;
         dirty_ = false;
     }
     return D3D_OK;
@@ -91,6 +96,7 @@ HRESULT WINAPI GLIndexBuffer::Unlock() {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
         glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, lockOffset_, lockSize_, shadow_.data() + lockOffset_);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        g_kbBufBytes += lockSize_;
         dirty_ = false;
     }
     return D3D_OK;
@@ -201,6 +207,8 @@ HRESULT WINAPI GLTexture::UnlockRect(UINT Level) {
     glBindTexture(GL_TEXTURE_2D, tex_);
     while (glGetError() != GL_NO_ERROR) {}  // drain prior errors
     int blockBytes = 0; unsigned cfmt = D3DCompressedGLFormat(format_, &blockBytes);
+    ++g_kbTexUploads;
+    g_kbTexBytes += (unsigned long)levelShadow_[Level].size();
     if (cfmt) {
         glCompressedTexImage2D(GL_TEXTURE_2D, Level, cfmt, w, h, 0,
                                (GLsizei)levelShadow_[Level].size(), levelShadow_[Level].data());
