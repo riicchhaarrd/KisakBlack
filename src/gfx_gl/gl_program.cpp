@@ -74,6 +74,15 @@ void GLDevice::useDrawProgram() {
         lp.alphaFuncLoc = glGetUniformLocation(prog, "uAlphaTestFunc");
         lp.alphaRefLoc  = glGetUniformLocation(prog, "uAlphaRef");
 #endif
+        // Query the sampler uniform locations ONCE here, not per-draw: each
+        // glGetUniformLocation is a synchronous round-trip on the proxied web context.
+        for (int i = 0; i < kMaxStages; ++i) {
+            char name[4];                 // "s0".."s15"
+            snprintf(name, sizeof(name), "s%d", i);
+            lp.samplerLoc[i] = glGetUniformLocation(prog, name);
+        }
+        extern unsigned long g_kbProgLinks;
+        ++g_kbProgLinks;
         it = progCache_.emplace(key, lp).first;
     }
 
@@ -92,10 +101,9 @@ void GLDevice::useDrawProgram() {
 #endif
 
     // Bind each referenced sampler s# to texture unit # and the matching texture.
+    // Uses the cached location (queried once at link) — no per-draw glGetUniformLocation.
     for (int i = 0; i < kMaxStages; ++i) {
-        char name[4];                     // "s0".."s15" — two digits need 4 bytes
-        snprintf(name, sizeof(name), "s%d", i);
-        int loc = glGetUniformLocation(lp.prog, name);
+        int loc = lp.samplerLoc[i];
         if (loc < 0) continue;
         glUniform1i(loc, i);
         if (boundTexName_[i]) {

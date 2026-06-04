@@ -201,7 +201,11 @@ private:
     float           vsConst_[256 * 4] = {};
     float           psConst_[256 * 4] = {};
     struct LinkedProgram { unsigned prog; int vscLoc; int pscLoc;
-                           int alphaFuncLoc = -1; int alphaRefLoc = -1; };
+                           int alphaFuncLoc = -1; int alphaRefLoc = -1;
+                           // Sampler uniform locations ("s0".."s15"), queried ONCE at
+                           // link. Per-draw glGetUniformLocation is a sync round-trip on
+                           // the proxied web context — caching it removes 16 stalls/draw.
+                           int samplerLoc[kMaxStages]; };
     std::map<uint64_t, LinkedProgram> progCache_;
 };
 

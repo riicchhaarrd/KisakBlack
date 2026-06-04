@@ -21,6 +21,7 @@ static constexpr GLenum KB_OCCLUSION_TARGET = GL_SAMPLES_PASSED;
 // dumps the per-frame totals (see glcontext_sdl.cpp).
 unsigned long g_kbOcclGetData = 0;   // glGetQueryObjectiv/uiv pairs (occlusion poll)
 unsigned long g_kbEventWaits  = 0;   // glClientWaitSync (event-fence poll/spin)
+unsigned long g_kbProgLinks   = 0;   // (vs,ps) program links (lazy, at first draw use)
 
 GLQuery::GLQuery(IDirect3DDevice9 *device, D3DQUERYTYPE type) : device_(device), type_(type) {
     if (type_ == D3DQUERYTYPE_OCCLUSION) glGenQueries(1, &glQuery_);

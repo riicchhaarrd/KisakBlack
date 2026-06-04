@@ -43,7 +43,7 @@
 extern "C" void WebInput_SetResolution(int w, int h);
 
 // Perf counters defined in gl_query.cpp (global namespace).
-extern unsigned long g_kbOcclGetData, g_kbEventWaits;
+extern unsigned long g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks;
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -102,17 +102,24 @@ public:
         emscripten_webgl_commit_frame();
         // Per-second dump of frame time + the per-frame count of RETURNING GL calls
         // (occlusion polls + event-fence waits), the suspected proxy sync-stall source.
-        static double t0 = 0; static int frames = 0;
-        static unsigned long occl0 = 0, ev0 = 0;
+        static double t0 = 0, tPrev = 0; static int frames = 0;
+        static unsigned long occl0 = 0, ev0 = 0, lk0 = 0, lkPrev = 0;
         double now = emscripten_get_now();
-        if (t0 == 0) { t0 = now; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits; }
+        if (t0 == 0) { t0 = tPrev = now; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits; lk0 = lkPrev = g_kbProgLinks; }
+        // Flag individual stall frames (>100 ms) with what they linked — the suspected hitch.
+        double frameMs = now - tPrev; tPrev = now;
+        if (frameMs > 100.0)
+            fprintf(stderr, "[stall] %.0f ms frame | program links this frame=%lu\n",
+                    frameMs, g_kbProgLinks - lkPrev);
+        lkPrev = g_kbProgLinks;
         if (++frames >= 30) {
             double dt = now - t0;
             fprintf(stderr, "[perf] %.1f fps (%.1f ms/frame) | per-frame returning GL: "
-                            "occlusion=%lu event-fence=%lu\n",
+                            "occlusion=%lu event-fence=%lu links=%lu\n",
                     1000.0 * frames / dt, dt / frames,
-                    (g_kbOcclGetData - occl0) / frames, (g_kbEventWaits - ev0) / frames);
-            t0 = now; frames = 0; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits;
+                    (g_kbOcclGetData - occl0) / frames, (g_kbEventWaits - ev0) / frames,
+                    (g_kbProgLinks - lk0) / frames);
+            t0 = now; frames = 0; occl0 = g_kbOcclGetData; ev0 = g_kbEventWaits; lk0 = g_kbProgLinks;
         }
     }
     void  Resize(int w, int h) override { emscripten_set_canvas_element_size("#canvas", w, h); }
