@@ -24,6 +24,7 @@ private:
     D3DQUERYTYPE      type_;
     unsigned          glQuery_ = 0;        // occlusion query object
     void             *sync_    = nullptr;  // GLsync for event queries
+    DWORD             lastResult_ = 0xFFFF;// cached occlusion result (default: visible)
 };
 
 #endif // KISAK_GL_QUERY_H

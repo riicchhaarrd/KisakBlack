@@ -60,18 +60,34 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
 
     if (type_ == D3DQUERYTYPE_OCCLUSION) {
         ++g_kbOcclGetData;
+#if defined(__EMSCRIPTEN__)
+        // 1-frame-latency, NON-BLOCKING readback. On the proxied web GL context a forced
+        // glGetQueryObjectuiv(GL_QUERY_RESULT) flushes and waits the whole command queue +
+        // GPU — a single occlusion poll measured ~500 ms in-game, the main cause of the
+        // 3D-scene 1 FPS. So only read the result once the GPU already has it (AVAILABLE);
+        // otherwise return the cached value (default: visible). Never block, and never
+        // return S_FALSE — that made the engine spin and pass D3DGETDATA_FLUSH, forcing
+        // the very stall we are avoiding. Occlusion culling still works, one frame late.
+        GLint available = 0;
+        glGetQueryObjectiv(glQuery_, GL_QUERY_RESULT_AVAILABLE, &available);
+        if (available) {
+            GLuint samples = 0;
+            glGetQueryObjectuiv(glQuery_, GL_QUERY_RESULT, &samples);  // ready -> no wait
+            // GL_ANY_SAMPLES_PASSED yields 0/1; expand to a large "visible" count so the
+            // engine's sample-count thresholds (samples > N) resolve correctly.
+            lastResult_ = samples ? 0xFFFFu : 0u;
+        }
+        if (pData) *static_cast<DWORD *>(pData) = lastResult_;
+        return S_OK;
+#else
         GLint available = 0;
         glGetQueryObjectiv(glQuery_, GL_QUERY_RESULT_AVAILABLE, &available);
         if (!available && !flush) return S_FALSE;       // not ready yet
         GLuint samples = 0;
         glGetQueryObjectuiv(glQuery_, GL_QUERY_RESULT, &samples);  // blocks if flush
-#if defined(__EMSCRIPTEN__)
-        // GL_ANY_SAMPLES_PASSED yields 0/1, not a count — expand to a large "visible"
-        // count so threshold tests (e.g. samples > N) read as visible when any passed.
-        samples = samples ? 0xFFFFu : 0u;
-#endif
         if (pData) *static_cast<DWORD *>(pData) = samples;
         return S_OK;
+#endif
     }
 
     if (type_ == D3DQUERYTYPE_EVENT) {
@@ -80,13 +96,24 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
         // R_FinishGpuFence's `while (GetData == S_FALSE)` spin forever, since the
         // engine waits on dx.flushGpuQuery without ever issuing it.
         if (!sync_) { if (pData) *static_cast<DWORD *>(pData) = TRUE; return S_OK; }
+#if defined(__EMSCRIPTEN__)
+        // Always report signaled on web. The engine's GPU fence (R_FinishGpuFence) exists
+        // to keep the CPU from outrunning the GPU, but the proxied command queue already
+        // serializes every GL op in order, so a stale read can't corrupt an in-flight GPU
+        // read. Returning S_FALSE here made the engine spin `while (GetData==S_FALSE)`,
+        // each iteration a proxied glClientWaitSync round-trip. commit_frame throttles the
+        // backend, so skipping the fence wait costs nothing but removes the per-frame spin.
         ++g_kbEventWaits;
+        if (pData) *static_cast<DWORD *>(pData) = TRUE;
+        return S_OK;
+#else
         GLenum r = glClientWaitSync(static_cast<GLsync>(sync_),
                                     flush ? GL_SYNC_FLUSH_COMMANDS_BIT : 0, 0);
         bool done = (r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED);
         if (!done) return S_FALSE;
         if (pData) *static_cast<DWORD *>(pData) = TRUE;
         return S_OK;
+#endif
     }
     return S_OK;
 }
