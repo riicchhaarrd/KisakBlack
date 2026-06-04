@@ -34,6 +34,7 @@
 // explicitSwapControl=true + emscripten_webgl_commit_frame() gives us a real swap
 // (matching SwapBuffers) rather than the implicit "swap when the rAF callback exits",
 // which does not apply when the loop runs on a worker.
+#include <emscripten.h>            // emscripten_get_now (proxy self-test)
 #include <emscripten/html5.h>
 #include <emscripten/html5_webgl.h>
 
@@ -83,6 +84,16 @@ public:
         if (ge != GLEW_OK)
             fprintf(stderr, "[gl] glewInit (webgl worker): %s\n", glewGetErrorString(ge));
         glGetError();
+
+        // Proxy self-test: glGetError returns a value, so on a PROXIED context every
+        // call must synchronously round-trip to the DOM thread (slow); on a worker-
+        // local (transferred OffscreenCanvas) context it is microseconds. This tells
+        // us up-front whether the canvas transfer to this render worker succeeded.
+        double t0 = emscripten_get_now();
+        for (int i = 0; i < 200; ++i) glGetError();
+        double per = (emscripten_get_now() - t0) / 200.0;
+        fprintf(stderr, "[gl] WebGL2 ctx=%d on render worker; glGetError %.4f ms/call -> %s\n",
+                (int)ctx_, per, per > 0.02 ? "PROXIED to DOM thread (slow)" : "worker-LOCAL (fast)");
         return true;
     }
     ~EmWebGLContext() override { if (ctx_ > 0) emscripten_webgl_destroy_context(ctx_); }

@@ -9,6 +9,11 @@
 #include <gfx_d3d/rb_resource.h>
 #include <win32/win_common.h>
 
+#if defined(__EMSCRIPTEN_PTHREADS__)
+// win_kernel.cpp: flags the next CreateThread to transfer "#canvas" to that worker.
+extern "C" void KB_Web_TransferCanvasToNextThread();
+#endif
+
 #if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
 #include "../platform/sdl/web_fibers.h"   // cooperative green-thread scheduler (single OS thread)
 
@@ -321,6 +326,13 @@ void __cdecl Sys_CreateThread(void (__cdecl *function)(unsigned int), unsigned i
 #else
     unsigned int LastError; // eax
 
+#if defined(__EMSCRIPTEN_PTHREADS__)
+    // Hand the page OffscreenCanvas to the render/backend worker so its WebGL2 context
+    // is created locally (no per-GL-call proxy to the DOM thread). win_kernel.cpp's
+    // CreateThread picks this up on the very next pthread_create.
+    if ( threadContext == THREAD_CONTEXT_BACKEND )
+        KB_Web_TransferCanvasToNextThread();
+#endif
     threadHandle[threadContext] = CreateThread(
         0,
         0,

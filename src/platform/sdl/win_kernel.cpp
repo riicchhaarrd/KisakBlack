@@ -32,6 +32,8 @@
 #  if !defined(__EMSCRIPTEN_PTHREADS__)
 #    define KB_WEB_FIBERS 1
 #    include "web_fibers.h"  // cooperative green-thread scheduler (single OS thread)
+#  else
+#    include <emscripten/threading.h>  // emscripten_pthread_attr_settransferredcanvases
 #  endif
 #endif
 
@@ -154,6 +156,19 @@ void web_thread_fiber_entry(unsigned int ctx) {
 
 } // namespace
 
+#if defined(__EMSCRIPTEN_PTHREADS__)
+// The page OffscreenCanvas is handed to the proxied-main worker at startup (by
+// OFFSCREENCANVAS_SUPPORT / OFFSCREENCANVASES_TO_PTHREAD='#canvas'). It must be
+// re-transferred to the BACKEND (render) worker so that worker's WebGL2 context is
+// created locally — otherwise every GL call proxies synchronously to the DOM thread
+// (~1 FPS in-game). Sys_CreateThread() sets this flag immediately before the backend
+// thread's CreateThread() call; the next pthread_create() then transfers "#canvas" to
+// the new worker. A canvas can be owned by exactly one thread, so only the render
+// thread is flagged. See src/gfx_gl/glcontext_sdl.cpp.
+static bool g_kbTransferCanvasToNextThread = false;
+extern "C" void KB_Web_TransferCanvasToNextThread() { g_kbTransferCanvasToNextThread = true; }
+#endif
+
 // ---- Threads ---------------------------------------------------------------
 // CREATE_SUSPENDED is honored via a start-gate (see thread_thunk): the thread is
 // created but parks before the user routine until ResumeThread() runs. The engine
@@ -176,9 +191,28 @@ HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, D
     return static_cast<HANDLE>(k);
 #else
     pthread_mutex_init(&k->mtx, nullptr); pthread_cond_init(&k->cond, nullptr);
-    if (pthread_create(&k->thread, nullptr, thread_thunk, k) != 0) {
-        pthread_cond_destroy(&k->cond); pthread_mutex_destroy(&k->mtx); delete k; return nullptr;
+    pthread_attr_t  attr;
+    pthread_attr_t *pattr = nullptr;
+#if defined(__EMSCRIPTEN_PTHREADS__)
+    // Render/backend worker only: transfer the page OffscreenCanvas to it so its WebGL2
+    // context renders locally instead of proxying every GL call to the DOM thread.
+    if (g_kbTransferCanvasToNextThread) {
+        g_kbTransferCanvasToNextThread = false;
+        pthread_attr_init(&attr);
+        emscripten_pthread_attr_settransferredcanvases(&attr, "#canvas");
+        pattr = &attr;
     }
+#endif
+    if (pthread_create(&k->thread, pattr, thread_thunk, k) != 0) {
+        pthread_cond_destroy(&k->cond); pthread_mutex_destroy(&k->mtx);
+#if defined(__EMSCRIPTEN_PTHREADS__)
+        if (pattr) pthread_attr_destroy(pattr);
+#endif
+        delete k; return nullptr;
+    }
+#if defined(__EMSCRIPTEN_PTHREADS__)
+    if (pattr) pthread_attr_destroy(pattr);
+#endif
     // The engine stores this id in its thread table and later matches it against
     // GetCurrentThreadId() inside the new thread. GetCurrentThreadId() is
     // (DWORD)(uintptr_t)pthread_self(), and pthread_self() in the new thread equals
