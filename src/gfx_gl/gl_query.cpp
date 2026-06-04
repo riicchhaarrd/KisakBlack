@@ -65,7 +65,17 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
         // Defer when the engine is just polling (no FLUSH): never block here, or a wave of
         // newly-visible objects (look around / spawn) each forces a proxied GPU flush and
         // the scene freezes. Only the explicit-FLUSH path reads the result (may block).
-        if (!available && !flush) return S_FALSE;
+        if (!available && !flush) {
+#if defined(__EMSCRIPTEN__)
+            // CRITICAL on the deferred/proxied web context: SUBMIT the queued glEndQuery so
+            // the GPU can resolve this query. The engine polls in `while (GetData==S_FALSE)`
+            // and never reaches commit_frame to flush the command stream; without this the
+            // query never becomes available and the render thread spins forever (the freeze
+            // the DOM-heartbeat diagnostic pinned to a stuck render thread).
+            glFlush();
+#endif
+            return S_FALSE;
+        }
         GLuint samples = 0;
         glGetQueryObjectuiv(glQuery_, GL_QUERY_RESULT, &samples);  // blocks if flush
 #if defined(__EMSCRIPTEN__)
@@ -90,8 +100,17 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
         // Keep the real poll: glClientWaitSync(timeout=0) is non-blocking, returns S_FALSE
         // until the GPU passes the fence; the engine's wait loop throttles correctly.
         ++g_kbEventWaits;
-        GLenum r = glClientWaitSync(static_cast<GLsync>(sync_),
-                                    flush ? GL_SYNC_FLUSH_COMMANDS_BIT : 0, 0);
+        // ALWAYS pass GL_SYNC_FLUSH_COMMANDS_BIT (not just when the engine asks for FLUSH):
+        // the engine polls this fence in `while (GetData==S_FALSE)` and never reaches
+        // commit_frame to submit the queued glFenceSync. Without the flush bit the fence is
+        // never sent to the GPU, never signals, and the render thread spins forever. The
+        // flush bit is the GL-standard guard against exactly this poll deadlock; the GPU
+        // throttle still holds because we still return S_FALSE until the fence signals.
+        GLbitfield fbit = GL_SYNC_FLUSH_COMMANDS_BIT;
+#if !defined(__EMSCRIPTEN__)
+        fbit = flush ? GL_SYNC_FLUSH_COMMANDS_BIT : 0;
+#endif
+        GLenum r = glClientWaitSync(static_cast<GLsync>(sync_), fbit, 0);
         bool done = (r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED);
         if (!done) return S_FALSE;
         if (pData) *static_cast<DWORD *>(pData) = TRUE;
