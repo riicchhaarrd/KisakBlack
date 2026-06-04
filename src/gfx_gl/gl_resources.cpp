@@ -414,6 +414,14 @@ GLSurface::GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMA
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         if (D3DToGLFormat(format_, &internal, &fmt, &type, &bpp))
             glTexImage2D(GL_TEXTURE_2D, 0, internal, width_, height_, 0, fmt, type, nullptr);
+        else
+            // Unsupported RT format (e.g. D3DFMT_G16R16 = 0x22): allocate a renderable RGBA8
+            // fallback at the real size so this surface is a COMPLETE FBO colour attachment.
+            // Without storage the texture is 0x0, the FBO is incomplete, every draw to it
+            // fails (GL_INVALID_FRAMEBUFFER_OPERATION "zero size"), and the readback path
+            // (GetRenderTargetData glReadBuffer/glReadPixels) operates on a broken FBO and
+            // stalls the render thread -> the in-game spawn deadlock.
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 }
