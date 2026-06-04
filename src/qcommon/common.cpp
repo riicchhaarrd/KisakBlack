@@ -2138,14 +2138,18 @@ void Com_InitDvars()
                                             0,
                                             "Prevents threads from changing CPUs; improves profiling and may fix some bugs, but can hurt performance");
     CpuCount = Sys_GetCpuCount();
-#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
-    // Single-threaded web build (M3, fiber path): force SMP off regardless of
-    // navigator.hardwareConcurrency. The render backend + jobs run inline on the
-    // main thread via the engine's native sys_smp_allowed==0 seam.
+#if defined(__EMSCRIPTEN__)
+    // Web build (BOTH the single-thread fiber build AND the -pthread build): force SMP off.
+    // The render backend + jobs run inline on the main thread via the engine's native
+    // sys_smp_allowed==0 seam. On the pthreads build SMP was technically functional, but the
+    // frontend<->backend handshake (the DX-device-ownership lock trade + the GPU swap/event
+    // fences) deadlocks at the first heavy 3D frame on the deferred/proxied web GL context:
+    // a GPU fence that never reliably signals leaves a spin loop waiting forever, and the two
+    // threads wedge. Single-threaded rendering removes that entire racy handshake; steady-
+    // state was already 45-55 fps, so there is no real cost to dropping SMP on web.
     sys_smp_allowed = _Dvar_RegisterBool("sys_smp_allowed", 0, 0x10u, "Allow multi-threading");
 #else
-    // Desktop, or Emscripten-with-pthreads: real worker threads (Web Workers under
-    // pthreads), so SMP is allowed when there is more than one CPU/hardware thread.
+    // Desktop: real worker threads, so SMP is allowed when there is more than one CPU.
     sys_smp_allowed = _Dvar_RegisterBool("sys_smp_allowed", CpuCount > 1, 0x10u, "Allow multi-threading");
 #endif
 #ifdef _DEBUG
