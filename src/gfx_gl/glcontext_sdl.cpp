@@ -45,6 +45,7 @@ extern "C" void WebInput_SetResolution(int w, int h);
 // Perf counters defined in gl_query.cpp (global namespace).
 extern unsigned long g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks;
 extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
+extern unsigned long g_kbDraws, g_kbReadbacks;
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -52,7 +53,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B11 (RT fix #2: standalone surfaces) ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B12 (per-frame draw/readback perf probe) ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -109,17 +110,19 @@ public:
         // One compact [perf] line every 120 frames only — console writes are proxied to
         // the DOM thread per character, so frequent logging itself costs framerate.
         static double t0 = 0; static int frames = 0;
-        static unsigned long occl0 = 0, lk0 = 0, buf0 = 0;
+        static unsigned long occl0 = 0, dr0 = 0, rb0 = 0, buf0 = 0;
         double now = emscripten_get_now();
-        if (t0 == 0) { t0 = now; occl0 = g_kbOcclGetData; lk0 = g_kbProgLinks; buf0 = g_kbBufBytes; }
+        if (t0 == 0) { t0 = now; occl0 = g_kbOcclGetData; dr0 = g_kbDraws; rb0 = g_kbReadbacks; buf0 = g_kbBufBytes; }
         ++frames;
         double dt = now - t0;
         if (dt >= 1000.0) {   // time-based: also a render-thread heartbeat (stops if RB stalls)
-            fprintf(stderr, "[perf/rb] %.1f fps | occlusion=%lu links=%lu bufKB=%lu\n",
+            // Per-FRAME draws/occlusion/readbacks: draws ~50k => culling off; readbk>0 =>
+            // a per-frame GPU-sync readback (GetRenderTargetData) stalling every frame.
+            fprintf(stderr, "[perf/rb] %.1f fps | draws/f=%lu occl/f=%lu readbk/f=%lu bufKB/f=%lu\n",
                     1000.0 * frames / dt,
-                    (g_kbOcclGetData - occl0) / frames, (g_kbProgLinks - lk0) / frames,
-                    (g_kbBufBytes - buf0) / 1024 / frames);
-            t0 = now; frames = 0; occl0 = g_kbOcclGetData; lk0 = g_kbProgLinks; buf0 = g_kbBufBytes;
+                    (g_kbDraws - dr0) / frames, (g_kbOcclGetData - occl0) / frames,
+                    (g_kbReadbacks - rb0) / frames, (g_kbBufBytes - buf0) / 1024 / frames);
+            t0 = now; frames = 0; occl0 = g_kbOcclGetData; dr0 = g_kbDraws; rb0 = g_kbReadbacks; buf0 = g_kbBufBytes;
         }
     }
     void  Resize(int w, int h) override { emscripten_set_canvas_element_size("#canvas", w, h); }

@@ -53,6 +53,7 @@ HRESULT WINAPI GLSwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    extern unsigned long g_kbReadbacks; ++g_kbReadbacks;
     glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_BGRA, GL_UNSIGNED_BYTE, shadow.data());
     return D3D_OK;
 }
@@ -102,6 +103,7 @@ HRESULT WINAPI GLDevice::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
                            src->texName(), src->level());
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    extern unsigned long g_kbReadbacks; ++g_kbReadbacks;
     glReadPixels(0, 0, w, h, fmt, type, dst->shadow().data());
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbo);

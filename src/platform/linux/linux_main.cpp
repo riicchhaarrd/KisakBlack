@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
                 var s = '';
                 try { if (Module['_kb_heartbeat_dump']) s = UTF8ToString(Module['_kb_heartbeat_dump']()); } catch (e) {}
                 console.log('[heartbeat] #' + (++n) + ' ' + s);
-            }, 500);
+            }, 2000);
         }
     });
 #endif

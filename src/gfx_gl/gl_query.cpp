@@ -32,6 +32,7 @@ unsigned long g_kbTexBytes    = 0;   // bytes of texture data uploaded
 unsigned long g_kbBufBytes    = 0;   // bytes of vertex/index buffer data uploaded
 unsigned long g_kbComFrames   = 0;   // Com_Frame() entries (game/main-thread liveness)
 unsigned long g_kbSvFrames    = 0;   // SV_Frame() entries (server/physics liveness)
+unsigned long g_kbReadbacks   = 0;   // glReadPixels calls (per-frame GPU-sync readbacks)
 
 #if defined(__EMSCRIPTEN__)
 // Called every 500ms from the DOM-thread heartbeat (linux_main.cpp). Reads the render
