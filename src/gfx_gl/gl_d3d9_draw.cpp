@@ -88,7 +88,16 @@ void declType(BYTE t, GLint *size, GLenum *type, GLboolean *norm) {
         case D3DDECLTYPE_FLOAT2:    *size = 2; *type = GL_FLOAT;          break;
         case D3DDECLTYPE_FLOAT3:    *size = 3; *type = GL_FLOAT;          break;
         case D3DDECLTYPE_FLOAT4:    *size = 4; *type = GL_FLOAT;          break;
+#if defined(__EMSCRIPTEN__)
+        // WebGL2 forbids GL_BGRA as the attribute size (must be 1..4); the call
+        // throws GL_INVALID_VALUE, the attribute is never set up, and the draw then
+        // fails "enabled array has no buffer" -> nothing renders. Decode as a plain
+        // 4xUBYTE normalized attribute. Caveat: D3DCOLOR is BGRA in memory, so the
+        // shader receives R/B swapped (cosmetic; menu colours are mostly white).
+        case D3DDECLTYPE_D3DCOLOR:  *size = 4; *type = GL_UNSIGNED_BYTE; *norm = GL_TRUE; break;
+#else
         case D3DDECLTYPE_D3DCOLOR:  *size = GL_BGRA; *type = GL_UNSIGNED_BYTE; *norm = GL_TRUE; break;
+#endif
         case D3DDECLTYPE_UBYTE4:    *size = 4; *type = GL_UNSIGNED_BYTE;  break;
         case D3DDECLTYPE_UBYTE4N:   *size = 4; *type = GL_UNSIGNED_BYTE;  *norm = GL_TRUE; break;
         case D3DDECLTYPE_SHORT2:    *size = 2; *type = GL_SHORT;          break;
