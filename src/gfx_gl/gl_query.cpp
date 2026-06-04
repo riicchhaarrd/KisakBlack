@@ -49,8 +49,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE const char *kb_heartbeat_dump() {
     static char buf[192];
     extern int g_AcquisitionCount; extern unsigned long long g_DXDeviceThread;
     snprintf(buf, sizeof(buf),
-             "[hb] com=%lu sv=%lu draws=%lu pres=%lu | devSpin=%lu devOwner=%u devAcq=%d",
+             "[hb] com=%lu sv=%lu draws=%lu pres=%lu event=%lu blits=%lu rb=%lu | spin=%lu own=%u acq=%d",
              g_kbComFrames, g_kbSvFrames, g_kbDraws, g_kbPresentEnter,
+             g_kbEventWaits, g_kbBlits, g_kbReadbacks,
              g_kbDevSpin, (unsigned)(g_DXDeviceThread & 0xffffu), g_AcquisitionCount);
     return buf;
 }
