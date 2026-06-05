@@ -17,6 +17,17 @@ jqBatchPool jqPool;
 
 void(__cdecl *jqWorkerInitFn)(int);
 HANDLE jqNewJobAdded;
+
+#if defined(__EMSCRIPTEN__)
+// Freeze diag: record the name of the batch whose Code() is currently running, so the
+// heartbeat (wc=) names the exact worker cmd that hangs when run inline. "-" between batches.
+extern const char *g_kbWorkerCmdName;
+#define KB_BATCH_BEGIN(m) (g_kbWorkerCmdName = ((m) && (m)->Name) ? (m)->Name : "?")
+#define KB_BATCH_END()    (g_kbWorkerCmdName = "-")
+#else
+#define KB_BATCH_BEGIN(m) ((void)0)
+#define KB_BATCH_END()    ((void)0)
+#endif
 bool jqStopSignal;
 volatile unsigned int jqPoolLock;
 jqQueue jqGlobalQueue;
@@ -1552,7 +1563,9 @@ void __cdecl jqWorkerLoop(jqWorker *Worker, jqBatchGroup *GroupID, bool BreakWhe
                         CurBatch.ConditionalAddress = 0;
                         {
                             PROF_SCOPED_RUNTIME_NAME(CurBatch.Module->Name); // LWSS ADD (worker batch visibility)
+                            KB_BATCH_BEGIN(CurBatch.Module);
                             ret = CurBatch.Module->Code(&CurBatch);
+                            KB_BATCH_END();
                         }
                     }
                     lastConditionalCheckTime = tick64;
@@ -1649,7 +1662,9 @@ void __cdecl jqWorkerLoop(jqWorker *Worker, jqBatchGroup *GroupID, bool BreakWhe
         LABEL_9:
             {
                 PROF_SCOPED_RUNTIME_NAME(CurBatch.Module->Name); // LWSS ADD (worker batch visibility)
+                KB_BATCH_BEGIN(CurBatch.Module);
                 ret = CurBatch.Module->Code(&CurBatch);
+                KB_BATCH_END();
             }
         LABEL_10:
             if (ret)
@@ -1723,7 +1738,9 @@ void __cdecl jqTempWorkerLoop(jqWorker *Worker, jqBatchGroup *GroupID, bool (__c
         jqCurBatch = &CurBatch;
         {
             PROF_SCOPED_RUNTIME_NAME(Module->Name); // LWSS ADD (main-thread assist batch visibility)
+            KB_BATCH_BEGIN(Module);
             ret = Module->Code(&CurBatch);
+            KB_BATCH_END();
         }
         jqCurBatch = 0;
         if ( !ret)
@@ -2622,4 +2639,3 @@ jqBatchPool::~jqBatchPool()
   this->BaseQueue.Queue.HeadLock.ThreadId = 0;
   this->BaseQueue.Queue.HeadLock.ThisPtr = 0;
 }
-
