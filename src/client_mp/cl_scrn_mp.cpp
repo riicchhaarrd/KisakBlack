@@ -470,11 +470,18 @@ void    SCR_UpdateFrame()
 
     PROF_SCOPED("SCR_UpdateFrame"); // LWSS ADD
 
+#if defined(__EMSCRIPTEN__)
+    extern int g_kbFrontStage;   // freeze diag: SCR_UpdateFrame sub-step (4xx band)
+#define KBFS(n) (g_kbFrontStage = (n))
+#else
+#define KBFS(n) ((void)0)
+#endif
+
     streamingFrame = streamFrontendGlob.frame;
 
     iassert(Sys_IsMainThread() || Sys_IsRenderThread());
 
-    R_BeginFrame();
+    KBFS(410); R_BeginFrame();
 
     v5 = Demo_IsPaused() || Demo_IsCompleted() || Demo_GetClipPausedState();
     if ( Demo_IsPlaying() && CL_LocalClient_IsCUIFlagSet(0, 32) )
@@ -487,25 +494,28 @@ void    SCR_UpdateFrame()
         cgTime = 0;
     timescale = Com_GetTimescaleForSnd();
     IsMature = CG_IsMature();
-    SND_BeginFrame(IsMature, v5, timescale, cgTime, seed);
-    CG_SndUpdate();
-    CL_CompositeRender();
-    GlassCl_WaitUpdate();
-    refreshedUI = CL_CGameRendering(0);
+    KBFS(420); SND_BeginFrame(IsMature, v5, timescale, cgTime, seed);
+    KBFS(425); CG_SndUpdate();
+    KBFS(430); CL_CompositeRender();
+    KBFS(435); GlassCl_WaitUpdate();
+    KBFS(440); refreshedUI = CL_CGameRendering(0);
     if ( CL_AllLocalClientsDisconnected() && Sys_IsMainThread() && cls.uiStarted )
         UI_ViewerDraw(0);
-    CL_UpdateUIVisibilityBits(0);
-    SCR_DrawScreenField(0, refreshedUI);
-    CL_DrawScreen(0);
+    KBFS(445); CL_UpdateUIVisibilityBits(0);
+    KBFS(450); SCR_DrawScreenField(0, refreshedUI);
+    KBFS(455); CL_DrawScreen(0);
+    KBFS(460);
     if ( streamingFrame == streamFrontendGlob.frame )
         R_StreamUpdate_Idle();
     else
         R_StreamUpdate_End();
-    SND_EndFrame();
-    R_EndFrame();
-    R_IssueRenderCommands(3u);
+    KBFS(465); SND_EndFrame();
+    KBFS(470); R_EndFrame();
+    KBFS(480); R_IssueRenderCommands(3u);
+    KBFS(490);
     if ( r_reflectionProbeGenerate->current.enabled && refreshedUI && CL_GetLocalClientGlobals(0)->serverTime > 1000 )
         R_BspGenerateReflections();
+#undef KBFS
 }
 
 int    CL_CGameRendering(int localClientNum)
