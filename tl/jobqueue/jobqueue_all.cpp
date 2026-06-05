@@ -702,14 +702,22 @@ void __cdecl jqAttachQueueToWorkers(jqQueue *Queue, unsigned int ProcessorMask)
         if ((processorBit & ProcessorMask) == 0)
             continue; // Skip if this processor is not in the requested mask
 
-        // Compute worker pointer from processorBit
+        // Compute the PACKED worker index. jqStart() allocates one jqWorker per SET bit
+        // of jqProcessorsMask, in ascending order, densely packed — so the worker that
+        // owns `processorBit` lives at the ordinal = number of set mask bits BELOW it,
+        // NOT at the raw bit position. Using the bit position (as this reconstruction
+        // originally did) both mis-attaches queues AND, for a sparse mask such as
+        // jqEnableWorkers(12) -> 0b1101 (processors 1,4,8 -> workers 0,1,2), indexes
+        // jqWorkers[3] — one past the end of the 3-element array (heap corruption),
+        // while leaving worker 1 with no shared queue. That corrupted the job system and
+        // stranded frontend worker cmds, so the SMP frontend spun forever in
+        // R_FinishedFrontendWorkerCmds and the render backend sat idle: the spawn freeze.
         int workerIndex = 0;
-        unsigned int mask = 1;
-        while (mask != processorBit)
-        {
-            mask <<= 1;
-            workerIndex++;
-        }
+        for (unsigned int below = jqProcessorsMask & (processorBit - 1); below; below &= below - 1)
+            ++workerIndex;
+
+        if (workerIndex >= jqNWorkers)
+            continue;   // defensive: never index past the packed worker array
 
         jqWorker *worker = &jqWorkers[workerIndex];
 
