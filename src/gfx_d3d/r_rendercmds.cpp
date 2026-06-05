@@ -523,9 +523,22 @@ void __cdecl R_ToggleSmpFrameCmd(char type)
         __debugbreak();
     }
     //BLOPS_NULLSUB();
+#if defined(__EMSCRIPTEN__)
+    extern int g_kbFrontStage;   // freeze diag: render-handoff sub-stage (70..75)
+#define KBFS(n) (g_kbFrontStage = (n))
+#else
+#define KBFS(n) ((void)0)
+#endif
     {
         PROF_SCOPED("wait renderer");
+#if defined(__EMSCRIPTEN__)
+        int sem = R_ReleaseDXDeviceOwnership();
+        KBFS(70); Sys_WaitRenderer();
+        if (sem)
+            R_AcquireDXDeviceOwnership(0);
+#else
         Sys_WaitRenderer();
+#endif
     }
     
     RB_CopyBackendStats();
@@ -546,8 +559,9 @@ void __cdecl R_ToggleSmpFrameCmd(char type)
         // frontend never reaches Sys_WakeRenderer. DRAIN the cmds on THIS thread instead:
         // R_WaitFrontendWorkerCmds() -> jqFlush executes the queued batches on the caller,
         // exactly like the non-SMP path (above) already does, guaranteeing forward progress.
-        R_WaitFrontendWorkerCmds();
+        KBFS(71); R_WaitFrontendWorkerCmds();
 #endif
+        KBFS(72);
         while (!R_FinishedFrontendWorkerCmds())
             NET_Sleep(1u);
 #if defined(__EMSCRIPTEN__)
@@ -559,10 +573,23 @@ void __cdecl R_ToggleSmpFrameCmd(char type)
     R_UpdateSkinCacheUsage();
     //BLOPS_NULLSUB();
     R_UnlockSkinnedCache();
+#if defined(__EMSCRIPTEN__)
+    KBFS(73);
+    int ownership = R_AcquireDXDeviceOwnership(0);
+    front_end_data = frontEndDataOut;
+    R_ToggleSmpFrame();
+    //PIXSetMarker(-1, "wake renderer");
+    KBFS(74); Sys_WakeRenderer((void *)front_end_data);
+    if ( ownership )
+        R_ReleaseDXDeviceOwnership();
+    KBFS(75);
+#else
     front_end_data = frontEndDataOut;
     R_ToggleSmpFrame();
     //PIXSetMarker(-1, "wake renderer");
     Sys_WakeRenderer((void *)front_end_data);
+#endif
+#undef KBFS
 }
 
 void __cdecl R_AbortRenderCommands()

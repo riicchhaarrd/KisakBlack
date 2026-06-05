@@ -2833,6 +2833,15 @@ unsigned int Com_Frame_Try_Block_Function()
 
     PROF_SCOPED("Com_Frame");
 
+#if defined(__EMSCRIPTEN__)
+    // Freeze diag: mark which main-thread frame phase is executing, surfaced as fstage=
+    // in the heartbeat. A frozen value names exactly where the main thread is wedged.
+    extern int g_kbFrontStage;
+#define KBFS(n) (g_kbFrontStage = (n))
+#else
+#define KBFS(n) ((void)0)
+#endif
+
     Com_WriteConfiguration(0);
     Sys_UpdateHotkeyBlock();
     SetAnimCheck(com_animCheck->current.color[0], SCRIPTINSTANCE_SERVER);
@@ -2924,10 +2933,10 @@ unsigned int Com_Frame_Try_Block_Function()
 
     {
         PROF_SCOPED("SV frame");
-        SV_Frame(Com_LocalClient_GetControllerIndex(0), mseca);
+        KBFS(10); SV_Frame(Com_LocalClient_GetControllerIndex(0), mseca);
     }
 
-    Monkey_Frame();
+    KBFS(15); Monkey_Frame();
 
     //BLOPS_NULLSUB();
 
@@ -2943,7 +2952,7 @@ unsigned int Com_Frame_Try_Block_Function()
         R_SetEndTime(com_lastFrameTime[lastFrameIndex]);
         {
             PROF_SCOPED("pre frame");
-            CL_RunOncePerClientFrame(Com_LocalClients_GetPrimary(), mseca);
+            KBFS(18); CL_RunOncePerClientFrame(Com_LocalClients_GetPrimary(), mseca);
             Com_EventLoop();
             for (int localClientNum = 0; localClientNum < 1; ++localClientNum)
             {
@@ -2959,25 +2968,27 @@ unsigned int Com_Frame_Try_Block_Function()
         {
             PROF_SCOPED("CL_Frame");
             for (int localClientNuma = 0; localClientNuma < 1; ++localClientNuma)
-                CL_Frame(localClientNuma, mseca);
+                { KBFS(20); CL_Frame(localClientNuma, mseca); }
         }
 
         dvar_modifiedFlags &= ~2u;
-        Com_UpdateMenu();
-        CG_UpdateClouds(mseca);
-        PhysicsSystem_Update();
+        KBFS(25); Com_UpdateMenu();
+        KBFS(28); CG_UpdateClouds(mseca);
+        KBFS(30); PhysicsSystem_Update();
         //BG_EvalVehicleName(0);
-        SCR_UpdateScreen();
-        gjk_collision_epilog(0);
+        KBFS(40); SCR_UpdateScreen();
+        KBFS(45); gjk_collision_epilog(0);
         //BG_EvalVehicleName(v8);
         for (int localClientNumb = 0; localClientNumb < 1; ++localClientNumb)
             DevGui_Update(localClientNumb, (float)cls.frametime * 0.001);
-        Com_Statmon();
-        R_WaitEndTime();
+        KBFS(50); Com_Statmon();
+        KBFS(55); R_WaitEndTime();
+        KBFS(60);
     }
-    
+
     result = GetCurrentThreadId();
     return result;
+#undef KBFS
 }
 
 void __cdecl Com_WriteConfiguration(int localClientNum)
