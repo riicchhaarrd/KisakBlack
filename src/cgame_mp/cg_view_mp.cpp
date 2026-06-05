@@ -4131,8 +4131,14 @@ int CG_DrawActiveFrame(
     {
         __debugbreak();
     }
+#if defined(__EMSCRIPTEN__)
+    extern int g_kbFrontStage;   // freeze diag: CG_DrawActiveFrame sub-step (6xx band)
+#define KBFS(n) (g_kbFrontStage = (n))
+#else
+#define KBFS(n) ((void)0)
+#endif
     cgameGlob = CG_GetLocalClientGlobals(localClientNum);
-    R_ClearScene(localClientNum);
+    KBFS(600); R_ClearScene(localClientNum);
     FX_BeginUpdate(localClientNum);
     R_Rope_ClearAll();
     if (cgameGlob->clearMarks)
@@ -4212,7 +4218,7 @@ int CG_DrawActiveFrame(
     iassert(cgameGlob->snap);
     iassert(cgameGlob->nextSnap);
 
-    CG_UpdateTimeScale(localClientNum);
+    KBFS(605); CG_UpdateTimeScale(localClientNum);
     CG_UpdateIKTiming(localClientNum);
     CG_VisionSetsUpdate(localClientNum);
     CG_UpdateViewOffset(localClientNum);
@@ -4321,8 +4327,8 @@ int CG_DrawActiveFrame(
     {
         CG_KickAngles(cgameGlob);
     }
-    CL_SyncGpu();
-    Rope_Update(localClientNum, cgameGlob->time);
+    KBFS(610); CL_SyncGpu();
+    KBFS(611); Rope_Update(localClientNum, cgameGlob->time);
     CG_ApplyWeaponTurnRateCap(localClientNum);
     CL_Input(localClientNum);
     {
@@ -4400,6 +4406,7 @@ int CG_DrawActiveFrame(
 
     if (CL_LocalClient_IsFirstActive(localClientNum) && cgameGlob->snap)
     {
+        KBFS(620);
         PROF_SCOPED("pending triggers");
         iassert(cg_level.currentTriggerListSize == 0);
 
@@ -4428,6 +4435,7 @@ int CG_DrawActiveFrame(
     }
 
     {
+        KBFS(630);
         PROF_SCOPED("view values");
         UpdateKillCamEntityCache(localClientNum);
         CG_CalcViewValues(localClientNum);
@@ -4440,6 +4448,7 @@ int CG_DrawActiveFrame(
     }
 
     {
+        KBFS(640);
         PROF_SCOPED("player entity");
         if (r_lockPvs->current.enabled)
         {
@@ -4473,11 +4482,13 @@ int CG_DrawActiveFrame(
     }
 
     {
+        KBFS(650);
         PROF_SCOPED("remaining fx");
         R_UpdateRemainingEffects(&fxUpdateCmd);
         Rope_Render(localClientNum);
     }
     {
+        KBFS(660);
         PROF_SCOPED("aim assist");
         AimAssist_UpdateScreenTargets(
             localClientNum,
@@ -4488,7 +4499,7 @@ int CG_DrawActiveFrame(
     }
 
     //BLOPS_NULLSUB();
-    CG_UpdateSceneDepthOfField(localClientNum);
+    KBFS(670); CG_UpdateSceneDepthOfField(localClientNum);
     CG_UpdateWaterSheetingFX(cgameGlob);
     CG_UpdateFlameFX(cgameGlob);
     CG_UpdatePoisonFX(cgameGlob);
@@ -4496,6 +4507,7 @@ int CG_DrawActiveFrame(
     CG_UpdateGenericFilter(cgameGlob);
 
     {
+        KBFS(680);
         PROF_SCOPED("draw 2D");
         R_AddCmdProjectionSet2D();
         DrawShellshockBlend(localClientNum);
@@ -4511,12 +4523,13 @@ int CG_DrawActiveFrame(
         CG_Draw2D(localClientNum);
     }
     
-    CG_ValidateWeaponSelect(cgameGlob);
-    CG_DrawActive(localClientNum);
-    CG_CheckBattleChatter();
+    KBFS(685); CG_ValidateWeaponSelect(cgameGlob);
+    KBFS(690); CG_DrawActive(localClientNum);
+    KBFS(695); CG_CheckBattleChatter();
     iassert(bgs == &cgameGlob->bgs);
     bgs = NULL;
     return 1;
+#undef KBFS
 }
 
 void __cdecl CG_UpdateTestFX(int localClientNum)
