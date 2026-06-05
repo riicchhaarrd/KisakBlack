@@ -3332,7 +3332,7 @@ void __thiscall GlassShard::GenerateVerts(
     tangent.array[2] = (int)(this->axis[0][2] * 127.0f + 127.5f);
     tangent.array[3] = 63;
 
-    // Mesh data pointer — indexes into positions/normals/uvs arrays
+    // Mesh data pointer ï¿½ indexes into positions/normals/uvs arrays
     // Each mesh vertex entry is 2 bytes: [positionIndex, normalIndex]
     const unsigned char *meshVerts = (const unsigned char *)clGlasses->renderer->vertexList[this->outline.numVerts - 1];
 
@@ -3419,6 +3419,7 @@ int GlassShard::Split(
     int newEdgeIdx; // [esp+7A4h] [ebp-614h] BYREF
     TempOutline newOutline; // [esp+7A8h] [ebp-610h] BYREF
 
+    int kbGuard1 = 0, kbGuard2 = 0;   // index-loop safety counters (declared before any goto)
     timer.counter = &clGlasses->renderer->splitTimer;
     timer.start = tlPcGetTick().QuadPart;
     ++clGlasses->renderer->numSplits;
@@ -3532,6 +3533,21 @@ int GlassShard::Split(
             v35 = flrand(minEdgeLength, maxEdgeLength);
             if ( (float)(minEdgeLength * 0.5) > (float)(newEdgeDist - v35) )
                 break;
+            // Safety bound (fixes the in-game glass freeze on the web build): this loop
+            // traces a zig-zag split line, adding one vertex per iteration into two fixed
+            // 64-vertex outlines. Its only exit is the convergence test above. On wasm,
+            // float math is strict IEEE-754, whereas native x86 (-m32) evaluates the
+            // intermediates in 80-bit x87 precision, so the line can fail to converge here;
+            // once an outline fills, Outline::Add silently no-ops and numVerts stops
+            // advancing, so this loop spins forever. Abort the split gracefully (the shard
+            // just stays whole this pass) if either outline is about to overflow.
+            if ( newOutline.numVerts >= (int)newOutline.maxVerts - 2
+                || otherOutline.numVerts >= (int)otherOutline.maxVerts - 2 )
+            {
+                ++GlassShard::splitFailCount[1];
+                *timer.counter += tlPcGetTick().QuadPart - timer.start;
+                return 0;
+            }
             newOutline.Add(newDir, v35)->isOriginalEdge = 0;
             otherOutline.Add(newOutline.verts[newOutline.numVerts - 1].edge.origin)->isOriginalEdge = 0;
             v31 = 5;
@@ -3574,17 +3590,36 @@ int GlassShard::Split(
         newOutline.Add(newDir, newEdgeDist)->isOriginalEdge = isOriginalEdge;
         v13 = this->outline.verts[newEdgeIdx].isOriginalEdge;
         otherOutline.Add(newOutline.verts[newOutline.numVerts - 1].edge.origin)->isOriginalEdge = v13;
+        kbGuard1 = 0;
         for ( edgeIndex = ((signed int)-abs(newEdgeIdx - (this->outline.numVerts - 1)) >> 31) & (newEdgeIdx + 1);
                     edgeIndex != startEdge;
                     edgeIndex = ((signed int)-fabs(edgeIndex - (this->outline.numVerts - 1)) >> 31) & (edgeIndex + 1) )
         {
+            // Safety bound (fixes the in-game glass freeze on web): this walks edges around
+            // the polygon until edgeIndex wraps to startEdge. The wrap only triggers at
+            // exactly numVerts-1, so if newEdgeIdx came back stale/out-of-range from
+            // GetNumIntersections (it leaves it unchanged when no nearer hit is found, and
+            // strict-IEEE float on wasm changes which hits register vs native x87), edgeIndex
+            // marches past the wrap point forever (also reading verts[] OOB). A polygon walk
+            // can't exceed numVerts steps; bail the split gracefully if it does.
+            if ( ++kbGuard1 > (int)this->outline.numVerts )
+            {
+                *timer.counter += tlPcGetTick().QuadPart - timer.start;
+                return 0;
+            }
             v12 = this->outline.verts[edgeIndex].isOriginalEdge;
             newOutline.Add(this->outline.verts[edgeIndex].edge.origin)->isOriginalEdge = v12;
         }
         if ( !newOutline.CloseOutline() )
             goto LABEL_36;
+        kbGuard2 = 0;
         for ( edgeIndex = newEdgeIdx; edgeIndex != startEdge; edgeIndex = nextEdgeIndex )
         {
+            if ( ++kbGuard2 > (int)this->outline.numVerts )   // same safety bound as the loop above
+            {
+                *timer.counter += tlPcGetTick().QuadPart - timer.start;
+                return 0;
+            }
             nextEdgeIndex = this->outline.numVerts
                                         - 1
                                         + (((signed int)-fabs(edgeIndex) >> 31) & (edgeIndex - this->outline.numVerts));

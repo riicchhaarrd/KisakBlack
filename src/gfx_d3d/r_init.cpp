@@ -2,6 +2,10 @@
 #include <win32/win_main.h>
 #include <qcommon/common.h>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>   // EM_ASM_INT for the headless-automation low-res toggle
+#endif
+
 #include <dxerr.h>
 #include <d3d9.h>
 #include "rb_backend.h"
@@ -368,6 +372,17 @@ void __cdecl R_SetD3DPresentParameters(_D3DPRESENT_PARAMETERS_ *d3dpp, const Gfx
     memset((unsigned __int8 *)d3dpp, 0, sizeof(_D3DPRESENT_PARAMETERS_));
     d3dpp->BackBufferHeight = wndParms->displayHeight;
     d3dpp->BackBufferWidth = wndParms->displayWidth;
+#if defined(__EMSCRIPTEN__)
+    // Headless automation only: if globalThis.__kbLowRes is set (via Playwright
+    // addInitScript), force a tiny backbuffer so software-GL (SwiftShader) renders the
+    // whole pipeline cheaply, freeing CPU for the asset loader. OFF by default, so real
+    // users keep full resolution. The freeze under test is a threading deadlock, which is
+    // resolution-independent.
+    if (MAIN_THREAD_EM_ASM_INT({ return (typeof globalThis !== 'undefined' && globalThis.__kbLowRes) ? 1 : 0; })) {
+        d3dpp->BackBufferWidth  = 320;
+        d3dpp->BackBufferHeight = 240;
+    }
+#endif
     d3dpp->BackBufferFormat = D3DFMT_A8R8G8B8;
     d3dpp->BackBufferCount = 1;
     d3dpp->MultiSampleType = dx.multiSampleType;
