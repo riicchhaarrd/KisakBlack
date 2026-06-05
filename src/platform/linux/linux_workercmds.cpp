@@ -71,6 +71,31 @@ void __cdecl IW_task_manager_flush()
 void __cdecl R_InitWorkerCmds()
 {
     jqInit();
+#if defined(__EMSCRIPTEN__)
+    // Web: run the job queue WITHOUT async worker threads (single "main" worker).
+    //
+    // Pinned with the fstage tracer: the in-game spawn freeze is the main thread spinning
+    // forever in Sys_WaitWorkerCmdInternal -> jqFlush during scene generation
+    // (R_GenerateSortedDrawSurfs, fstage=690). jqFlush loops while
+    // QueuedBatchCount+ExecutingBatchCount != 0; on the pthread build a job-queue worker
+    // thread that gets stuck mid-batch leaves ExecutingBatchCount pinned at 1, so the
+    // flush never returns and the render backend sits idle waiting for a frame that the
+    // frontend never submits.
+    //
+    // jqEnableWorkers(0) -> jqStart builds a single worker for the main processor and
+    // spawns NO threads. All worker cmds default to the global queue (jqAddBatch with a
+    // NULL queue), which is attached to that worker, so each cmd is drained INLINE on the
+    // calling thread at its existing jqFlush sync point. Nothing executes on another
+    // thread, so nothing can strand the flush. Serial, but correct. The render BACKEND
+    // thread (R_InitRenderThread) is independent of the job queue and keeps running, so
+    // device creation / the SMP frame handshake are unaffected (no startup black screen).
+    jqEnableWorkers(0);
+    jqSetBatchDataHeapSize(0x4000u, 0x10u);
+    jqStart();
+    // NOTE: the setup_worker_threads batches below init per-worker-thread contexts; with
+    // no worker threads they must NOT run (running them on the main thread would corrupt
+    // its thread identity), so they are skipped on web.
+#else
     jqEnableWorkers(12);
     jqSetBatchDataHeapSize(0x4000u, 0x10u);
     jqStart();
@@ -85,6 +110,7 @@ void __cdecl R_InitWorkerCmds()
     jqAddBatch(&batch, jqGetWorkerQueue(8));
 
     jqFlush(0, 0);
+#endif
     Sys_InitWorkerThreadContext();
     Sys_WorkerCmdInit();
 }
