@@ -536,8 +536,24 @@ void __cdecl R_ToggleSmpFrameCmd(char type)
 
     {
         PROF_SCOPED("wait frontend workercmds");
+#if defined(__EMSCRIPTEN__)
+        int semaphore = R_ReleaseDXDeviceOwnership();
+        // SMP web build deadlock fix (the in-game spawn freeze): the job-queue worker
+        // threads (jqEnableWorkers/jqStart) can be starved or not fully spawned from the
+        // Emscripten pthread pool, so the pure-jqPoll spin below would wait forever for
+        // frontend worker cmds that no worker is draining — while the render backend sits
+        // idle in Sys_WaitBackendEvent (heartbeat bstage=7), never woken because the
+        // frontend never reaches Sys_WakeRenderer. DRAIN the cmds on THIS thread instead:
+        // R_WaitFrontendWorkerCmds() -> jqFlush executes the queued batches on the caller,
+        // exactly like the non-SMP path (above) already does, guaranteeing forward progress.
+        R_WaitFrontendWorkerCmds();
+#endif
         while (!R_FinishedFrontendWorkerCmds())
             NET_Sleep(1u);
+#if defined(__EMSCRIPTEN__)
+        if (semaphore)
+            R_AcquireDXDeviceOwnership(0);
+#endif
     }
 
     R_UpdateSkinCacheUsage();
@@ -2591,4 +2607,3 @@ bool __cdecl R_IsRemoteScreenUpdateActive()
 //        `vector constructor iterator'(j->group, 8u, 3, (void *(__thiscall *)(void *))jqBatchGroup::jqBatchGroup);
 //    return this;
 //}
-
