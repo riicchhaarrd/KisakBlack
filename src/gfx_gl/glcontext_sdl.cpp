@@ -54,6 +54,7 @@ extern unsigned long g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks;
 extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
 extern unsigned long g_kbDraws, g_kbReadbacks, g_kbPresentEnter;
 extern unsigned long g_kbBatchedDraws, g_kbBatchFlushes;  // draw batcher (gl_d3d9_draw.cpp)
+extern unsigned long g_kbFlushCause[12], g_kbMergeSubmits; // flush-cause telemetry + merge path
 extern unsigned long g_kbSkipPending, g_kbBuiltinFall;    // dropped/degraded draws (gl_program.cpp)
 extern unsigned long g_kbBlits;                           // StretchRect blits (gl_surface_ops.cpp)
 extern int g_kbRaceParity;                                // SMP parity of the frame being rendered
@@ -250,15 +251,29 @@ public:
             // Per-FRAME draws/occlusion/readbacks: draws ~50k => culling off; readbk>0 =>
             // a per-frame GPU-sync readback (GetRenderTargetData) stalling every frame.
             static unsigned long bd0 = 0, bf0 = 0, sk0 = 0, bi0 = 0, pl0 = 0;
-            fprintf(stderr, "[perf/rb] %.1f fps | draws/f=%lu batched/f=%lu flushes/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
+            static unsigned long fc0[12] = {0}, mg0 = 0;
+            fprintf(stderr, "[perf/rb] %.1f fps | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
                     1000.0 * frames / dt,
                     (g_kbDraws - dr0) / frames,
                     (g_kbBatchedDraws - bd0) / frames, (g_kbBatchFlushes - bf0) / frames,
+                    (g_kbMergeSubmits - mg0) / frames,
                     (g_kbOcclGetData - occl0) / frames,
                     (g_kbBufBytes - buf0) / 1024 / frames,
                     (g_kbSkipPending - sk0) / frames,
                     (g_kbBuiltinFall - bi0) / frames,
                     g_kbProgLinks - pl0);
+            // What interrupted batches, per frame (vc/pc=vs/ps constants, vs/ps=shader
+            // binds, tex/smp/rs, vtx=stream+indices+decl, geo=mode-change/full, oth).
+            fprintf(stderr, "[perf/fc] vc=%lu pc=%lu vs=%lu ps=%lu tex=%lu smp=%lu rs=%lu vtx=%lu geo=%lu oth=%lu\n",
+                    (g_kbFlushCause[0] - fc0[0]) / frames, (g_kbFlushCause[1] - fc0[1]) / frames,
+                    (g_kbFlushCause[2] - fc0[2]) / frames, (g_kbFlushCause[3] - fc0[3]) / frames,
+                    (g_kbFlushCause[4] - fc0[4]) / frames, (g_kbFlushCause[5] - fc0[5]) / frames,
+                    (g_kbFlushCause[6] - fc0[6]) / frames,
+                    (g_kbFlushCause[7] - fc0[7] + g_kbFlushCause[8] - fc0[8] + g_kbFlushCause[9] - fc0[9]) / frames,
+                    (g_kbFlushCause[10] - fc0[10]) / frames,
+                    (g_kbFlushCause[11] - fc0[11]) / frames);
+            for (int i = 0; i < 12; ++i) fc0[i] = g_kbFlushCause[i];
+            mg0 = g_kbMergeSubmits;
 
             bd0 = g_kbBatchedDraws; bf0 = g_kbBatchFlushes;
             sk0 = g_kbSkipPending; bi0 = g_kbBuiltinFall; pl0 = g_kbProgLinks;

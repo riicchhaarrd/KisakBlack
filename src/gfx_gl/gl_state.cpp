@@ -11,6 +11,7 @@
 
 #include <GL/glew.h>
 extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
+extern "C" void KB_FlushTagged(int cause); // same, +flush-cause telemetry
 
 
 namespace {
@@ -54,7 +55,7 @@ GLint glWrap(DWORD d)   { return d == D3DTADDRESS_CLAMP ? GL_CLAMP_TO_EDGE : GL_
 } // namespace
 
 HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(6);
     // Skip the GL call when this state already holds this value — on the proxied web
     // context every glEnable/glBlendFunc/glDepthMask is a cross-thread marshaled call, and
     // the engine re-sets the same blend/depth/cull states constantly between draws.
@@ -164,7 +165,7 @@ HRESULT WINAPI GLDevice::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type
         default: return D3D_OK;
     }
     if (*slot == Value) return D3D_OK;   // no-change fast path: keep batches alive
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(5);
     *slot = Value;
     unitTex_[Sampler] = 0;   // force rebind+sampler reapply at next draw on this stage
     return D3D_OK;
@@ -214,14 +215,14 @@ HRESULT WINAPI GLDevice::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture
     // texture uploads sync there), but identical bindings need no batch flush.
     if (boundTexName_[Stage] == name && boundTexTarget_[Stage] == target)
         return D3D_OK;
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(4);
     boundTexName_[Stage]   = name;
     boundTexTarget_[Stage] = target;
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetScissorRect(const RECT *pRect) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     if (pRect)
         // Y flip only for the window target — see SetViewport (FBO sub-rects keep
         // D3D placement so sampled atlases match D3D-convention coordinates).

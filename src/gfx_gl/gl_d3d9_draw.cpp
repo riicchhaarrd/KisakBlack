@@ -60,6 +60,7 @@ int g_kbBatchEnable = 0;
 int g_kbCoalesceEnable = 0;
 unsigned long g_kbBatchedDraws = 0;   // draws that rode in a batch (appended, no GL calls)
 unsigned long g_kbBatchFlushes = 0;   // multi-draw submissions
+unsigned long g_kbMergeSubmits = 0;   // flushes that went through the CPU index-merge path
 
 namespace {
 const int kMaxBatch = 256;
@@ -108,6 +109,7 @@ extern "C" void KB_FlushBatchedDraws() {
                 for (GLsizei k = 0; k < n; ++k) merged.push_back(p[k] + (unsigned)base);
             }
         }
+        ++g_kbMergeSubmits;
         static GLuint s_mergeIbo = 0;
         if (!s_mergeIbo) glGenBuffers(1, &s_mergeIbo);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_mergeIbo);
@@ -122,8 +124,19 @@ extern "C" void KB_FlushBatchedDraws() {
     }
     s_bN = 0;
 }
+
+// Flush-cause telemetry: which mutator keeps interrupting batches? Tags only count
+// when a batch was actually pending, so the per-cause sum tracks g_kbBatchFlushes.
+// 0=vsconst 1=psconst 2=vshader 3=pshader 4=texture 5=sampler 6=renderstate
+// 7=stream 8=indices 9=decl 10=mode-change/full 11=other
+unsigned long g_kbFlushCause[12] = {0};
+extern "C" void KB_FlushTagged(int cause) {
+    if (s_bN > 0 && (unsigned)cause < 12u) ++g_kbFlushCause[cause];
+    KB_FlushBatchedDraws();
+}
 #else
 extern "C" void KB_FlushBatchedDraws() {}   // native: draws are immediate, nothing to flush
+extern "C" void KB_FlushTagged(int) {}
 #endif
 
 namespace {
@@ -333,7 +346,7 @@ HRESULT WINAPI GLDevice::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffe
     // No-change fast path: the engine re-sets identical bindings around most draws;
     // an unconditional flush here kept draw batches at size 1 (flushes/f == draws/f).
     if (s.vb == vb && s.offset == OffsetInBytes && s.stride == Stride) return D3D_OK;
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(7);
     s.vb = vb; s.offset = OffsetInBytes; s.stride = Stride;
     return D3D_OK;
 }
@@ -341,7 +354,7 @@ HRESULT WINAPI GLDevice::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffe
 HRESULT WINAPI GLDevice::SetIndices(IDirect3DIndexBuffer9 *pIndexData) {
     GLIndexBuffer *ib = static_cast<GLIndexBuffer *>(pIndexData);
     if (ib_ == ib) return D3D_OK;   // no-change fast path
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(8);
     ib_ = ib;
     return D3D_OK;
 }
@@ -349,7 +362,7 @@ HRESULT WINAPI GLDevice::SetIndices(IDirect3DIndexBuffer9 *pIndexData) {
 HRESULT WINAPI GLDevice::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) {
     GLVertexDeclaration *d = static_cast<GLVertexDeclaration *>(pDecl);
     if (decl_ == d) return D3D_OK;   // no-change fast path
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(9);
     decl_ = d;
     return D3D_OK;
 }
@@ -487,7 +500,7 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
             ++g_kbBatchedDraws;
             return D3D_OK;
         }
-        KB_FlushBatchedDraws();   // mode/type changed or batch full
+        KB_FlushTagged(10);   // mode/type changed or batch full
     }
     // Batch start: do the full per-state setup ONCE, then defer this draw.
     if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)

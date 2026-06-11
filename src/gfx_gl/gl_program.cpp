@@ -6,6 +6,7 @@
 
 #include <GL/glew.h>
 extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
+extern "C" void KB_FlushTagged(int cause); // same, +flush-cause telemetry
 
 #include <cstdio>
 #include <cstring>
@@ -25,7 +26,7 @@ HRESULT WINAPI GLDevice::CreatePixelShader(const DWORD *pFunction, IDirect3DPixe
 HRESULT WINAPI GLDevice::SetVertexShader(IDirect3DVertexShader9 *pShader) {
     GLVertexShader *vs = static_cast<GLVertexShader *>(pShader);
     if (vs_ == vs) return D3D_OK;   // no-change fast path (engine re-sets per drawSurf)
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(2);
     vs_ = vs;
     return D3D_OK;
 }
@@ -33,7 +34,7 @@ HRESULT WINAPI GLDevice::SetVertexShader(IDirect3DVertexShader9 *pShader) {
 HRESULT WINAPI GLDevice::SetPixelShader(IDirect3DPixelShader9 *pShader) {
     GLPixelShader *ps = static_cast<GLPixelShader *>(pShader);
     if (ps_ == ps) return D3D_OK;   // no-change fast path
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(3);
     ps_ = ps;
     return D3D_OK;
 }
@@ -46,7 +47,7 @@ HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const floa
         float *dst = vsConst_ + StartRegister * 4;
         size_t bytes = Vec4Count * 4 * sizeof(float);
         if (std::memcmp(dst, pData, bytes) != 0) {
-            KB_FlushBatchedDraws();   // pending draws read the OLD values
+            KB_FlushTagged(0);   // pending draws read the OLD values
             std::memcpy(dst, pData, bytes);
             ++vsVer_;
         }
@@ -59,7 +60,7 @@ HRESULT WINAPI GLDevice::SetPixelShaderConstantF(UINT StartRegister, const float
         float *dst = psConst_ + StartRegister * 4;
         size_t bytes = Vec4Count * 4 * sizeof(float);
         if (std::memcmp(dst, pData, bytes) != 0) {
-            KB_FlushBatchedDraws();
+            KB_FlushTagged(1);
             std::memcpy(dst, pData, bytes);
             ++psVer_;
         }
