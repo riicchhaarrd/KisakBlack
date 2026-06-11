@@ -680,7 +680,7 @@ static unsigned compileGL(GLenum stage, const std::string &src, const char *labe
                         GLctx.deleteShader(s2);
                         console.error('[gl] RAW2 fresh recompile: type=' + ty2 + ' status=' + st2 +
                                       ' srcLen=' + src.length + ' log="' + lg2.substring(0, 300) + '"' +
-                                      ' src0="' + src.substring(0, 60).replace(/\n/g, '\\n') + '"');
+                                      ' src0="' + src.substring(0, 60).split(String.fromCharCode(10)).join(' / ') + '"');
                     } catch (e) { console.error('[gl] RAW probe threw: ' + e.message); }
                 }, (int)s, src.c_str(), (int)stage);
             }
