@@ -70,7 +70,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B103 (links polled once per FRAME across ~600 presents - getters lie while in-flight)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B104 (RAWPROG deep probe: trivial control program at link failure)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer

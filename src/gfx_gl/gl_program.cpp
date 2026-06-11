@@ -154,6 +154,46 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
         static int linkFailPrints = 0;
         if (++linkFailPrints <= 16)
             fprintf(stderr, "[gl] program link failed (try %d): %s\n", lp.linkTries + 1, log[0] ? log : "(empty log)");
+#if defined(__EMSCRIPTEN__)
+        // RAW-JS deep probe (one per run, first 3 failures): bypass every wasm layer and
+        // ask the browser directly — and link a TRIVIAL control program in the same
+        // breath. trivialLS=false -> the context/thread is broken globally;
+        // trivialLS=true + real attached-shader logs -> OUR GLSL fails on this driver;
+        // empty logs everywhere -> compiles still in flight even after force-finish;
+        // ext=false -> COMPLETION_STATUS was an invalid query all along.
+        static int progProbes = 0;
+        if (progProbes < 3) {
+            ++progProbes;
+            EM_ASM({
+                try {
+                    var p = GL.programs[$0];
+                    var lost = GLctx.isContextLost();
+                    var ext = GLctx.getExtension('KHR_parallel_shader_compile');
+                    var ls = GLctx.getProgramParameter(p, 0x8B82);
+                    var err = GLctx.getError();
+                    var lg = GLctx.getProgramInfoLog(p) || '';
+                    var att = GLctx.getAttachedShaders(p);
+                    var attS = att ? att.map(function (s) {
+                        return GLctx.getShaderParameter(s, 0x8B81) + ':"' + (GLctx.getShaderInfoLog(s) || '') + '"';
+                    }).join(' | ') : '?';
+                    var vs2 = GLctx.createShader(0x8B31);
+                    GLctx.shaderSource(vs2, '#version 300 es\nvoid main(){gl_Position=vec4(0.);}');
+                    GLctx.compileShader(vs2);
+                    var fs2 = GLctx.createShader(0x8B30);
+                    GLctx.shaderSource(fs2, '#version 300 es\nprecision highp float;\nout vec4 o;\nvoid main(){o=vec4(1.);}');
+                    GLctx.compileShader(fs2);
+                    var p2 = GLctx.createProgram();
+                    GLctx.attachShader(p2, vs2); GLctx.attachShader(p2, fs2);
+                    GLctx.linkProgram(p2);
+                    var ls2 = GLctx.getProgramParameter(p2, 0x8B82);
+                    GLctx.deleteProgram(p2); GLctx.deleteShader(vs2); GLctx.deleteShader(fs2);
+                    console.error('[gl] RAWPROG prog=' + $0 + ' lost=' + lost + ' obj=' + (p ? p.constructor.name : 'null') +
+                                  ' ext=' + !!ext + ' LS=' + ls + ' err=0x' + err.toString(16) +
+                                  ' log="' + lg + '" att=[' + attS + '] trivialLS=' + ls2);
+                } catch (e) { console.error('[gl] RAWPROG threw: ' + e.message); }
+            }, (int)lp.prog);
+        }
+#endif
         // Self-heal: marking this "ready" made its materials permanently black
         // (useProgram on an invalid program — the 256x 'program not valid' spam).
         // Delete and re-link on a later frame instead; the caller skips the draw.
