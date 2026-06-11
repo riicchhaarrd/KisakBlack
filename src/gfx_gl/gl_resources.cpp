@@ -281,6 +281,40 @@ GLTexture::GLTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT lev
     if (kbOnGLThread()) createGL();  // else deferred to sync() on the GL thread
 }
 
+// Allocate RENDERABLE, completeness-verified level-0 storage for a render-target
+// texture. D3DToGLFormat maps the accurate SAMPLING format, but several D3D RT formats
+// (notably A16B16G16R16 -> GL_RGBA16 unorm) are NOT color-renderable on WebGL2 — an
+// FBO with such a colour attachment is GL_FRAMEBUFFER_UNSUPPORTED (0x8cdd) and every
+// draw to it no-ops, so the HDR scene + post-fx pyramid render black. Try renderable
+// candidates (HDR float, then RGBA8) and keep the first that yields a COMPLETE FBO.
+void KB_AllocRenderableRT(unsigned tex, UINT w, UINT h, D3DFORMAT d3dfmt) {
+    unsigned internal = 0, fmt = 0, type = 0; int bpp = 0;
+    bool mapped = D3DToGLFormat(d3dfmt, &internal, &fmt, &type, &bpp);
+    struct Cand { unsigned internal, fmt, type; };
+    Cand cands[3]; int nc = 0;
+    if (mapped && internal != GL_RGBA16)                     // accurate map, if renderable
+        cands[nc++] = { internal, fmt, type };
+    cands[nc++] = { GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT };    // HDR (renderable via EXT_color_buffer_float)
+    cands[nc++] = { GL_RGBA8,   GL_RGBA, GL_UNSIGNED_BYTE }; // always-renderable last resort
+
+    glBindTexture(GL_TEXTURE_2D, tex);
+    GLuint probe = 0; glGenFramebuffers(1, &probe);
+    GLint prevFbo = 0; glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, probe);
+    int chosen = nc - 1;
+    for (int i = 0; i < nc; ++i) {
+        while (glGetError() != GL_NO_ERROR) {}
+        glTexImage2D(GL_TEXTURE_2D, 0, cands[i].internal, w, h, 0, cands[i].fmt, cands[i].type, nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        if (glGetError() == GL_NO_ERROR && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) { chosen = i; break; }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);
+    glDeleteFramebuffers(1, &probe);
+    static int rtN = 0;
+    if (++rtN <= 12)
+        fprintf(stderr, "[gl] RT %ux%u d3dfmt=%u -> internal=0x%x\n", w, h, (unsigned)d3dfmt, cands[chosen].internal);
+}
+
 void GLTexture::createGL() {
     glGenTextures(1, &tex_);
     glBindTexture(GL_TEXTURE_2D, tex_);
@@ -326,19 +360,17 @@ void GLTexture::createGL() {
             return;
         }
     }
-    // A render-target texture is never Lock/Unlocked, so allocate level-0 storage
-    // now to make it complete for FBO colour attachment.
+    // A render-target texture is never Lock/Unlocked, so allocate level-0 storage now
+    // to make it complete for FBO colour attachment. CRITICAL: the storage must be a
+    // RENDERABLE format. D3DToGLFormat maps A16B16G16R16 -> GL_RGBA16 (the accurate
+    // sampling format) but RGBA16 UNORM is NOT color-renderable in WebGL2 — only
+    // RGBA16F is. An RGBA16 colour attachment makes the FBO GL_FRAMEBUFFER_UNSUPPORTED
+    // (0x8cdd), so every HDR/bloom RT (the scene + the post-fx pyramid) rendered
+    // nothing = the whole scene went black mid-game. Pick a renderable internalformat
+    // and VERIFY completeness, falling back until one works.
     if (usage_ & D3DUSAGE_RENDERTARGET) {
-        unsigned internal, fmt, type; int bpp;
-        if (D3DToGLFormat(format_, &internal, &fmt, &type, &bpp))
-            glTexImage2D(GL_TEXTURE_2D, 0, internal, width_, height_, 0, fmt, type, nullptr);
-        else
-            // Unsupported RT format (e.g. D3DFMT_G16R16 = 0x22): allocate a renderable
-            // RGBA8 fallback at the real size so the FBO colour attachment is COMPLETE.
-            // Otherwise the texture has no storage (0x0), every draw to it fails with
-            // GL_INVALID_FRAMEBUFFER_OPERATION ("Attachment has zero size"), and the
-            // hundreds of proxied error lines per frame lock up the in-game scene.
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        KB_AllocRenderableRT(tex_, width_, height_, format_);
+        glBindTexture(GL_TEXTURE_2D, tex_);
     } else {
         // Give every texture a neutral 1x1 level-0 immediately so it is COMPLETE even
         // before (or if) the engine uploads its pixels — otherwise a not-yet-uploaded
@@ -745,16 +777,11 @@ GLSurface::GLSurface(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMA
         glBindTexture(GL_TEXTURE_2D, ownTex_);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        if (D3DToGLFormat(format_, &internal, &fmt, &type, &bpp))
-            glTexImage2D(GL_TEXTURE_2D, 0, internal, width_, height_, 0, fmt, type, nullptr);
-        else
-            // Unsupported RT format (e.g. D3DFMT_G16R16 = 0x22): allocate a renderable RGBA8
-            // fallback at the real size so this surface is a COMPLETE FBO colour attachment.
-            // Without storage the texture is 0x0, the FBO is incomplete, every draw to it
-            // fails (GL_INVALID_FRAMEBUFFER_OPERATION "zero size"), and the readback path
-            // (GetRenderTargetData glReadBuffer/glReadPixels) operates on a broken FBO and
-            // stalls the render thread -> the in-game spawn deadlock.
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        (void)internal; (void)fmt; (void)type; (void)bpp;
+        // Renderable, completeness-verified storage (see KB_AllocRenderableRT): RGBA16
+        // unorm is NOT color-renderable on WebGL2, so HDR RTs must use RGBA16F or the
+        // FBO is GL_FRAMEBUFFER_UNSUPPORTED and the scene renders black.
+        KB_AllocRenderableRT(ownTex_, width_, height_, format_);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 }
