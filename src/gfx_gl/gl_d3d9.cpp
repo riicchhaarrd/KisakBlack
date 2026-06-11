@@ -158,6 +158,7 @@ HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurfa
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     fboActive_ = true;
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->texName(), s->level());
+    curRTColorTex_ = s->texName();
 
     int w = (int)s->width(), h = (int)s->height();
     // Honor an engine-set depth-stencil surface backed by a DEPTH TEXTURE (the shadow
@@ -226,12 +227,21 @@ HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurfa
     // — SetRenderTarget is per-RT-switch, not per-draw. Color attachment 0 must be a
     // renderable texture; if it isn't (e.g. a compressed or odd-format RT), say so.
     {
-        unsigned st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        if (st != GL_FRAMEBUFFER_COMPLETE) {
-            // Give the colour texture renderable, RT-sized storage and re-verify — the
-            // bulletproof fix: completeness guaranteed at the point of use, regardless of
-            // how/where the RT texture was created or its (possibly non-renderable) format.
-            kbEnsureRTComplete(s->texName(), w, h);
+        // Skip the SYNC round-trip for configs already verified COMPLETE (the dominant DOM-thread
+        // cost — 28% in the CPU trace, dwarfing actual draws). Key by (colorTex,w,h): the auto
+        // depth renderbuffer sizes to w,h and attachment storage is immutable, so once complete it
+        // stays complete.
+        unsigned long long ck = ((unsigned long long)s->texName() << 32) | ((unsigned)w << 16) | (unsigned)h;
+        if (fboComplete_.find(ck) == fboComplete_.end()) {
+            unsigned st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (st != GL_FRAMEBUFFER_COMPLETE) {
+                // Give the colour texture renderable, RT-sized storage and re-verify — the
+                // bulletproof fix: completeness guaranteed at the point of use, regardless of
+                // how/where the RT texture was created or its (possibly non-renderable) format.
+                kbEnsureRTComplete(s->texName(), w, h);
+            } else {
+                fboComplete_.insert(ck);
+            }
         }
     }
 #endif
@@ -278,7 +288,13 @@ HRESULT WINAPI GLDevice::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil)
             // renderbuffer for THIS pass (keep curDS_; it may match a later RT). A
             // stale-sized fboDepth_ was itself incomplete = the scene went and STAYED
             // black after a decal/DS-switch mid-game.
-            unsigned dsStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            // Cache verified (colorTex,dsTex) pairs — glCheckFramebufferStatus is a SYNC
+            // round-trip (the #1 DOM-thread cost) and this DS re-apply runs ~9x/frame.
+            unsigned long long dsKey = ((unsigned long long)curRTColorTex_ << 32) | curDS_->texName();
+            bool dsKnown = false;
+            for (int pi = 0; pi < fboOkN_; ++pi) if (fboOkPairs_[pi] == dsKey) { dsKnown = true; break; }
+            unsigned dsStatus = dsKnown ? GL_FRAMEBUFFER_COMPLETE : glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (dsStatus == GL_FRAMEBUFFER_COMPLETE && !dsKnown && fboOkN_ < 8) fboOkPairs_[fboOkN_++] = dsKey;
             if (dsStatus != GL_FRAMEBUFFER_COMPLETE) {
                 static int dsIncN = 0;
                 if (++dsIncN <= 6)

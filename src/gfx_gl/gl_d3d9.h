@@ -15,6 +15,7 @@
 
 #include "gl_object.h"
 #include <map>
+#include <set>
 #include <array>
 #include <cstdint>
 
@@ -222,6 +223,12 @@ private:
     bool           dsLive_    = false;                 // honored DS attached (shadow build pass)
     unsigned long long fboOkPairs_[8] = {};            // (colorTex<<32|dsTex) pairs verified COMPLETE
     int            fboOkN_ = 0;
+    unsigned       curRTColorTex_ = 0;                 // colour tex of the live custom RT (for DS-pair keys)
+    // FBO configs (colorTex,w,h) already verified GL_FRAMEBUFFER_COMPLETE. glCheckFramebufferStatus
+    // is a SYNCHRONOUS proxied round-trip — at 28% of the DOM thread in the CPU trace it was the
+    // single biggest cost, dwarfing actual drawing. Completeness cannot regress for immutable
+    // attachment storage, so check once per config then skip forever.
+    std::set<unsigned long long> fboComplete_;
     GLSamplerState samplers_[kMaxStages];
     GLTextureStageState texStage0_;     // stage-0 fixed-function combine (built-in program)
     GLAlphaTestState    alphaTest_;     // alpha-test emulation (built-in program)
