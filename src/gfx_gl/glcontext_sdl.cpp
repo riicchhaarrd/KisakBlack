@@ -229,6 +229,13 @@ public:
             static int s_frameInFlight = 0;  // 1 = an ImageBitmap is in flight to the page
             EM_ASM({
                 var c = Module['canvas'];
+                // Official pthread canvas transfer registers the OffscreenCanvas in
+                // GL.offscreenCanvases but leaves Module.canvas unset (the wrapper's
+                // moduleCanvasId is '' because an OffscreenCanvas has no .id).
+                if (!c && typeof GL === 'object' && GL.offscreenCanvases) {
+                    var k = Object.keys(GL.offscreenCanvases).filter(function (n) { return GL.offscreenCanvases[n]; })[0];
+                    if (k) c = GL.offscreenCanvases[k].offscreenCanvas || GL.offscreenCanvases[k].canvas;
+                }
                 if (c && typeof OffscreenCanvas !== 'undefined' && c instanceof OffscreenCanvas) {
                     if (Atomics.load(HEAP32, $0 >> 2)) return;   // previous frame unconsumed -> drop
                     Atomics.store(HEAP32, $0 >> 2, 1);

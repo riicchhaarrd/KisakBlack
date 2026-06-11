@@ -45,7 +45,7 @@ if [ ! -f "$EM_CONFIG" ]; then
 fi
 
 OBJDIR="build_web_mt/obj"
-OUTDIR="build_web_mt/web"
+OUTDIR="${KB_OUTDIR:-build_web_mt/web}"
 mkdir -p "$OUTDIR"
 if ! ls "$OBJDIR"/*.o >/dev/null 2>&1; then
   echo "no objects in $OBJDIR — run ./build_web_mt.sh first" >&2; exit 1
