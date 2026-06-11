@@ -224,6 +224,7 @@ private:
     unsigned long long fboOkPairs_[8] = {};            // (colorTex<<32|dsTex) pairs verified COMPLETE
     int            fboOkN_ = 0;
     unsigned       curRTColorTex_ = 0;                 // colour tex of the live custom RT (for DS-pair keys)
+    bool           scissorOn_ = false;                 // tracked GL_SCISSOR_TEST state (avoid per-Clear glIsEnabled sync round-trip)
     // FBO configs (colorTex,w,h) already verified GL_FRAMEBUFFER_COMPLETE. glCheckFramebufferStatus
     // is a SYNCHRONOUS proxied round-trip — at 28% of the DOM thread in the CPU trace it was the
     // single biggest cost, dwarfing actual drawing. Completeness cannot regress for immutable

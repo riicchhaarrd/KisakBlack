@@ -352,7 +352,9 @@ HRESULT WINAPI GLDevice::Clear(DWORD /*Count*/, const D3DRECT * /*pRects*/, DWOR
 
     // D3D's Clear ignores scissor (when no rects) and the write masks; GL's does
     // not. Force the affected state for the clear, then restore.
-    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+    // Use the shadowed scissor state, not glIsEnabled — that's a SYNCHRONOUS proxied
+    // round-trip and Clear runs several times per frame (one of the futex-ping-pong sources).
+    bool scissor = scissorOn_;
     if (scissor) glDisable(GL_SCISSOR_TEST);
     if (mask & GL_COLOR_BUFFER_BIT) glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     if (mask & GL_DEPTH_BUFFER_BIT) glDepthMask(GL_TRUE);

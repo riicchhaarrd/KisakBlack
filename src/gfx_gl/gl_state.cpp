@@ -167,6 +167,7 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
             break;
         case D3DRS_SCISSORTESTENABLE:
             if (Value) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+            scissorOn_ = (Value != 0);   // shadow the state so Clear() needn't glIsEnable (sync round-trip)
             break;
         case D3DRS_FILLMODE:
             glPolygonMode(GL_FRONT_AND_BACK, Value == D3DFILL_WIREFRAME ? GL_LINE : GL_FILL);

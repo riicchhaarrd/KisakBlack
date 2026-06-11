@@ -27,6 +27,23 @@
 
 float r_cloudArea[4] = { 0.0, 0.0, 1.0e7, 0.0 };
 
+#if defined(__EMSCRIPTEN__)
+#include <cstdlib>
+// ?nofloatz=1 (KB_NOFLOATZ env): skip the Float-Z depth pre-pass. supportsIntZ is 0 on the GL
+// shim (no D3D9 INTZ FOURCC), so the engine renders a SECOND full opaque-geometry depth pass into
+// the $floatz RT every frame — NOT gated by r_depthPrepass. That's a big chunk of the proxied
+// draw count (the proven web bottleneck). Skipping it only leaves $floatz unpopulated, so
+// depth-reading effects (soft particles/fog/DOF) may glitch — no black screen (the lit pass keeps
+// its own depth). Opt-in so the default stays safe.
+static int g_kbNoFloatZ = -1;
+extern "C" int KB_NoFloatZ() {
+    if (g_kbNoFloatZ < 0) { const char *e = getenv("KB_NOFLOATZ"); g_kbNoFloatZ = (e && *e == '1') ? 1 : 0; }
+    return g_kbNoFloatZ;
+}
+#else
+extern "C" int KB_NoFloatZ() { return 0; }
+#endif
+
 const float (*__cdecl R_GetCloudArea())[4]
 {
     return (const float (*)[4])r_cloudArea;
@@ -637,7 +654,7 @@ void __cdecl RB_StandardDrawCommands(GfxViewInfo *viewInfo)
   viewInfo->needsFloatZ = 1;
   setupRenderTargetId = floatzRenderTarget;
   whichToClearForSetup = 7;
-  if ( !dx.supportsIntZ || isMissileCam )
+  if ( (!dx.supportsIntZ && !KB_NoFloatZ()) || isMissileCam )
   {
     D3DPERF_BeginEvent(-1, L"Float Z");
     R_InitLocalCmdBufState(&gfxCmdBufState);

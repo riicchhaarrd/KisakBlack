@@ -151,6 +151,22 @@
             Module.arguments.push('+set', 'r_depthPrepass', '0');
             ENV.KB_NOPREPASS = '1';   // GL layer remaps lit-pass EQUAL depth test -> LEQUAL
           }
+          // ?lowdetail=1: cut FRONTEND scene-processing cost (the proven bottleneck — GL
+          // batching gave ~0 fps, so the limiter is the engine producing the scene, not
+          // drawing it). r_worldLod default 0 *forces world geometry to highest detail*;
+          // setting it 1 enables distance LOD so the ~2800 distant world surfaces in dense
+          // scenes process/upload less. r_lodScale* >1 reduces model detail at distance.
+          if (q.get('lowdetail') === '1') {
+            Module.arguments.push('+set', 'r_worldLod', '1');
+            Module.arguments.push('+set', 'r_lodScaleRigid', '4');
+            Module.arguments.push('+set', 'r_lodScaleSkinned', '4');
+            Module.arguments.push('+set', 'r_lodBiasRigid', '2');
+            Module.arguments.push('+set', 'r_lodBiasSkinned', '2');
+          }
+          // ?nofloatz=1: skip the Float-Z depth pre-pass (a 2nd full geometry pass the GL
+          // shim always runs because supportsIntZ=0 — NOT gated by r_depthPrepass). Big draw
+          // cut; may glitch depth-based effects (soft particles/fog/DOF). No black screen.
+          if (q.get('nofloatz') === '1') ENV.KB_NOFLOATZ = '1';
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
