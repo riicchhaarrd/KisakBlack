@@ -667,8 +667,22 @@ static unsigned compileGL(GLenum stage, const std::string &src, const char *labe
                                       ' obj=' + (sh ? sh.constructor.name : 'null') +
                                       ' type=' + ty + ' err=0x' + (err ? err.toString(16) : '0') +
                                       ' status=' + st + ' log="' + (lg || '') + '"');
+                        // Fresh recompile of the SAME source: compiles are synchronous now,
+                        // so this status/log is LIVE — if the source genuinely fails on this
+                        // driver, the real error text appears here.
+                        var src = UTF8ToString($1);
+                        var s2 = GLctx.createShader($2);
+                        GLctx.shaderSource(s2, src);
+                        GLctx.compileShader(s2);
+                        var st2 = GLctx.getShaderParameter(s2, 0x8B81);
+                        var ty2 = GLctx.getShaderParameter(s2, 0x8B4F);
+                        var lg2 = GLctx.getShaderInfoLog(s2) || '';
+                        GLctx.deleteShader(s2);
+                        console.error('[gl] RAW2 fresh recompile: type=' + ty2 + ' status=' + st2 +
+                                      ' srcLen=' + src.length + ' log="' + lg2.substring(0, 300) + '"' +
+                                      ' src0="' + src.substring(0, 60).replace(/\n/g, '\\n') + '"');
                     } catch (e) { console.error('[gl] RAW probe threw: ' + e.message); }
-                }, (int)s);
+                }, (int)s, src.c_str(), (int)stage);
             }
 #endif
             return s;
