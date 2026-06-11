@@ -89,19 +89,31 @@ void GLDevice::kbEnsureRTComplete(unsigned tex, int w, int h) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    unsigned dbgErr1 = 0, dbgStColorDepth = 0, dbgStColorOnly = 0, dbgErr2 = 0;
+    GLint dbgBound = 0; glGetIntegerv(GL_FRAMEBUFFER_BINDING, &dbgBound);
     for (int i = 0; i < 2; ++i) {
         while (glGetError() != GL_NO_ERROR) {}
         glTexImage2D(GL_TEXTURE_2D, 0, cands[i], w, h, 0, fmts[i], types[i], nullptr);
+        dbgErr1 = glGetError();   // did the storage alloc itself fail (e.g. immutable tex)?
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
         // Match the auto depth renderbuffer to this size (a stale-sized one also fails).
         kbRestoreAutoDepth(w, h);
-        if (glGetError() == GL_NO_ERROR && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) { chosen = i; break; }
+        dbgStColorDepth = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (glGetError() == GL_NO_ERROR && dbgStColorDepth == GL_FRAMEBUFFER_COMPLETE) { chosen = i; break; }
+        // Color-ONLY (no depth at all): isolates whether the depth attach is the problem.
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+        dbgStColorOnly = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        dbgErr2 = glGetError();
     }
     rtFixed_[key] = chosen >= 0 ? (int)cands[chosen] : 0;
     static int fixN = 0;
     if (++fixN <= 12)
-        fprintf(stderr, "[gl] kbEnsureRTComplete tex=%u %dx%d -> %s\n",
-                tex, w, h, chosen == 0 ? "RGBA16F" : chosen == 1 ? "RGBA8" : "STILL-INCOMPLETE");
+        fprintf(stderr, "[gl] kbEnsureRTComplete tex=%u %dx%d -> %s | fbo=%d texErr=0x%x stCD=0x%x stColorOnly=0x%x err2=0x%x\n",
+                tex, w, h, chosen == 0 ? "RGBA16F" : chosen == 1 ? "RGBA8" : "STILL-INCOMPLETE",
+                (int)dbgBound, dbgErr1, dbgStColorDepth, dbgStColorOnly, dbgErr2);
 }
 
 void GLDevice::kbRestoreAutoDepth(int w, int h) {
