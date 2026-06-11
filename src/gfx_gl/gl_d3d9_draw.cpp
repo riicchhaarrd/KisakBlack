@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <vector>
 #include <mutex>
+#include <unordered_map>
+#include <cstdint>
 
 // ---- Batched indexed draws (web only) ---------------------------------------------
 // On the proxied web context every GL call is marshaled to the canvas-owning thread, so
@@ -472,11 +474,54 @@ extern "C" void KB_VaoNoteDeadDecl(const void *decl) {
     std::lock_guard<std::mutex> g(g_kbDeadMu); g_kbDeadDecls.push_back(decl);
 }
 
+// ---- Draw-composition diagnostic (KB_DRAWCOMP=1) ----------------------------------
+int g_kbDrawComp = -1;   // -1 = unread env, 0 = off, 1 = on (read lazily in KB_DrawCompFrame)
+static std::unordered_map<uint64_t, uint32_t> g_kbDrawCompMap;
+void KB_DrawCompTick(uint64_t key) { ++g_kbDrawCompMap[key]; }
+// Called once/frame from SwapBuffers: every ~60 frames, summarize how many draws are duplicate
+// geometry (instanceable) vs unique (mergeable), then clear for the next frame.
+extern "C" void KB_DrawCompFrame() {
+    if (g_kbDrawComp < 0) { const char *e = getenv("KB_DRAWCOMP"); g_kbDrawComp = (e && *e == '1') ? 1 : 0; }
+    if (!g_kbDrawComp) { return; }
+    static int fr = 0;
+    if (++fr % 60 == 0 && !g_kbDrawCompMap.empty()) {
+        uint32_t total = 0, instanceable = 0, maxdup = 0, dupBuckets = 0;
+        for (const auto &kv : g_kbDrawCompMap) {
+            total += kv.second;
+            if (kv.second > 1) { instanceable += kv.second - 1; ++dupBuckets; }
+            if (kv.second > maxdup) maxdup = kv.second;
+        }
+        fprintf(stderr, "[perf/comp] draws=%u distinct=%zu instanceable=%u (%.0f%%) dupGeoms=%u maxdup=%u\n",
+                total, g_kbDrawCompMap.size(), instanceable,
+                total ? 100.0 * instanceable / total : 0.0, dupBuckets, maxdup);
+    }
+    g_kbDrawCompMap.clear();
+}
+
 void GLDevice::applyVertexState() {
     // ?novao=1 kill switch: bypass the VAO cache (full attrib re-spec per draw, the
     // pre-B100 path) to bisect geometry corruption vs the cache.
     static int noVao = -1;
     if (noVao < 0) { const char *v = getenv("KB_NOVAO"); noVao = (v && *v == '1') ? 1 : 0; }
+#if defined(__EMSCRIPTEN__)
+    // KB_DUMPSKIN=1: one-shot dump of any SKINNED vertex decl (has BLENDINDICES). Identifies the
+    // M16 viewmodel spazz — prints each element's D3DDECLTYPE so a mis-decoded bone-index/weight
+    // format (e.g. indices normalized, or D3DCOLOR BGRA-swizzled) is visible at a glance.
+    static int kbDumpSkin = -1;
+    if (kbDumpSkin < 0) { const char *v = getenv("KB_DUMPSKIN"); kbDumpSkin = (v && *v == '1') ? 1 : 0; }
+    if (kbDumpSkin && decl_) {
+        static std::set<const void *> logged;
+        bool hasSkin = false;
+        for (const D3DVERTEXELEMENT9 &e : decl_->elements())
+            if (e.Usage == D3DDECLUSAGE_BLENDINDICES) { hasSkin = true; break; }
+        if (hasSkin && logged.insert((const void *)decl_).second) {
+            fprintf(stderr, "[kbskin] skinned decl=%p:\n", (const void *)decl_);
+            for (const D3DVERTEXELEMENT9 &e : decl_->elements())
+                fprintf(stderr, "  stream=%u offset=%u type=%u usage=%u usageIdx=%u\n",
+                        e.Stream, e.Offset, e.Type, e.Usage, e.UsageIndex);
+        }
+    }
+#endif
     // A D3DUSAGE_DYNAMIC stream's bound offset changes every draw (the NOOVERWRITE/DISCARD ring),
     // so a per-(buffer,offset) cache entry never hits — it just accumulates throwaway VAOs until
     // the size cap nukes the whole cache = the periodic stutter (user-confirmed: ?novao=1 removed
@@ -614,6 +659,23 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     if (!ib_) return D3D_OK;
     KB_EnsureCtxOnThread();
     extern unsigned long g_kbDraws; ++g_kbDraws;
+#if defined(__EMSCRIPTEN__)
+    // KB_DRAWCOMP=1: per-frame draw-composition histogram. Key = the GEOMETRY identity
+    // (decl + stream0 VB + IB + index range). Repeated identical geometry (the same prop drawn
+    // many times -> INSTANCEABLE into one call) becomes a high-count bucket; unique world
+    // surfaces stay count-1 (-> need MERGING, not instancing). The instanceable% decides which
+    // reducer to build. Pointers (not glName) so it has zero GL side effects.
+    {
+        extern int g_kbDrawComp; extern void KB_DrawCompTick(uint64_t);
+        if (g_kbDrawComp) {
+            uint64_t k = (uint64_t)(uintptr_t)decl_ * 1000003ull;
+            k ^= ((uint64_t)(uintptr_t)(streams_[0].vb)) << 17;
+            k ^= ((uint64_t)(uintptr_t)ib_) << 7;
+            k ^= ((uint64_t)startIndex << 1) ^ (uint64_t)primCount;
+            KB_DrawCompTick(k);
+        }
+    }
+#endif
 
     GLenum mode; GLsizei verts;
     primInfo(Type, primCount, &mode, &verts);

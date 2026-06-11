@@ -56,7 +56,13 @@ public:
     HRESULT WINAPI GetDevice(IDirect3DDevice9 **ppDevice) override;
     HRESULT WINAPI GetFunction(void *, UINT *pSize) override { if (pSize) *pSize = 0; return D3D_OK; }
     unsigned glShader();                       // lazy: compiles on first use (GL thread)
+    // INSTANCED variant: the per-object matrix at vsc[matBase..matBase+matCount-1] is read from
+    // instanced vertex attributes (locations locs[0..matCount-1], divisor 1) instead of the
+    // constant array, so many copies of this mesh draw in ONE glDrawElementsInstanced. Same
+    // bytecode-derived GLSL, textually rewired + recompiled, cached per (matBase,matCount,locs).
+    unsigned glShaderInstanced(unsigned matBase, int matCount, const int *locs);
     bool ok() const { return translatedOk_; }
+    const std::string &glsl() const { return glsl_; }
 private:
     IDirect3DDevice9 *device_;
     unsigned          shader_ = 0;
@@ -64,6 +70,7 @@ private:
     unsigned long     lastTryPres_ = 0;      // present # of the last attempt
     bool              translatedOk_ = false;
     std::string       glsl_;
+    std::map<unsigned long long, unsigned> instVariants_;   // (matBase<<32|matCount<<24|loc0) -> GL shader
 };
 
 class GLPixelShader final : public GLObject<IDirect3DPixelShader9> {

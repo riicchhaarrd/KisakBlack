@@ -725,6 +725,37 @@ unsigned GLVertexShader::glShader() {
     }
     return shader_;
 }
+// Instanced variant: rewire the per-object matrix (vsc[matBase..matBase+matCount-1]) to read
+// from instanced vertex attributes (kbInstRow0..N at locations locs[], divisor 1 set by the
+// draw path). Pure text transform of the already-validated GLSL — no bytecode re-decode.
+unsigned GLVertexShader::glShaderInstanced(unsigned matBase, int matCount, const int *locs) {
+    if (!translatedOk_ || matCount < 1 || matCount > 4) return 0;
+    unsigned long long key = ((unsigned long long)matBase << 32) | ((unsigned long long)matCount << 24)
+                           | ((unsigned)locs[0] & 0xff);
+    auto it = instVariants_.find(key);
+    if (it != instVariants_.end()) return it->second;
+
+    std::string src = glsl_;
+    // 1) Declare the instanced attributes right after the "#version" line.
+    std::string decls;
+    for (int i = 0; i < matCount; ++i)
+        decls += "layout(location=" + std::to_string(locs[i]) + ") in vec4 kbInstRow"
+               + std::to_string(i) + ";\n";
+    size_t nl = src.find('\n');
+    if (nl == std::string::npos) { instVariants_[key] = 0; return 0; }
+    src.insert(nl + 1, decls);
+    // 2) Replace every vsc[matBase+i] (exact, bracket-terminated -> no false 197 vs 1970 hits)
+    //    with the matching instanced attribute.
+    for (int i = 0; i < matCount; ++i) {
+        std::string from = "vsc[" + std::to_string(matBase + i) + "]";
+        std::string to   = "kbInstRow" + std::to_string(i);
+        for (size_t pos = 0; (pos = src.find(from, pos)) != std::string::npos; )
+        { src.replace(pos, from.size(), to); pos += to.size(); }
+    }
+    unsigned sh = compileGL(GL_VERTEX_SHADER, src, "vertex shader (instanced)");
+    instVariants_[key] = sh;
+    return sh;
+}
 GLVertexShader::~GLVertexShader() { if (shader_) glDeleteShader(shader_); }
 HRESULT WINAPI GLVertexShader::GetDevice(IDirect3DDevice9 **pp) { if (!pp) return E_INVALIDARG; *pp = device_; if (device_) device_->AddRef(); return D3D_OK; }
 

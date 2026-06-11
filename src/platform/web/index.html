@@ -189,6 +189,7 @@
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
           if (q.get('novao') === '1')    ENV.KB_NOVAO = '1';     // bypass VAO cache (bisect)
           if (q.get('dumpskin') === '1') ENV.KB_DUMPSKIN = '1';  // [kbskin] dump skinned vertex decls (M16 spazz)
+          if (q.get('drawcomp') === '1') ENV.KB_DRAWCOMP = '1';  // [perf/comp] instanceable-vs-unique draw histogram
           var rm = q.get('rmode');                               // ?rmode=640x480
           if (rm && /^\d+x\d+$/.test(rm)) Module.arguments.push('+set', 'r_mode', rm);
         } catch (e) {}

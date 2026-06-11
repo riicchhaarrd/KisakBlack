@@ -72,6 +72,7 @@ unsigned long g_kbYields = 0;                            // render-thread event-
 // ASYNCIFY yield (emscripten_sleep) that fixed de-proxy shader delivery lives on the
 // `deproxy` branch (kept off here to avoid the ~6MB + render-loop instrumentation).
 extern "C" void KB_RenderThreadYield() {}
+extern "C" void KB_DrawCompFrame();   // ?drawcomp histogram, defined in gl_d3d9_draw.cpp
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -79,7 +80,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: G1 (gameplay: ADS upside-down -> CG_CalcFov projection-flip clamp at the tan())  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: G3 (draw-composition diag ?drawcomp: instanceable vs unique, to target the right reducer)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -284,6 +285,7 @@ public:
     void  SwapBuffers() override {
         double kbT0 = g_kbTimeDraws ? emscripten_get_now() : 0.0;  // ?perfms=1
         ++g_kbPresentEnter;            // reached present (before commit_frame) this frame
+        KB_DrawCompFrame();           // ?drawcomp=1 histogram (no-op unless enabled)
         // Sample the rendered frame's center pixel HERE — before commit_frame and the
         // present's transferToImageBitmap (which CLEARS the OffscreenCanvas, so a
         // readback afterwards races the clear). This is what the engine just rendered.
