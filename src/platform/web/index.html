@@ -187,6 +187,10 @@
           // (or ?gpusync=0) restores the unbounded-ahead max-fps mode.
           if (q.get('nogpusync') === '1' || q.get('gpusync') === '0')
             Module.arguments.push('+set', 'r_gpuSync', '0');
+          // ?fps=N: com_maxfps cap. A fixed cap paces every frame to the same interval (smoothest,
+          // esp. matched to the display refresh) and bounds how far the render thread runs ahead
+          // (latency + CPU/fans). Try 60/120/144. Default 85.
+          { var fc = q.get('fps'); if (fc && /^\d+$/.test(fc)) Module.arguments.push('+set', 'com_maxfps', fc); }
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
