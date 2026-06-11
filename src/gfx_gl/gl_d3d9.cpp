@@ -175,6 +175,22 @@ HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurfa
     }
 
     fbWidth_ = w; fbHeight_ = h;
+#if defined(__EMSCRIPTEN__)
+    // Completeness check on EVERY custom RT bind (not just the shadow-DS path): an
+    // incomplete scene FBO silently no-ops every draw of the pass = the scene goes
+    // black with shaders fine and shadows off (the third blackout class). Cheap enough
+    // — SetRenderTarget is per-RT-switch, not per-draw. Color attachment 0 must be a
+    // renderable texture; if it isn't (e.g. a compressed or odd-format RT), say so.
+    {
+        unsigned st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (st != GL_FRAMEBUFFER_COMPLETE) {
+            static int rtIncN = 0;
+            if (++rtIncN <= 8)
+                fprintf(stderr, "[gl] SetRenderTarget FBO INCOMPLETE status=0x%x rt=%dx%d tex=%u fmt=%u\n",
+                        st, w, h, s->texName(), (unsigned)s->format());
+        }
+    }
+#endif
     return D3D_OK;
 }
 
