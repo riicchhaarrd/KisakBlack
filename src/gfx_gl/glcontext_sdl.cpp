@@ -72,7 +72,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B119 (ctrPx + post/drop telemetry: split render-black from present-black)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B120 (reliable ctrPx sampled pre-transfer + page-side present confirm)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -273,6 +273,19 @@ public:
     void  SwapBuffers() override {
         double kbT0 = g_kbTimeDraws ? emscripten_get_now() : 0.0;  // ?perfms=1
         ++g_kbPresentEnter;            // reached present (before commit_frame) this frame
+        // Sample the rendered frame's center pixel HERE — before commit_frame and the
+        // present's transferToImageBitmap (which CLEARS the OffscreenCanvas, so a
+        // readback afterwards races the clear). This is what the engine just rendered.
+        {
+            static int kbPxCtr = 0;
+            if (++kbPxCtr >= 30) {
+                kbPxCtr = 0;
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                unsigned char px[4] = {0,0,0,0};
+                glReadPixels((GLint)cw_/2, (GLint)ch_/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                kbCtrPx_ = (px[0]<<16)|(px[1]<<8)|px[2];
+            }
+        }
         // Synchronous lost-context poll: the webglcontextlost EVENT can never fire on this
         // worker (event delivery needs the event loop, which this thread never pumps), but
         // isContextLost() is a plain synchronous query. Prints ONCE at the moment of death
@@ -377,16 +390,10 @@ public:
                 catch (e) { return -1; }
             });
             int kbWasmMB = EM_ASM_INT({ try { return (HEAP8.length / 1048576) | 0; } catch (e) { return -1; } });
-            // RENDER-BLACK vs PRESENT-BLACK split: read the center pixel of the default
-            // framebuffer (the buffer that gets presented). If it has color while the
-            // page is black -> present path; if it's black -> the scene render is black.
-            unsigned kbPx = 0;
-            {
-                glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                unsigned char px[4] = {0,0,0,0};
-                glReadPixels((GLint)cw_/2, (GLint)ch_/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-                kbPx = (px[0]<<16)|(px[1]<<8)|px[2];
-            }
+            // RENDER-BLACK vs PRESENT-BLACK split: kbCtrPx_ is sampled at SwapBuffers
+            // entry (before the transfer-clear). Colored while the page is black ->
+            // present/display path; black -> the engine rendered black.
+            unsigned kbPx = kbCtrPx_;
             static unsigned long pp0 = 0, pd0 = 0;
             fprintf(stderr, "[perf/rb] %.1f fps loc=%d jsMB=%d wasmMB=%d ctrPx=%06x post/f=%lu drop/f=%lu | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
                     1000.0 * frames / dt, g_kbCtxIsLocal, kbMemMB, kbWasmMB, kbPx,
@@ -433,6 +440,7 @@ public:
 private:
     EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx_ = 0;
     int cw_ = 0, ch_ = 0;   // backbuffer size (pixel probe sampling point)
+    unsigned kbCtrPx_ = 0;  // last sampled center pixel (render-black vs present-black)
 };
 } // namespace
 

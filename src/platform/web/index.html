@@ -75,12 +75,18 @@
        pthread message dispatcher. MUST run before blackops.js loads. -->
   <script>
     (function () {
-      var dctx = null, disp = null;
+      var dctx = null, disp = null, kbRecv = 0;
       function kbPresent(bmp, ackPtr) {
         try {
           if (!dctx) { disp = document.getElementById('display'); dctx = disp.getContext('bitmaprenderer'); }
           if (disp.width !== bmp.width || disp.height !== bmp.height) { disp.width = bmp.width; disp.height = bmp.height; }
           dctx.transferFromImageBitmap(bmp);
+          // Confirm the PAGE actually receives + draws frames (vs the worker thinking it
+          // posted). First frame + every 120th: if these print but the screen is black,
+          // the issue is the #display overlay/CSS, not the present hand-off.
+          if ((kbRecv++ % 120) === 0)
+            console.log('[kbpresent] page drew frame #' + kbRecv + ' (' + bmp.width + 'x' + bmp.height +
+                        ', #display ' + disp.width + 'x' + disp.height + ')');
         } catch (e) {
           try { bmp.close(); } catch (_) {}
           // A silently-failing present = permanent black while the engine keeps
