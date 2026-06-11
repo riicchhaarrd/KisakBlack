@@ -81,7 +81,6 @@ extern "C" void KB_RenderThreadYield() {
     // has a per-frame cost, and once a map's programs are all compiled there are no more
     // completions to deliver. A new link (g_kbProgLinks bumps) re-arms the yield for a
     // window of frames so the result gets delivered; then it goes quiet = full speed.
-    extern unsigned long g_kbProgLinks;
     static unsigned long lastLinks = ~0ul;
     static int armed = 0;
     if (g_kbProgLinks != lastLinks) { lastLinks = g_kbProgLinks; armed = 60; }
