@@ -55,6 +55,7 @@ extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
 extern unsigned long g_kbDraws, g_kbReadbacks, g_kbPresentEnter;
 extern unsigned long g_kbBatchedDraws, g_kbBatchFlushes;  // draw batcher (gl_d3d9_draw.cpp)
 extern unsigned long g_kbFlushCause[12], g_kbMergeSubmits; // flush-cause telemetry + merge path
+extern int g_kbTimeDraws; extern double g_kbMsDraw;        // ?perfms=1 frame split (gl_d3d9_draw.cpp)
 extern unsigned long g_kbSkipPending, g_kbBuiltinFall;    // dropped/degraded draws (gl_program.cpp)
 extern unsigned long g_kbBlits;                           // StretchRect blits (gl_surface_ops.cpp)
 extern int g_kbRaceParity;                                // SMP parity of the frame being rendered
@@ -69,7 +70,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B98 (deproxy: hidden #kbgl transfer target dodges captureStream)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B99 (perfms frame split; loc= in perf line; headless asset path)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -169,6 +170,7 @@ public:
             // benched these was the thread-context-attach bug (fixed), not batching.
             { const char *v = getenv("KB_BATCH");    g_kbBatchEnable    = (v && *v == '0') ? 0 : 1; }
             { const char *v = getenv("KB_COALESCE"); g_kbCoalesceEnable = (v && *v == '0') ? 0 : 1; }
+            { const char *v = getenv("KB_PERFMS");   g_kbTimeDraws      = (v && *v == '1') ? 1 : 0; }
             fprintf(stderr, "[gl] ctxLocal=%d multi_draw=%d batch=%d coalesce=%d\n",
                     g_kbCtxIsLocal, g_kbHasMultiDraw, g_kbBatchEnable, g_kbCoalesceEnable);
         }
@@ -210,6 +212,7 @@ public:
     ~EmWebGLContext() override { if (ctx_ > 0) emscripten_webgl_destroy_context(ctx_); }
     void  MakeCurrent() override        { if (ctx_ > 0) emscripten_webgl_make_context_current(ctx_); }
     void  SwapBuffers() override {
+        double kbT0 = g_kbTimeDraws ? emscripten_get_now() : 0.0;  // ?perfms=1
         ++g_kbPresentEnter;            // reached present (before commit_frame) this frame
         // Synchronous lost-context poll: the webglcontextlost EVENT can never fire on this
         // worker (event delivery needs the event loop, which this thread never pumps), but
@@ -259,6 +262,8 @@ public:
                 }
             }, &s_frameInFlight);
         }
+        static double kbMsPresent = 0.0;   // ?perfms=1: time in this function per second
+        if (kbT0 != 0.0) kbMsPresent += emscripten_get_now() - kbT0;
         // Per-second dump of frame time + the per-frame count of RETURNING GL calls
         // (occlusion polls + event-fence waits), the suspected proxy sync-stall source.
         // One compact [perf] line every 120 frames only — console writes are proxied to
@@ -274,8 +279,8 @@ public:
             // a per-frame GPU-sync readback (GetRenderTargetData) stalling every frame.
             static unsigned long bd0 = 0, bf0 = 0, sk0 = 0, bi0 = 0, pl0 = 0;
             static unsigned long fc0[12] = {0}, mg0 = 0;
-            fprintf(stderr, "[perf/rb] %.1f fps | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
-                    1000.0 * frames / dt,
+            fprintf(stderr, "[perf/rb] %.1f fps loc=%d | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
+                    1000.0 * frames / dt, g_kbCtxIsLocal,
                     (g_kbDraws - dr0) / frames,
                     (g_kbBatchedDraws - bd0) / frames, (g_kbBatchFlushes - bf0) / frames,
                     (g_kbMergeSubmits - mg0) / frames,
@@ -296,6 +301,16 @@ public:
                     (g_kbFlushCause[11] - fc0[11]) / frames);
             for (int i = 0; i < 12; ++i) fc0[i] = g_kbFlushCause[i];
             mg0 = g_kbMergeSubmits;
+            // ?perfms=1: wall-time split. draw = inside DrawIndexedPrimitive (program
+            // setup + GL submission), pres = inside SwapBuffers (commit + bitmap ship),
+            // other = engine CPU (drawsurf generation, state-setter work, waits).
+            if (g_kbTimeDraws) {
+                double fAvg = dt / frames;
+                double dAvg = g_kbMsDraw / frames, pAvg = kbMsPresent / frames;
+                fprintf(stderr, "[perf/ms] frame=%.1f draw=%.1f pres=%.1f other=%.1f\n",
+                        fAvg, dAvg, pAvg, fAvg - dAvg - pAvg);
+                g_kbMsDraw = 0.0; kbMsPresent = 0.0;
+            }
 
             bd0 = g_kbBatchedDraws; bf0 = g_kbBatchFlushes;
             sk0 = g_kbSkipPending; bi0 = g_kbBuiltinFall; pl0 = g_kbProgLinks;

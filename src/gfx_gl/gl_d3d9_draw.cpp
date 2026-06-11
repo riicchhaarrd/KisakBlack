@@ -26,6 +26,7 @@
 #if defined(__EMSCRIPTEN__)
 #include <webgl/webgl2_ext.h>   // glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL
 #include <emscripten/html5_webgl.h>
+#include <emscripten.h>         // emscripten_get_now (?perfms=1 draw timing)
 
 // THE normalize_thread ABORT FIX: emscripten's proxied GL dispatches each call to
 // GetOwningThread(emscripten_webgl_get_current_context()) — read from the CALLING
@@ -61,6 +62,18 @@ int g_kbCoalesceEnable = 0;
 unsigned long g_kbBatchedDraws = 0;   // draws that rode in a batch (appended, no GL calls)
 unsigned long g_kbBatchFlushes = 0;   // multi-draw submissions
 unsigned long g_kbMergeSubmits = 0;   // flushes that went through the CPU index-merge path
+
+// ?perfms=1: wall-time split of the frame. Costs two performance.now() JS calls per
+// draw when enabled (a few ms/frame at 10k draws) — diagnostic runs only.
+int    g_kbTimeDraws = 0;
+double g_kbMsDraw    = 0.0;   // ms spent inside DrawIndexedPrimitive/DrawPrimitive
+namespace {
+struct KbDrawTimer {
+    double t0;
+    KbDrawTimer() : t0(g_kbTimeDraws ? emscripten_get_now() : 0.0) {}
+    ~KbDrawTimer() { if (t0 != 0.0) g_kbMsDraw += emscripten_get_now() - t0; }
+};
+}
 
 namespace {
 const int kMaxBatch = 256;
@@ -489,6 +502,7 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     const void *offset = reinterpret_cast<const void *>(size_t(startIndex) * idxSize);
 
 #if defined(__EMSCRIPTEN__)
+    KbDrawTimer kbtm_;        // ?perfms=1 frame-split accounting
     if (!g_kbBatchEnable) {   // batching off: the proven immediate path
         if (!useDrawProgram()) return D3D_OK;
         applyVertexState();

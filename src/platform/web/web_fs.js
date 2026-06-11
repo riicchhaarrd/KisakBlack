@@ -41,7 +41,10 @@
     //     so it's the fallback when the page is served from http://<lan-ip>.
     // Both build the same normalized-path index (handles vs File objects).
     async pickFolder() {
-      if (window.isSecureContext && window.showDirectoryPicker) {
+      // ?nofsapi=1 forces the <input webkitdirectory> path: automation (Playwright)
+      // can intercept its file chooser, while showDirectoryPicker cannot be scripted.
+      const noFsApi = new URLSearchParams(location.search).get("nofsapi") === "1";
+      if (!noFsApi && window.isSecureContext && window.showDirectoryPicker) {
         try { return await this.pick(); }
         catch (e) { if (e && e.name === "AbortError") throw e;
                     console.warn("[KBFS] showDirectoryPicker failed; falling back to <input webkitdirectory>", e); }

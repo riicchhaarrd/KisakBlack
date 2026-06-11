@@ -3,6 +3,7 @@
 
 #include <deque>
 #include <cstdio>
+#include <cstdlib>
 
 namespace kisak_al {
 
@@ -117,6 +118,10 @@ void WINAPI ALMasteringVoice::GetState(XAUDIO2_VOICE_STATE *s)          { if (s)
 
 // ---- ALXAudio2 -------------------------------------------------------------
 ALXAudio2::ALXAudio2() {
+    // KB_NOSND=1: skip device creation (headless harness -- Web Audio time never
+    // advances without an output device, and the engine's sound update spins on it).
+    const char *nosnd = getenv("KB_NOSND");
+    if (nosnd && *nosnd == '1') { fprintf(stderr, "[al] KB_NOSND=1: audio disabled\n"); return; }
     dev_ = alcOpenDevice(nullptr);
     if (dev_) { ctx_ = alcCreateContext(dev_, nullptr); if (ctx_) alcMakeContextCurrent(ctx_); }
     if (!ctx_) fprintf(stderr, "[al] OpenAL device init failed\n");
