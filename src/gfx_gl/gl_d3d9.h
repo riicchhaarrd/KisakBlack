@@ -219,6 +219,11 @@ private:
     float           vsConst_[256 * 4] = {};
     float           psConst_[256 * 4] = {};
     unsigned        vsVer_ = 1, psVer_ = 1;   // bumped when constants actually change
+    // Dirty register span covering every change with version in (DirtyBaseVer, Ver].
+    // A program whose upVer >= DirtyBaseVer only needs this span re-uploaded, not the
+    // whole 256-vec4 array (the engine touches a few matrix registers per draw).
+    unsigned        vsDirtyMin_ = 256, vsDirtyMax_ = 0, vsDirtyBaseVer_ = 1;
+    unsigned        psDirtyMin_ = 256, psDirtyMax_ = 0, psDirtyBaseVer_ = 1;
     unsigned        unitTex_[kMaxStages] = {};        // per-GL-unit bound texture cache
     struct { unsigned tex = 0; unsigned char minF = 255, magF = 255, wS = 255, wT = 255; }
                     stageSamplerCache_[kMaxStages];   // last sampler params applied per stage

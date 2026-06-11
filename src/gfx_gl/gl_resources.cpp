@@ -25,6 +25,7 @@ static inline bool kbOnGLThread() { return true; }
 // Batched-draw flush (gl_d3d9_draw.cpp): pending draws reference the CURRENT GPU
 // contents of buffers/textures — they must execute before any new upload lands.
 extern "C" void KB_FlushBatchedDraws();
+extern "C" void KB_FlushTagged(int cause); // +flush-cause telemetry
 
 // Shadow stack: default ON (KB_SHADOWS=0 / ?shadows=0 disables). Gates depth-texture
 // creation, SetDepthStencilSurface honoring and the sampler2DShadow variants in one
@@ -106,7 +107,7 @@ HRESULT WINAPI GLVertexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **p
 }
 
 HRESULT WINAPI GLVertexBuffer::Unlock() {
-    KB_FlushBatchedDraws();   // pending draws read the PRE-update contents
+    KB_FlushTagged(11);   // pending draws read the PRE-update contents
     UINT upMin = ~0u, upMax = 0;
     bool upDiscard = false, uploadNow = false;
     extern int g_kbCoalesceEnable;
@@ -220,7 +221,7 @@ HRESULT WINAPI GLIndexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **pp
 }
 
 HRESULT WINAPI GLIndexBuffer::Unlock() {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     UINT upMin = ~0u, upMax = 0;
     bool upDiscard = false, uploadNow = false;
     extern int g_kbCoalesceEnable;
@@ -406,7 +407,7 @@ HRESULT WINAPI GLTexture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, cons
 }
 
 HRESULT WINAPI GLTexture::UnlockRect(UINT Level) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     if (Level >= levels_ || !dirty_) return D3D_OK;
     dirty_ = false;
     if (!kbOnGLThread() || !tex_) {
@@ -541,7 +542,7 @@ HRESULT WINAPI GLVolumeTexture::LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume
     return D3D_OK;
 }
 HRESULT WINAPI GLVolumeTexture::UnlockBox(UINT Level) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     if (Level >= levels_ || !dirty_) return D3D_OK;
     dirty_ = false;
     if (!kbOnGLThread() || !tex_) { pendLevels_ |= 1u << Level; return D3D_OK; }
@@ -656,7 +657,7 @@ HRESULT WINAPI GLCubeTexture::LockRect(D3DCUBEMAP_FACES FaceType, UINT Level,
     return D3D_OK;
 }
 HRESULT WINAPI GLCubeTexture::UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     if ((unsigned)FaceType >= 6 || Level >= levels_ || !dirty_) return D3D_OK;
     dirty_ = false;
     if (!kbOnGLThread() || !tex_) {

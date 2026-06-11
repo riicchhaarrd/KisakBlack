@@ -3,7 +3,8 @@
 #include "gl_d3d9.h"
 
 #include <GL/glew.h>
-extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
+extern "C" void KB_FlushBatchedDraws();
+extern "C" void KB_FlushTagged(int cause); // +flush-cause telemetry  // batched-draw flush (gl_d3d9_draw.cpp)
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -97,7 +98,7 @@ HRESULT WINAPI GLQuery::GetDevice(IDirect3DDevice9 **ppDevice) {
 }
 
 HRESULT WINAPI GLQuery::Issue(DWORD dwIssueFlags) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     if (type_ == D3DQUERYTYPE_OCCLUSION) {
         if (dwIssueFlags & D3DISSUE_BEGIN) { haveResult_ = false; glBeginQuery(KB_OCCLUSION_TARGET, glQuery_); }
         if (dwIssueFlags & D3DISSUE_END)   glEndQuery(KB_OCCLUSION_TARGET);

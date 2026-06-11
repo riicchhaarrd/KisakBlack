@@ -28,6 +28,8 @@
 #include <universal/mem_largelocal.h>
 #include <universal/com_convexhull.h>
 #include "r_primarylights.h"
+#include <cmath>
+#include <cstdio>
 
 
 
@@ -2175,6 +2177,20 @@ void __cdecl R_FilterBModelIntoCells(unsigned int localClientNum, unsigned int e
 void __cdecl R_FilterDynEntIntoCells(unsigned int dynEntId, DynEntityDrawType drawType, float *mins, float *maxs)
 {
     R_UnfilterDynEntFromCells(dynEntId, drawType);
+    // NaN/inf bounds (a physics blow-up on a dynent) make BoxOnPlaneSide return 0,
+    // the node walk's side-step arithmetic then leaves the tree, and the next plane
+    // read traps on garbage signbits. Drop the link instead of crashing the frame.
+    for (int i = 0; i < 3; ++i) {
+        if (!(mins[i] <= maxs[i]) || !std::isfinite(mins[i]) || !std::isfinite(maxs[i])) {
+            static int kbDynWarn;
+            if (kbDynWarn < 8) {
+                ++kbDynWarn;
+                fprintf(stderr, "[kbdyn] dynent %u type %d: bad bounds (%g %g %g)-(%g %g %g), not linked\n",
+                        dynEntId, (int)drawType, mins[0], mins[1], mins[2], maxs[0], maxs[1], maxs[2]);
+            }
+            return;
+        }
+    }
     R_FilterDynEntIntoCells_r((mnode_t *)rgp.world->dpvsPlanes.nodes, dynEntId, drawType, mins, maxs);
 }
 

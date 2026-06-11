@@ -4,7 +4,8 @@
 #include "gl_resources.h"
 
 #include <GL/glew.h>
-extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
+extern "C" void KB_FlushBatchedDraws();
+extern "C" void KB_FlushTagged(int cause); // +flush-cause telemetry  // batched-draw flush (gl_d3d9_draw.cpp)
 
 #include <SDL2/SDL.h>   // adapter display-mode queries (EnumAdapterModes etc.)
 #include <cstdio>
@@ -71,7 +72,7 @@ GLDevice::~GLDevice() {
 }
 
 HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     if (RenderTargetIndex != 0) return D3D_OK;  // single render target for now (MRT: TODO)
     GLSurface *s = static_cast<GLSurface *>(pRenderTarget);
     // A null target, or the back-buffer surface itself, means the default framebuffer.
@@ -151,7 +152,7 @@ HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurfa
 }
 
 HRESULT WINAPI GLDevice::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     GLSurface *ds = static_cast<GLSurface *>(pNewZStencil);
     { extern unsigned long g_kbSetDS, g_kbSetDSTex;
       ++g_kbSetDS; if (ds && ds->texName()) ++g_kbSetDSTex; }
@@ -214,14 +215,14 @@ HRESULT WINAPI GLDevice::Reset(D3DPRESENT_PARAMETERS *pp) {
 }
 
 HRESULT WINAPI GLDevice::Present(const RECT *, const RECT *, HWND, const RGNDATA *) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     if (ctx_) ctx_->SwapBuffers();
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::Clear(DWORD /*Count*/, const D3DRECT * /*pRects*/, DWORD Flags,
                                D3DCOLOR Color, float Z, DWORD Stencil) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     GLbitfield mask = 0;
     if (Flags & D3DCLEAR_TARGET) {
         const float inv = 1.0f / 255.0f;
@@ -253,7 +254,7 @@ HRESULT WINAPI GLDevice::Clear(DWORD /*Count*/, const D3DRECT * /*pRects*/, DWOR
 }
 
 HRESULT WINAPI GLDevice::SetViewport(const D3DVIEWPORT9 *vp) {
-    KB_FlushBatchedDraws();
+    KB_FlushTagged(11);
     if (!vp) return E_INVALIDARG;
     // WINDOW target: D3D viewport origin is top-left, GL is bottom-left — flip Y.
     // FBO target: keep D3D placement. The vertex path already flips clip-space Y, so

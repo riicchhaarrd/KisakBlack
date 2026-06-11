@@ -73,6 +73,29 @@ GLint         s_bBaseVerts[kMaxBatch];
 GLuint        s_bBaseInst[kMaxBatch];
 int           s_bN = 0;
 GLIndexBuffer *s_bIb = nullptr;   // the batch's index buffer (its CPU shadow feeds merge-flush)
+// Merged-index snapshot, built AT APPEND TIME: a DISCARD lock may rewrite the CPU
+// shadow while a batch is still pending (the GPU buffer keeps its old contents until
+// Unlock, which flushes first — the CPU shadow has no such protection), so indices
+// must be captured while the just-issued draw's data is still current. Entry 0 is
+// copied lazily when the batch reaches size 2: singleton batches (the common case)
+// never pay for the copy.
+std::vector<unsigned> s_bMerged;
+int           s_bMergedN = 0;     // batch entries snapshotted into s_bMerged so far
+
+void kbMergeAppend(int i) {
+    const unsigned char *src = s_bIb->shadowData();
+    size_t off = (size_t)s_bOffsets[i];
+    GLint base = s_bBaseVerts[i];
+    GLsizei n = s_bCounts[i];
+    if (s_bType == GL_UNSIGNED_SHORT) {
+        const unsigned short *p = (const unsigned short *)(src + off);
+        for (GLsizei k = 0; k < n; ++k) s_bMerged.push_back((unsigned)(p[k] + base));
+    } else {
+        const unsigned *p = (const unsigned *)(src + off);
+        for (GLsizei k = 0; k < n; ++k) s_bMerged.push_back(p[k] + (unsigned)base);
+    }
+    ++s_bMergedN;
+}
 }
 
 extern "C" void KB_FlushBatchedDraws() {
@@ -85,37 +108,21 @@ extern "C" void KB_FlushBatchedDraws() {
     } else if (g_kbHasMultiDraw == 1) {
         glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(
             s_bMode, s_bCounts, s_bType, s_bOffsets, s_bInstCounts, s_bBaseVerts, s_bBaseInst, s_bN);
-    } else if (s_bMode == GL_TRIANGLES && s_bIb) {
+    } else if (s_bMode == GL_TRIANGLES && s_bMergedN == s_bN) {
         // CPU INDEX MERGE: on the proxied context every GL call is marshaled to the
         // DOM thread, so at ~16k draws/frame the calls themselves ARE the frame time.
-        // The multi-draw extension only exists on local contexts, but we keep CPU
-        // shadows of every index buffer: bake each draw's baseVertex into its indices
-        // and submit the whole batch as ONE glDrawElements from a scratch 32-bit IB.
-        // Millions of CPU index adds cost milliseconds; thousands of proxied calls
-        // cost hundreds. TRIANGLES only — merging strips would weld them together.
-        static std::vector<unsigned> merged;
-        merged.clear();
-        const unsigned char *src = s_bIb->shadowData();
-        bool is16 = (s_bType == GL_UNSIGNED_SHORT);
-        for (int i = 0; i < s_bN; ++i) {
-            size_t off = (size_t)s_bOffsets[i];
-            GLint base = s_bBaseVerts[i];
-            GLsizei n = s_bCounts[i];
-            if (is16) {
-                const unsigned short *p = (const unsigned short *)(src + off);
-                for (GLsizei k = 0; k < n; ++k) merged.push_back((unsigned)(p[k] + base));
-            } else {
-                const unsigned *p = (const unsigned *)(src + off);
-                for (GLsizei k = 0; k < n; ++k) merged.push_back(p[k] + (unsigned)base);
-            }
-        }
+        // The multi-draw extension only exists on local contexts, but the per-draw
+        // baseVertex was baked into s_bMerged at append time: submit the whole batch
+        // as ONE glDrawElements from a scratch 32-bit IB. Millions of CPU index adds
+        // cost milliseconds; thousands of proxied calls cost hundreds.
+        // TRIANGLES only — merging strips would weld them together.
         ++g_kbMergeSubmits;
         static GLuint s_mergeIbo = 0;
         if (!s_mergeIbo) glGenBuffers(1, &s_mergeIbo);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_mergeIbo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, merged.size() * sizeof(unsigned),
-                     merged.data(), GL_STREAM_DRAW);
-        glDrawElements(GL_TRIANGLES, (GLsizei)merged.size(), GL_UNSIGNED_INT, nullptr);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, s_bMerged.size() * sizeof(unsigned),
+                     s_bMerged.data(), GL_STREAM_DRAW);
+        glDrawElements(GL_TRIANGLES, (GLsizei)s_bMerged.size(), GL_UNSIGNED_INT, nullptr);
         // no rebind here: the next batch start binds its own index buffer anyway
     } else {
         for (int i = 0; i < s_bN; ++i)
@@ -123,6 +130,8 @@ extern "C" void KB_FlushBatchedDraws() {
                                      const_cast<void *>(s_bOffsets[i]), s_bBaseVerts[i]);
     }
     s_bN = 0;
+    s_bMergedN = 0;
+    s_bMerged.clear();
 }
 
 // Flush-cause telemetry: which mutator keeps interrupting batches? Tags only count
@@ -498,6 +507,10 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
             s_bBaseInst[s_bN]   = 0;
             ++s_bN;
             ++g_kbBatchedDraws;
+            // Snapshot indices NOW (shadow data is current at draw time); entry 0
+            // catches up here when the batch first reaches size 2.
+            if (g_kbHasMultiDraw != 1 && s_bMode == GL_TRIANGLES && s_bIb)
+                while (s_bMergedN < s_bN) kbMergeAppend(s_bMergedN);
             return D3D_OK;
         }
         KB_FlushTagged(10);   // mode/type changed or batch full

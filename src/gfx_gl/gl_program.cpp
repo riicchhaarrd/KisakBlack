@@ -49,6 +49,9 @@ HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const floa
         if (std::memcmp(dst, pData, bytes) != 0) {
             KB_FlushTagged(0);   // pending draws read the OLD values
             std::memcpy(dst, pData, bytes);
+            if (vsDirtyMin_ > vsDirtyMax_) vsDirtyBaseVer_ = vsVer_;  // span was empty
+            if (StartRegister < vsDirtyMin_) vsDirtyMin_ = StartRegister;
+            if (StartRegister + Vec4Count - 1 > vsDirtyMax_) vsDirtyMax_ = StartRegister + Vec4Count - 1;
             ++vsVer_;
         }
     }
@@ -62,6 +65,9 @@ HRESULT WINAPI GLDevice::SetPixelShaderConstantF(UINT StartRegister, const float
         if (std::memcmp(dst, pData, bytes) != 0) {
             KB_FlushTagged(1);
             std::memcpy(dst, pData, bytes);
+            if (psDirtyMin_ > psDirtyMax_) psDirtyBaseVer_ = psVer_;  // span was empty
+            if (StartRegister < psDirtyMin_) psDirtyMin_ = StartRegister;
+            if (StartRegister + Vec4Count - 1 > psDirtyMax_) psDirtyMax_ = StartRegister + Vec4Count - 1;
             ++psVer_;
         }
     }
@@ -235,13 +241,39 @@ bool GLDevice::useDrawProgram() {
 
     if (curProgram_ != lp.prog) { glUseProgram(lp.prog); curProgram_ = lp.prog; }
     if (lp.vscLoc >= 0 && lp.vscCount > 0 && lp.upVsVer != vsVer_) {
-        glUniform4fv(lp.vscLoc, lp.vscCount, vsConst_);
+#if defined(__EMSCRIPTEN__)
+        // Dirty-range upload: same program redrawing after a small constant change
+        // (per-model matrices — thousands of times per frame) re-sends only the touched
+        // span, not all 256 vec4s. Emscripten assigns array elements sequential uniform
+        // location ids, so vscLoc+reg addresses vsc[reg] directly. Programs that missed
+        // older changes (upVer predates the span) still get the full array.
+        if (lp.upVsVer >= vsDirtyBaseVer_ && vsDirtyMin_ <= vsDirtyMax_) {
+            unsigned lo = vsDirtyMin_;
+            unsigned hi = vsDirtyMax_ < (unsigned)lp.vscCount - 1 ? vsDirtyMax_ : (unsigned)lp.vscCount - 1;
+            if (lo <= hi) glUniform4fv(lp.vscLoc + lo, hi - lo + 1, vsConst_ + lo * 4);
+        } else
+#endif
+            glUniform4fv(lp.vscLoc, lp.vscCount, vsConst_);
         lp.upVsVer = vsVer_;
     }
     if (lp.pscLoc >= 0 && lp.pscCount > 0 && lp.upPsVer != psVer_) {
-        glUniform4fv(lp.pscLoc, lp.pscCount, psConst_);
+#if defined(__EMSCRIPTEN__)
+        if (lp.upPsVer >= psDirtyBaseVer_ && psDirtyMin_ <= psDirtyMax_) {
+            unsigned lo = psDirtyMin_;
+            unsigned hi = psDirtyMax_ < (unsigned)lp.pscCount - 1 ? psDirtyMax_ : (unsigned)lp.pscCount - 1;
+            if (lo <= hi) glUniform4fv(lp.pscLoc + lo, hi - lo + 1, psConst_ + lo * 4);
+        } else
+#endif
+            glUniform4fv(lp.pscLoc, lp.pscCount, psConst_);
         lp.upPsVer = psVer_;
     }
+#if defined(__EMSCRIPTEN__)
+    // The bound program is current now: restart the dirty span so it tracks only the
+    // NEXT draw's delta (otherwise it widens monotonically all frame). Programs whose
+    // upVer predates the new base simply take one full upload when next bound.
+    if (lp.upVsVer == vsVer_) { vsDirtyMin_ = 256; vsDirtyMax_ = 0; vsDirtyBaseVer_ = vsVer_; }
+    if (lp.upPsVer == psVer_) { psDirtyMin_ = 256; psDirtyMax_ = 0; psDirtyBaseVer_ = psVer_; }
+#endif
 
 #ifdef __EMSCRIPTEN__
     // Feed the in-shader alpha test. uAlphaTestFunc carries the D3DCMP_* value
