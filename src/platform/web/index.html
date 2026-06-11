@@ -42,6 +42,26 @@
       window.addEventListener('unhandledrejection',function(e){ window.__kbShowErr('[reject] '+((e.reason&&e.reason.message)||e.reason||e)); });
     })();
   </script>
+  <!-- Audio autoplay-policy unlock: the browser creates the OpenAL AudioContext SUSPENDED until a
+       user gesture, so the game runs but is silent. Track every AudioContext (wrap the constructor
+       BEFORE blackops.js creates one — incl. the proxied DOM-thread one) and resume them on the
+       first interaction. Standard web-audio unlock; no engine change needed. -->
+  <script>
+    (function(){
+      var ctxs=[];
+      ['AudioContext','webkitAudioContext'].forEach(function(name){
+        var Orig=window[name]; if(!Orig||Orig.__kbWrapped) return;
+        function Wrapped(){ var c=new Orig(arguments[0]); try{ctxs.push(c);}catch(e){} return c; }
+        Wrapped.prototype=Orig.prototype; Wrapped.__kbWrapped=1;
+        try{ window[name]=Wrapped; }catch(e){}
+      });
+      function resumeAll(){ var any=false; ctxs.forEach(function(c){ try{ if(c&&c.state==='suspended'){ c.resume(); any=true; } }catch(e){} });
+        if(any&&window.console) console.log('[kb] audio: resumed '+ctxs.length+' AudioContext(s) on user gesture'); }
+      ['pointerdown','mousedown','keydown','touchstart','click'].forEach(function(ev){
+        window.addEventListener(ev, resumeAll, true);
+      });
+    })();
+  </script>
   <div id="bar">
     <button id="pick">Pick Steam "Call of Duty Black Ops" folder</button>
     <label><input type="checkbox" id="fake" /> fake-file smoke test (no data)</label>
