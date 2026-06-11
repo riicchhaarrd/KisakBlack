@@ -68,7 +68,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B91 (flicker FIXED — no-derived-planes walk; diagnostics stripped) ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B92 (PERF: batching+coalescing ON, chain-plane cell cut, hysteresis pruned)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -149,8 +149,10 @@ public:
             });
             g_kbHasMultiDraw = (g_kbCtxIsLocal && emscripten_webgl_enable_extension(
                 ctx_, "WEBGL_multi_draw_instanced_base_vertex_base_instance")) ? 1 : 0;
-            g_kbBatchEnable    = getenv("KB_BATCH")    ? 1 : 0;
-            g_kbCoalesceEnable = getenv("KB_COALESCE") ? 1 : 0;
+            // Default ON: the post-flicker perf push. The crash that originally
+            // benched these was the thread-context-attach bug (fixed), not batching.
+            { const char *v = getenv("KB_BATCH");    g_kbBatchEnable    = (v && *v == '0') ? 0 : 1; }
+            { const char *v = getenv("KB_COALESCE"); g_kbCoalesceEnable = (v && *v == '0') ? 0 : 1; }
             fprintf(stderr, "[gl] ctxLocal=%d multi_draw=%d batch=%d coalesce=%d\n",
                     g_kbCtxIsLocal, g_kbHasMultiDraw, g_kbBatchEnable, g_kbCoalesceEnable);
         }

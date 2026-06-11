@@ -5040,40 +5040,15 @@ void __cdecl R_AddWorldSurfacesPortalWalk(int cameraCellIndex)
             {
                 R_VisitPortals(cell, &dpvsGlob.nearPlane, dpvsView->frustumPlanes, dpvsView->frustumPlaneCount);
 #if defined(__EMSCRIPTEN__)
-                // CELL HYSTERESIS — the in-motion flicker fix. ?noportal=1 (walk bypass)
-                // PROVED the portal walk is the flapper: wasm float rounding flips
-                // marginal portal decisions per frame and whole rooms pop while moving.
-                // Precision fixes (8-site double sweep, B82 margins) reduced but never
-                // killed it: the noise compounds through the recursive winding->plane
-                // derivation. So make single-frame flaps IMPOSSIBLE instead: any cell
-                // visible last frame but missing from this frame's walk gets ONE extra
-                // frame, dispatched with plain frustum planes (a superset of any portal
-                // clip -> never culls too much). Cells legitimately leaving view fade one
-                // frame late (imperceptible); decay is automatic because prevBits stores
-                // the PURE walk output, not the kept-alive set.
+                // Snapshot the walk output for the boundary-crossing replay (transient
+                // camera-in-solid frames redraw this set). The per-cell keep-alive that
+                // used to live here was removed: the DONT_CLIP walk chops only against
+                // stable inputs, so single-frame flaps no longer occur and keep-alives
+                // were pure overdraw.
                 {
-                    unsigned int walkBits[64];
                     int dw = (rgp.world->dpvsPlanes.cellCount + 31) >> 5;
                     if (dw > 64) dw = 64;
-                    for (int d = 0; d < dw; ++d) walkBits[d] = dpvsGlob.cellVisibleBits[d];
-                    for (int d = 0; d < dw; ++d) {
-                        unsigned int keep = prevWalkBits[d] & ~walkBits[d];
-                        while (keep) {
-                            int b = __builtin_ctz(keep);
-                            keep &= keep - 1;
-                            unsigned int ci = ((unsigned int)d << 5) + (unsigned int)b;
-                            if (ci < rgp.world->dpvsPlanes.cellCount) {
-                                const GfxCell *kc = &rgp.world->cells[ci];
-                                if (!R_CellIsForcedInvisible(kc)) {
-                                    R_AddCellSurfacesAndCullGroupsInFrustumDelayed(
-                                        kc, dpvsView->frustumPlanes,
-                                        dpvsView->frustumPlaneCount, dpvsView->frustumPlaneCount);
-                                    R_SetCellVisible(kc);
-                                }
-                            }
-                        }
-                    }
-                    for (int d = 0; d < dw; ++d) prevWalkBits[d] = walkBits[d];
+                    for (int d = 0; d < dw; ++d) prevWalkBits[d] = dpvsGlob.cellVisibleBits[d];
                 }
 #endif
             }
@@ -5904,6 +5879,20 @@ int __cdecl R_GetFurtherCellList_r(
             if ( R_ChopPortal(portal, parentPlane, planes, planeCount, v, 0) )
             {
                 v7 = R_AddCellToList(portal->cell, list, count);
+#if defined(__EMSCRIPTEN__)
+                // Tighten the no-derived-planes walk: deeper portals must also survive
+                // THIS portal's STORED plane (world data — stable like the frustum, none
+                // of the noisy derived-winding math). Cuts cells not visible through the
+                // full door chain = directly fewer draws. Capped to bound the stack.
+                if ( planeCount < 24 )
+                {
+                    DpvsPlane chainPlanes[25];
+                    for ( int cp = 0; cp < planeCount; ++cp ) chainPlanes[cp] = planes[cp];
+                    chainPlanes[planeCount] = portal->plane;
+                    count = R_GetFurtherCellList_r(portal->cell, parentPlane, chainPlanes, planeCount + 1, v, list, v7);
+                }
+                else
+#endif
                 count = R_GetFurtherCellList_r(portal->cell, parentPlane, planes, planeCount, v, list, v7);
             }
         }

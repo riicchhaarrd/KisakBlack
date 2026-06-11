@@ -111,8 +111,8 @@
         // ENV (forwarded to pthreads). Defaults are OFF while a post-B45 crash is isolated.
         try {
           var q = new URLSearchParams(location.search);
-          if (q.get('batch') === '1')    ENV.KB_BATCH = '1';
-          if (q.get('coalesce') === '1') ENV.KB_COALESCE = '1';
+          if (q.get('batch') === '0')    ENV.KB_BATCH = '0';     // default ON
+          if (q.get('coalesce') === '0') ENV.KB_COALESCE = '0';  // default ON
           if (q.get('shadows') === '1')  ENV.KB_SHADOWS = '1';
           if (q.get('shadows') === '0')  ENV.KB_SHADOWS = '0';
           if (q.get('noocc') === '1')    Module.arguments.push('+set', 'r_enableOccluders', '0');
