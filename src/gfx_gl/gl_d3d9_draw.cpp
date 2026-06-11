@@ -125,6 +125,13 @@ int      g_kbInstActive = 0, g_kbInstMatCount = 0, g_kbInstLocs[4] = {0,0,0,0};
 unsigned g_kbInstMatBase = 0;
 GLDevice *g_kbInstDev = nullptr;
 unsigned long g_kbInstRuns = 0, g_kbInstSaved = 0;
+// Why same-geometry sequences FAIL to extend a run (capture < theoretical). brk[0]=a non-matrix
+// mutator fired between copies, brk[1]=>1 vs-const call (matrix + other constants), brk[2]=single
+// call but range>4. brkCause = which mutator caused the non-matrix break (4=tex 5/6=rs 7=stream
+// 8=idx 9=decl 11=other). brkMaxRange = largest single-call vs-const range seen (would ?instregs
+// need to be that big to capture matrix+lighting?).
+int g_kbLastDirtyCause = 0;
+unsigned long g_kbBrk[3] = {0}, g_kbBrkCause[12] = {0}; int g_kbBrkMaxRange = 0;
 namespace {
 struct InstGeom {
     uintptr_t decl, vb, ib; unsigned start, prim, baseVert, off, stride;
@@ -196,7 +203,7 @@ extern "C" void KB_FlushTagged(int cause) {
     // break an open run; ANY other mutator (texture/stream/state/decl/RT/clear) is a real state
     // change -> mark non-matrix-dirty and emit the run now.
     if (g_kbInstEnable > 0 && cause != 0) {
-        g_kbNonMatrixDirty = 1;
+        g_kbNonMatrixDirty = 1; g_kbLastDirtyCause = cause;
         if (s_iN > 0 && g_kbInstDev) g_kbInstDev->flushInstanceRun();
     }
 }
@@ -803,6 +810,14 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
         InstGeom g{ (uintptr_t)decl_, (uintptr_t)streams_[0].vb, (uintptr_t)ib_,
                     startIndex, primCount, (unsigned)BaseVertexIndex,
                     streams_[0].offset, streams_[0].stride };
+        // Diagnostic: a same-geometry draw that CAN'T extend a run — why?
+        if (!matOnly && ((s_iN > 0 && g == s_iGeom) || (s_haveLast && g == s_lastGeom))) {
+            int rng = (g_kbVscChangedMin <= g_kbVscChangedMax)
+                    ? (int)(g_kbVscChangedMax - g_kbVscChangedMin + 1) : 0;
+            if (g_kbNonMatrixDirty) { ++g_kbBrk[0]; if ((unsigned)g_kbLastDirtyCause < 12u) ++g_kbBrkCause[g_kbLastDirtyCause]; }
+            else if (g_kbVscCalls != 1) ++g_kbBrk[1];
+            else { ++g_kbBrk[2]; if (rng > g_kbBrkMaxRange) g_kbBrkMaxRange = rng; }
+        }
         if (s_iN > 0) {
             if (matOnly && g == s_iGeom && mBase == s_iMatBase && mCount == s_iMatCount) {
                 const float *src = vsConst_ + mBase * 4;          // append this instance's matrix

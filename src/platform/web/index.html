@@ -180,10 +180,13 @@
           // round-trip to the DOM thread, and the wait SERIALIZES backend command production with
           // the DOM thread draining + GPU finishing this frame. Off lets them overlap (it's a mouse-
           // latency tweak, not correctness). Watch for hitches at spawn (CPU outrunning the GPU).
-          // r_gpuSync DEFAULT OFF on web (measured faster; the per-frame fence spin serializes the
-          // backend with the DOM/GPU drain — a native latency tweak that's a net loss proxied).
-          // ?gpusync=1 restores adaptive sync if spawn-time command-queue flooding ever shows up.
-          if (q.get('gpusync') !== '1') Module.arguments.push('+set', 'r_gpuSync', '0');
+          // r_gpuSync DEFAULT ON on web. Once the blit patch (kb_blit_patch.js) made the present
+          // cheap, leaving the fence OFF let the render thread buffer 2-3 frames ahead -> higher
+          // fps numbers but laggier feel + 100% CPU spin (fans). The fence bounds latency to ~1
+          // frame (low lag, less heat) for a tiny fps cost — the better experience. ?nogpusync=1
+          // (or ?gpusync=0) restores the unbounded-ahead max-fps mode.
+          if (q.get('nogpusync') === '1' || q.get('gpusync') === '0')
+            Module.arguments.push('+set', 'r_gpuSync', '0');
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)

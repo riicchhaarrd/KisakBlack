@@ -85,6 +85,7 @@ LINKFLAGS="\
   $PERF_FLAGS \
   -sEMULATE_FUNCTION_POINTER_CASTS=1 \
   -sINVOKE_RUN=0 \
+  --post-js src/platform/web/kb_blit_patch.js \
   -O2 --profiling-funcs"
 # NOTE: ASYNCIFY (the de-proxy render-thread event-loop yield, KB_RenderThreadYield ->
 # emscripten_sleep) lives on the `deproxy` branch. The proxied build (this branch's focus)

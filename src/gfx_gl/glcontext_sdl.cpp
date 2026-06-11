@@ -56,6 +56,7 @@ extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
 extern unsigned long g_kbDraws, g_kbReadbacks, g_kbPresentEnter;
 extern unsigned long g_kbBatchedDraws, g_kbBatchFlushes;  // draw batcher (gl_d3d9_draw.cpp)
 extern unsigned long g_kbInstRuns, g_kbInstSaved;        // ?inst instancing (gl_d3d9_draw.cpp)
+extern unsigned long g_kbBrk[3], g_kbBrkCause[12]; extern int g_kbBrkMaxRange;  // run-break diag
 extern unsigned long g_kbFlushCause[12], g_kbMergeSubmits; // flush-cause telemetry + merge path
 extern int g_kbTimeDraws; extern double g_kbMsDraw;        // ?perfms=1 frame split (gl_d3d9_draw.cpp)
 extern unsigned long g_kbSkipPending, g_kbBuiltinFall;    // dropped/degraded draws (gl_program.cpp)
@@ -81,7 +82,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: G4 (GPU instancing ?inst=1 validate / ?inst=2 instanced-draw; inst/f + sv/f counters)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: G5 (instancing run-break diagnostic [perf/brk] - why capture is only ~22%)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -434,6 +435,12 @@ public:
                     (g_kbFlushCause[11] - fc0[11]) / frames);
             for (int i = 0; i < 12; ++i) fc0[i] = g_kbFlushCause[i];
             mg0 = g_kbMergeSubmits;
+            // Instancing run-break reasons (cumulative): nonMat=a state mutator between copies
+            // (broken down by which: tex/rs/stream/decl/other), multiCall=>1 vs-const set,
+            // range=single set but >4 regs (maxRange=biggest seen -> how many ?instregs to capture).
+            fprintf(stderr, "[perf/brk] nonMat=%lu(tex=%lu rs=%lu strm=%lu decl=%lu oth=%lu) multiCall=%lu range=%lu maxRange=%d\n",
+                    g_kbBrk[0], g_kbBrkCause[4], g_kbBrkCause[5]+g_kbBrkCause[6], g_kbBrkCause[7],
+                    g_kbBrkCause[9], g_kbBrkCause[11], g_kbBrk[1], g_kbBrk[2], g_kbBrkMaxRange);
             // ?perfms=1: wall-time split. draw = inside DrawIndexedPrimitive (program
             // setup + GL submission), pres = inside SwapBuffers (commit + bitmap ship),
             // other = engine CPU (drawsurf generation, state-setter work, waits).
