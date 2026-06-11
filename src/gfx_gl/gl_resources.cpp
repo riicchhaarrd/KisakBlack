@@ -598,6 +598,15 @@ void GLCubeTexture::maybeGenMips() {
     // "vaseline" gloss). Once all 6 level-0 faces have data, build the chain ourselves.
     if (mipsGenned_ || levels_ != 1 || level0Faces_ != 0x3F || !tex_) return;
     mipsGenned_ = true;
+    // ?nomips=1 kill switch: the three "auto-generated mip chain" lines are the last
+    // GL ops before the deproxy context's GPU channel wedges on NVIDIA/ANGLE-GL
+    // (every later compile/link returns false/empty). Also: with S3TC working these
+    // cubes are COMPRESSED, where GenerateMipmap is invalid anyway.
+    { static int noMips = -1;
+      if (noMips < 0) { const char *v = getenv("KB_NOMIPS"); noMips = (v && *v == '1') ? 1 : 0; }
+      if (noMips) return; }
+    { int blockBytes = 0;
+      if (D3DCompressedGLFormat(format_, &blockBytes) != 0) return; }  // compressed: no GenerateMipmap
     glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
     int maxLvl = 0; for (UINT e = edge_; e > 1; e >>= 1) ++maxLvl;
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, maxLvl);
