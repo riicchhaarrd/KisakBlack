@@ -105,14 +105,10 @@ public:
         attrs.depth       = desc.depthStencil;
         attrs.stencil     = desc.depthStencil;
         attrs.antialias   = false;
-        // CURATED extensions instead of enable-all: getExtension() is what ACTIVATES an
-        // extension's behavior in Chrome, and KHR_parallel_shader_compile is unusable on
-        // this never-yielding worker — its link/compile results are delivered through the
-        // worker's event loop, which this render thread never pumps, so every status
-        // query reads a stale 'not done' forever AND Chrome's own client rejects
-        // useProgram on those programs ('program not valid' = the de-proxy black screen).
-        // Without the extension, links are SYNCHRONOUS: statuses correct immediately,
-        // bounded by the 4-links-per-frame budget in gl_program.cpp.
+        // CURATED extensions (enabled below) instead of enable-all, so we control
+        // exactly what's on. KHR_parallel_shader_compile IS enabled (B123) — see the
+        // kbExts note: its COMPLETION_STATUS query + an immediate in-flight blocking
+        // query is the only thing that reliably delivers link results on this worker.
         attrs.enableExtensionsByDefault = false;
         // Worker-owned context: explicit swap + proxy-to-main fallback (see header note).
         attrs.explicitSwapControl       = true;
