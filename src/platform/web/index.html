@@ -191,6 +191,14 @@
           // esp. matched to the display refresh) and bounds how far the render thread runs ahead
           // (latency + CPU/fans). Try 60/120/144. Default 85.
           { var fc = q.get('fps'); if (fc && /^\d+$/.test(fc)) Module.arguments.push('+set', 'com_maxfps', fc); }
+          // ?hires=1: force full-resolution textures. r_picmip_manual 0 (auto) lets the engine
+          // downsample textures based on detected VRAM — which it can't read on web, so it picks a
+          // conservative (low-res) level. manual=1 + all picmip 0 = full res. Must be set before
+          // images load (startup). Uses more memory (watch the 2GB wasm cap) but the GPU has it.
+          if (q.get('hires') === '1') {
+            Module.arguments.push('+set', 'r_picmip_manual', '1', '+set', 'r_picmip', '0',
+              '+set', 'r_picmip_bump', '0', '+set', 'r_picmip_spec', '0', '+set', 'r_picmip_water', '0');
+          }
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
