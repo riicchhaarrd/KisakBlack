@@ -109,7 +109,13 @@ HRESULT WINAPI GLVertexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **p
 }
 
 HRESULT WINAPI GLVertexBuffer::Unlock() {
-    KB_FlushTagged(11);   // pending draws read the PRE-update contents
+    // FLUSH ONLY ON DISCARD: a DISCARD lock orphans the buffer (new storage), so any
+    // pending batched draws that reference the OLD storage by offset would render
+    // garbage — flush them first. A NOOVERWRITE lock appends to a fresh region and
+    // leaves prior data intact, so batched draws stay valid; NOT flushing there lets
+    // same-material dynamic geometry collapse into one merged draw (the big GL-call cut
+    // — dynamic-buffer unlocks were the #1 batch-breaker, ~1900 flushes/frame).
+    { std::lock_guard<std::mutex> g(lockMu_); if (outDiscard_) KB_FlushTagged(11); }
     UINT upMin = ~0u, upMax = 0;
     bool upDiscard = false, uploadNow = false;
     extern int g_kbCoalesceEnable;
@@ -228,7 +234,8 @@ HRESULT WINAPI GLIndexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **pp
 }
 
 HRESULT WINAPI GLIndexBuffer::Unlock() {
-    KB_FlushTagged(11);
+    // Flush pending batched draws only on DISCARD (orphan) — see GLVertexBuffer::Unlock.
+    { std::lock_guard<std::mutex> g(lockMu_); if (outDiscard_) KB_FlushTagged(11); }
     UINT upMin = ~0u, upMax = 0;
     bool upDiscard = false, uploadNow = false;
     extern int g_kbCoalesceEnable;
