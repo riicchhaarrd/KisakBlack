@@ -64,6 +64,7 @@ extern int g_kbHasMultiDraw;                              // multi-draw ext avai
 extern int g_kbCtxIsLocal;                                // 1 = worker-local context
 extern int g_kbBatchEnable, g_kbCoalesceEnable;           // opt-in perf toggles (ENV)
 extern unsigned long g_kbGLCtxHandle;                     // context handle for thread-attach
+unsigned long g_kbPresPosted = 0, g_kbPresDropped = 0;   // de-proxy present delivery
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -71,7 +72,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B118 (verified bind in DRAW path: skip undelivered programs, no delete-churn)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B119 (ctrPx + post/drop telemetry: split render-black from present-black)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -310,7 +311,7 @@ public:
             static int s_stuckPresents = 0;
             if (s_frameInFlight) { if (++s_stuckPresents > 30) { s_frameInFlight = 0; s_stuckPresents = 0; } }
             else s_stuckPresents = 0;
-            EM_ASM({
+            int kbPosted = EM_ASM_INT({
                 var c = Module['canvas'];
                 // Official pthread canvas transfer registers the OffscreenCanvas in
                 // GL.offscreenCanvases but leaves Module.canvas unset (the wrapper's
@@ -320,12 +321,16 @@ public:
                     if (k) c = GL.offscreenCanvases[k].offscreenCanvas || GL.offscreenCanvases[k].canvas;
                 }
                 if (c && typeof OffscreenCanvas !== 'undefined' && c instanceof OffscreenCanvas) {
-                    if (Atomics.load(HEAP32, $0 >> 2)) return;   // previous frame unconsumed -> drop
+                    if (Atomics.load(HEAP32, $0 >> 2)) return 0;   // previous frame unconsumed -> drop
                     Atomics.store(HEAP32, $0 >> 2, 1);
-                    try { var b = c.transferToImageBitmap(); postMessage({ kbFrame: b, kbAck: $0 }, [b]); }
-                    catch (e) { Atomics.store(HEAP32, $0 >> 2, 0); }
+                    try { var b = c.transferToImageBitmap(); postMessage({ kbFrame: b, kbAck: $0 }, [b]); return 1; }
+                    catch (e) { Atomics.store(HEAP32, $0 >> 2, 0);
+                                if (!Module.__kbPostErr) { Module.__kbPostErr = 1; console.error('[gl] present post failed: ' + e); }
+                                return -1; }
                 }
+                return 2;   // not an OffscreenCanvas (stock proxied build)
             }, &s_frameInFlight);
+            if (kbPosted == 1) ++g_kbPresPosted; else if (kbPosted == 0 || kbPosted == -1) ++g_kbPresDropped;
         }
         // GPU-channel canary (every 30 presents): once the canary program has read
         // LINK_STATUS=true, a later false means Chrome dropped the GPU-process side of
@@ -372,8 +377,20 @@ public:
                 catch (e) { return -1; }
             });
             int kbWasmMB = EM_ASM_INT({ try { return (HEAP8.length / 1048576) | 0; } catch (e) { return -1; } });
-            fprintf(stderr, "[perf/rb] %.1f fps loc=%d jsMB=%d wasmMB=%d | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
-                    1000.0 * frames / dt, g_kbCtxIsLocal, kbMemMB, kbWasmMB,
+            // RENDER-BLACK vs PRESENT-BLACK split: read the center pixel of the default
+            // framebuffer (the buffer that gets presented). If it has color while the
+            // page is black -> present path; if it's black -> the scene render is black.
+            unsigned kbPx = 0;
+            {
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                unsigned char px[4] = {0,0,0,0};
+                glReadPixels((GLint)cw_/2, (GLint)ch_/2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                kbPx = (px[0]<<16)|(px[1]<<8)|px[2];
+            }
+            static unsigned long pp0 = 0, pd0 = 0;
+            fprintf(stderr, "[perf/rb] %.1f fps loc=%d jsMB=%d wasmMB=%d ctrPx=%06x post/f=%lu drop/f=%lu | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
+                    1000.0 * frames / dt, g_kbCtxIsLocal, kbMemMB, kbWasmMB, kbPx,
+                    (g_kbPresPosted - pp0) / frames, (g_kbPresDropped - pd0) / frames,
                     (g_kbDraws - dr0) / frames,
                     (g_kbBatchedDraws - bd0) / frames, (g_kbBatchFlushes - bf0) / frames,
                     (g_kbMergeSubmits - mg0) / frames,
@@ -405,6 +422,7 @@ public:
                 g_kbMsDraw = 0.0; kbMsPresent = 0.0;
             }
 
+            pp0 = g_kbPresPosted; pd0 = g_kbPresDropped;
             bd0 = g_kbBatchedDraws; bf0 = g_kbBatchFlushes;
             sk0 = g_kbSkipPending; bi0 = g_kbBuiltinFall; pl0 = g_kbProgLinks;
             t0 = now; frames = 0; occl0 = g_kbOcclGetData; dr0 = g_kbDraws; rb0 = g_kbReadbacks; buf0 = g_kbBufBytes;
