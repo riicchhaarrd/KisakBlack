@@ -147,7 +147,8 @@
           // ~doubles the (expensive) draw-call count on the web build, which is
           // draw-call-bound not shading-bound. Trades overdraw (free on a real GPU) for
           // far fewer GL calls. May affect some alpha-test geometry (trees).
-          if (q.get('noprepass') === '1') Module.arguments.push('+set', 'r_depthPrepass', '0');
+          if (q.get('noprepass') === '1' || q.get('nopreprass') === '1' || q.get('noprepas') === '1')
+            Module.arguments.push('+set', 'r_depthPrepass', '0');
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
