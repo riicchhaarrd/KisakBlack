@@ -151,10 +151,42 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
         // statuses. Treat empty-log as success and USE the program. Only a real
         // error text means a real failure (delete + bounded retry below).
         if (!log[0]) {
-            static int staleOnce = 0;
-            if (!staleOnce) { staleOnce = 1;
-                fprintf(stderr, "[gl] link status unreadable (stale client cache) — trusting programs; "
-                                "real failures still print their logs\n"); }
+            static int staleN = 0;
+            if (++staleN <= 3) {
+                fprintf(stderr, "[gl] link status false+empty (#%d) — trusting program; full dump follows\n", staleN);
+                // FULL FORENSICS, live (links are synchronous now): per-attached-shader
+                // compile status + log + SOURCE, and a fresh recompile of each source so
+                // the driver's real complaint (if any) prints with certainty.
+                EM_ASM({
+                    try {
+                        var p = GL.programs[$0];
+                        var att = GLctx.getAttachedShaders(p) || [];
+                        for (var i = 0; i < att.length; ++i) {
+                            var sh = att[i];
+                            var ty = GLctx.getShaderParameter(sh, 0x8B4F);
+                            var st = GLctx.getShaderParameter(sh, 0x8B81);
+                            var lg = GLctx.getShaderInfoLog(sh) || '';
+                            var src = GLctx.getShaderSource(sh) || '';
+                            var s2 = GLctx.createShader(ty || ($0 + i === 0 ? 0x8B31 : 0x8B30) || 0x8B30);
+                            var st2 = false, lg2 = '(recompile skipped)';
+                            if (src && s2) {
+                                GLctx.shaderSource(s2, src);
+                                GLctx.compileShader(s2);
+                                st2 = GLctx.getShaderParameter(s2, 0x8B81);
+                                lg2 = GLctx.getShaderInfoLog(s2) || '';
+                                GLctx.deleteShader(s2);
+                            }
+                            console.error('[gl] LINKDUMP att#' + i + ' type=' + ty + ' status=' + st +
+                                          ' log="' + lg.substring(0, 200) + '" freshStatus=' + st2 +
+                                          ' freshLog="' + lg2.substring(0, 300) + '" srcLen=' + src.length);
+                            console.error('[gl] LINKDUMP src#' + i + ': ' + src.substring(0, 1100));
+                        }
+                        var lgp = GLctx.getProgramInfoLog(p) || '';
+                        console.error('[gl] LINKDUMP progLog="' + lgp.substring(0, 300) + '" err=0x' +
+                                      GLctx.getError().toString(16));
+                    } catch (e) { console.error('[gl] LINKDUMP threw: ' + e.message); }
+                }, (int)lp.prog);
+            }
             ok = 1;   // fall through to uniform setup + ready=true
         }
     }
