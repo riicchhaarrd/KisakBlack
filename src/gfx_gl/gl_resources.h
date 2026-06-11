@@ -85,6 +85,8 @@ public:
     unsigned glName() { if (!ibo_ || pendMax_ > pendMin_) sync(); return ibo_; }
     void     sync();
     D3DFORMAT format() const { return format_; }
+    const unsigned char *shadowData() const { return shadow_.data(); }   // CPU mirror (merge-flush)
+    UINT     length() const { return length_; }
 
 private:
     IDirect3DDevice9         *device_;

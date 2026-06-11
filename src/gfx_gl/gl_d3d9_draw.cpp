@@ -11,6 +11,7 @@
 
 #include <GL/glew.h>
 #include <cstdio>
+#include <vector>
 
 // ---- Batched indexed draws (web only) ---------------------------------------------
 // On the proxied web context every GL call is marshaled to the canvas-owning thread, so
@@ -70,6 +71,7 @@ GLsizei       s_bInstCounts[kMaxBatch];
 GLint         s_bBaseVerts[kMaxBatch];
 GLuint        s_bBaseInst[kMaxBatch];
 int           s_bN = 0;
+GLIndexBuffer *s_bIb = nullptr;   // the batch's index buffer (its CPU shadow feeds merge-flush)
 }
 
 extern "C" void KB_FlushBatchedDraws() {
@@ -82,6 +84,37 @@ extern "C" void KB_FlushBatchedDraws() {
     } else if (g_kbHasMultiDraw == 1) {
         glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(
             s_bMode, s_bCounts, s_bType, s_bOffsets, s_bInstCounts, s_bBaseVerts, s_bBaseInst, s_bN);
+    } else if (s_bMode == GL_TRIANGLES && s_bIb) {
+        // CPU INDEX MERGE: on the proxied context every GL call is marshaled to the
+        // DOM thread, so at ~16k draws/frame the calls themselves ARE the frame time.
+        // The multi-draw extension only exists on local contexts, but we keep CPU
+        // shadows of every index buffer: bake each draw's baseVertex into its indices
+        // and submit the whole batch as ONE glDrawElements from a scratch 32-bit IB.
+        // Millions of CPU index adds cost milliseconds; thousands of proxied calls
+        // cost hundreds. TRIANGLES only — merging strips would weld them together.
+        static std::vector<unsigned> merged;
+        merged.clear();
+        const unsigned char *src = s_bIb->shadowData();
+        bool is16 = (s_bType == GL_UNSIGNED_SHORT);
+        for (int i = 0; i < s_bN; ++i) {
+            size_t off = (size_t)s_bOffsets[i];
+            GLint base = s_bBaseVerts[i];
+            GLsizei n = s_bCounts[i];
+            if (is16) {
+                const unsigned short *p = (const unsigned short *)(src + off);
+                for (GLsizei k = 0; k < n; ++k) merged.push_back((unsigned)(p[k] + base));
+            } else {
+                const unsigned *p = (const unsigned *)(src + off);
+                for (GLsizei k = 0; k < n; ++k) merged.push_back(p[k] + (unsigned)base);
+            }
+        }
+        static GLuint s_mergeIbo = 0;
+        if (!s_mergeIbo) glGenBuffers(1, &s_mergeIbo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_mergeIbo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, merged.size() * sizeof(unsigned),
+                     merged.data(), GL_STREAM_DRAW);
+        glDrawElements(GL_TRIANGLES, (GLsizei)merged.size(), GL_UNSIGNED_INT, nullptr);
+        // no rebind here: the next batch start binds its own index buffer anyway
     } else {
         for (int i = 0; i < s_bN; ++i)
             glDrawElementsBaseVertex(s_bMode, s_bCounts[i], s_bType,
@@ -460,7 +493,7 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
     applyVertexState();
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib_->glName());
-    s_bMode = mode; s_bType = idxType;
+    s_bMode = mode; s_bType = idxType; s_bIb = ib_;
     s_bCounts[0] = verts; s_bOffsets[0] = offset; s_bInstCounts[0] = 1;
     s_bBaseVerts[0] = BaseVertexIndex; s_bBaseInst[0] = 0;
     s_bN = 1;
