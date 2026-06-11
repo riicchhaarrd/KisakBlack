@@ -10,8 +10,21 @@
 #include "gl_resources.h"
 
 #include <GL/glew.h>
+#include <cstdlib>   // getenv (KB_NOPREPASS)
 extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
 extern "C" void KB_FlushTagged(int cause); // same, +flush-cause telemetry
+
+// KB_NOPREPASS env (?noprepass=1): remap the lit pass's EQUAL depth test to LEQUAL since
+// the depth pre-pass is disabled. Read lazily on first use (env is set in preRun, which
+// runs after C++ static init). -1 = not yet read.
+int g_kbNoPrepass = -1;
+extern "C" int KB_NoPrepass() {
+    if (g_kbNoPrepass < 0) {
+        const char *v = getenv("KB_NOPREPASS");
+        g_kbNoPrepass = (v && *v == '1') ? 1 : 0;
+    }
+    return g_kbNoPrepass;
+}
 
 
 namespace {
@@ -89,7 +102,18 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
             }
             break;
         }
-        case D3DRS_ZFUNC:           glDepthFunc(glCmp(Value));               break;
+        case D3DRS_ZFUNC: {
+            // PREPASS-OFF FIX (?noprepass): Black Ops runs its lit pass with ZFUNC=EQUAL
+            // because the depth pre-pass already wrote exact depth. With the prepass
+            // disabled (r_depthPrepass 0, the big draw-call win) depth isn't pre-populated,
+            // so EQUAL rejects nearly every fragment -> unshaded/black. Remap EQUAL ->
+            // LEQUAL so normal z-testing populates + tests depth in one pass. Off by
+            // default; the engine's prepass logic is otherwise untouched.
+            DWORD v = Value;
+            if (KB_NoPrepass() && v == D3DCMP_EQUAL) v = D3DCMP_LESSEQUAL;
+            glDepthFunc(glCmp(v));
+            break;
+        }
         case D3DRS_CULLMODE:
             // The vertex path flips Y in clip space (D3D's Y-down screen -> GL's
             // Y-up), which reverses triangle winding. So the GL front face is the
