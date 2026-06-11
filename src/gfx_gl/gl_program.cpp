@@ -113,11 +113,11 @@ static inline void KB_glGetActiveUniform(unsigned p, unsigned i, int bs, int *le
 
 bool GLDevice::finalizeProgram(LinkedProgram &lp) {
 #if defined(__EMSCRIPTEN__)
-    static int parallel = -1;               // -1 unknown, 0 unsupported, 1 supported
-    if (parallel < 0) {
-        const char *ext = (const char *)glGetString(GL_EXTENSIONS);
-        parallel = (ext && strstr(ext, "parallel_shader_compile")) ? 1 : 0;
-    }
+    // KHR_parallel_shader_compile is deliberately NOT enabled on web anymore
+    // (glcontext_sdl.cpp curated list): its results are delivered via the worker's
+    // never-pumped event loop, making every status unreadable forever and Chrome's
+    // client reject useProgram. Links are synchronous now — statuses below are live.
+    const int parallel = 0;
     if (parallel) {
         // THE STALE-RESULT TRAP (the whole B41→B106 saga, finally): on this Chrome/
         // ANGLE, a blocking program query delivers a FRESH result only while the

@@ -70,7 +70,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B108 (statuses are unknowable: trust empty-log links, use the programs)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B109 (NO parallel compile: curated extensions, synchronous links, live statuses)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -103,7 +103,15 @@ public:
         attrs.depth       = desc.depthStencil;
         attrs.stencil     = desc.depthStencil;
         attrs.antialias   = false;
-        attrs.enableExtensionsByDefault = true;
+        // CURATED extensions instead of enable-all: getExtension() is what ACTIVATES an
+        // extension's behavior in Chrome, and KHR_parallel_shader_compile is unusable on
+        // this never-yielding worker — its link/compile results are delivered through the
+        // worker's event loop, which this render thread never pumps, so every status
+        // query reads a stale 'not done' forever AND Chrome's own client rejects
+        // useProgram on those programs ('program not valid' = the de-proxy black screen).
+        // Without the extension, links are SYNCHRONOUS: statuses correct immediately,
+        // bounded by the 4-links-per-frame budget in gl_program.cpp.
+        attrs.enableExtensionsByDefault = false;
         // Worker-owned context: explicit swap + proxy-to-main fallback (see header note).
         attrs.explicitSwapControl       = true;
         attrs.renderViaOffscreenBackBuffer = true;
@@ -161,6 +169,21 @@ public:
             // emscripten_gl* calls (the trustworthy getters + the multi-draw entry point)
             // execute against the worker's GLctx and are ONLY valid when local; on the
             // proxied path everything must ride the proxy-aware dispatch instead.
+            // Everything we actually rely on, EXCEPT parallel compile (see attrs note):
+            // compressed textures, baseVertex draws, multi-draw, float RTs, aniso.
+            {
+                static const char *kbExts[] = {
+                    "WEBGL_compressed_texture_s3tc",
+                    "WEBGL_draw_instanced_base_vertex_base_instance",
+                    "WEBGL_multi_draw",
+                    "WEBGL_multi_draw_instanced_base_vertex_base_instance",
+                    "EXT_color_buffer_float",
+                    "OES_texture_float_linear",
+                    "EXT_texture_filter_anisotropic",
+                    "EXT_float_blend",
+                };
+                for (const char *e : kbExts) emscripten_webgl_enable_extension(ctx_, e);
+            }
             g_kbCtxIsLocal = EM_ASM_INT({
                 return (typeof GL !== 'undefined' && GL.currentContextIsProxied) ? 0 : 1;
             });
