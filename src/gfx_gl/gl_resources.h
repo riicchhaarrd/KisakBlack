@@ -49,6 +49,10 @@ public:
 
     unsigned glName() { if (!vbo_ || pendMax_ > pendMin_) sync(); return vbo_; }
     void     sync();   // GL thread only: create + replay pending uploads
+    // D3DUSAGE_DYNAMIC ring buffers change their bound offset every draw (NOOVERWRITE append /
+    // DISCARD orphan), so a per-(buffer,offset) VAO cache misses every time and thrashes — these
+    // take the shared-VAO re-spec path instead (gl_d3d9_draw.cpp applyVertexState).
+    bool     isDynamic() const { return (usage_ & D3DUSAGE_DYNAMIC) != 0; }
 
 private:
     IDirect3DDevice9         *device_;

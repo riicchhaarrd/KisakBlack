@@ -79,8 +79,11 @@ void GLVertexBuffer::sync() {
     }
 }
 
-extern unsigned g_kbVaoEpoch;   // VAO cache invalidation (gl_d3d9_draw.cpp)
-GLVertexBuffer::~GLVertexBuffer() { ++g_kbVaoEpoch; if (vbo_) glDeleteBuffers(1, &vbo_); }
+// Selective VAO-cache invalidation: note the dead buffer/decl so only the cache entries that
+// reference it are dropped (the wholesale clear on every death was the periodic stutter).
+extern "C" void KB_VaoNoteDeadBuf(unsigned name);
+extern "C" void KB_VaoNoteDeadDecl(const void *decl);
+GLVertexBuffer::~GLVertexBuffer() { if (vbo_) { KB_VaoNoteDeadBuf(vbo_); glDeleteBuffers(1, &vbo_); } }
 
 HRESULT WINAPI GLVertexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (!ppDevice) return E_INVALIDARG;
@@ -207,7 +210,7 @@ void GLIndexBuffer::sync() {
     }
 }
 
-GLIndexBuffer::~GLIndexBuffer() { ++g_kbVaoEpoch; if (ibo_) glDeleteBuffers(1, &ibo_); }
+GLIndexBuffer::~GLIndexBuffer() { if (ibo_) { KB_VaoNoteDeadBuf(ibo_); glDeleteBuffers(1, &ibo_); } }
 
 HRESULT WINAPI GLIndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (!ppDevice) return E_INVALIDARG;
@@ -881,7 +884,7 @@ GLVertexDeclaration::GLVertexDeclaration(IDirect3DDevice9 *device,
         elements_.push_back(*e);
 }
 
-GLVertexDeclaration::~GLVertexDeclaration() { ++g_kbVaoEpoch; }
+GLVertexDeclaration::~GLVertexDeclaration() { KB_VaoNoteDeadDecl(this); }
 
 HRESULT WINAPI GLVertexDeclaration::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (!ppDevice) return E_INVALIDARG;

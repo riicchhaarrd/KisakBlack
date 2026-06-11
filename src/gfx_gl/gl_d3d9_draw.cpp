@@ -12,6 +12,7 @@
 #include <GL/glew.h>
 #include <cstdio>
 #include <vector>
+#include <mutex>
 
 // ---- Batched indexed draws (web only) ---------------------------------------------
 // On the proxied web context every GL call is marshaled to the canvas-owning thread, so
@@ -451,16 +452,41 @@ void GLDevice::bindBuiltinForDraw() {
         glUniform1f(builtinAlphaRefLoc_, (float)alphaTest_.ref / 255.0f);
 }
 
-unsigned g_kbVaoEpoch = 1;   // bumped when a VB/IB/decl dies (GL names get reused)
+unsigned g_kbVaoEpoch = 1;   // (legacy; kept for the extern) — selective invalidation below
+
+// Selective VAO-cache invalidation. The old design bumped g_kbVaoEpoch on EVERY buffer/decl
+// death and wiped the WHOLE cache, so the streaming system's periodic geometry eviction
+// rebuilt every VAO at once next frame = a periodic STUTTER (user-confirmed: ?novao=1, which
+// has no cache to wipe, removed it). Instead, record just the dead resource and drop ONLY the
+// cache entries that reference it. Destructors (gl_resources.cpp, possibly off-thread) push
+// here; applyVertexState drains on the render thread BEFORE any miss-build, so a reused GL
+// name can't alias a stale entry (its entries are erased first).
+static std::mutex            g_kbDeadMu;
+static std::vector<unsigned> g_kbDeadBufs;    // dead VB/IB GL buffer names (one shared namespace)
+static std::vector<const void*> g_kbDeadDecls;// dead GLVertexDeclaration addresses
+extern "C" void KB_VaoNoteDeadBuf(unsigned name) {
+    if (!name) return;
+    std::lock_guard<std::mutex> g(g_kbDeadMu); g_kbDeadBufs.push_back(name);
+}
+extern "C" void KB_VaoNoteDeadDecl(const void *decl) {
+    std::lock_guard<std::mutex> g(g_kbDeadMu); g_kbDeadDecls.push_back(decl);
+}
 
 void GLDevice::applyVertexState() {
     // ?novao=1 kill switch: bypass the VAO cache (full attrib re-spec per draw, the
     // pre-B100 path) to bisect geometry corruption vs the cache.
     static int noVao = -1;
     if (noVao < 0) { const char *v = getenv("KB_NOVAO"); noVao = (v && *v == '1') ? 1 : 0; }
-    if (noVao) {
+    // A D3DUSAGE_DYNAMIC stream's bound offset changes every draw (the NOOVERWRITE/DISCARD ring),
+    // so a per-(buffer,offset) cache entry never hits — it just accumulates throwaway VAOs until
+    // the size cap nukes the whole cache = the periodic stutter (user-confirmed: ?novao=1 removed
+    // it). Route dynamic draws through the shared-VAO re-spec path (no alloc, no cache churn);
+    // only static layouts (stable offset) get cached, where hits actually pay off.
+    bool dynamic = false;
+    for (int i = 0; i < 4; ++i) if (streams_[i].vb && streams_[i].vb->isDynamic()) { dynamic = true; break; }
+    if (noVao || dynamic) {
         if (!vao_) glGenVertexArrays(1, &vao_);
-        glBindVertexArray(vao_);
+        if (curVao_ != vao_) glBindVertexArray(vao_);
         curVao_ = vao_; curVaoEnt_ = nullptr;   // element-bind gate disabled (no entry)
         for (int i = 0; i < 16; ++i) glDisableVertexAttribArray(i);
         glVertexAttrib4f(GLAttribLocation(D3DDECLUSAGE_COLOR, 0), 1.0f, 1.0f, 1.0f, 1.0f);
@@ -480,14 +506,46 @@ void GLDevice::applyVertexState() {
         return;
     }
 
-    // Buffer/decl deletion invalidates cached VAOs (a reused GL name or decl address
-    // would alias a stale entry). Rare — full clear is fine.
-    if (vaoEpochSeen_ != g_kbVaoEpoch || vaoCache_.size() > 4096) {
+    // Selective invalidation: drop ONLY cache entries that reference a just-destroyed buffer
+    // (VB name in key[1/4/7/10] or the captured element binding) or declaration (key[0]). A
+    // reused GL name/decl-addr would otherwise alias a stale VAO. Draining here — before the
+    // miss-build below — guarantees a reused name's stale entries are gone before a new entry
+    // could be created for it. (Was a wholesale clear on any death = the periodic stutter.)
+    {
+        std::vector<unsigned>     dBufs;
+        std::vector<const void *> dDecls;
+        {
+            std::lock_guard<std::mutex> g(g_kbDeadMu);
+            if (!g_kbDeadBufs.empty())  dBufs.swap(g_kbDeadBufs);
+            if (!g_kbDeadDecls.empty()) dDecls.swap(g_kbDeadDecls);
+        }
+        if (!dBufs.empty() || !dDecls.empty()) {
+            bool erasedCur = false;
+            for (auto it = vaoCache_.begin(); it != vaoCache_.end(); ) {
+                const auto &k = it->first;
+                bool dead = false;
+                for (const void *d : dDecls) if (k[0] == (unsigned)(uintptr_t)d) { dead = true; break; }
+                if (!dead)
+                    for (unsigned nm : dBufs)
+                        if (k[1]==nm || k[4]==nm || k[7]==nm || k[10]==nm || it->second.elem==nm) { dead = true; break; }
+                if (dead) {
+                    if (curVaoEnt_ == &it->second) erasedCur = true;
+                    glDeleteVertexArrays(1, &it->second.vao);
+                    it = vaoCache_.erase(it);
+                } else ++it;
+            }
+            if (erasedCur) {
+                // The live VAO (and the merge code's s_bElemSlot pointer into it) was erased.
+                curVaoEnt_ = nullptr; curVao_ = 0; s_bElemSlot = nullptr; glBindVertexArray(0);
+            }
+        }
+    }
+    // Safety cap (rare): bound cache size to avoid unbounded VAO accumulation.
+    if (vaoCache_.size() > 4096) {
         for (auto &kv : vaoCache_) glDeleteVertexArrays(1, &kv.second.vao);
         vaoCache_.clear();
-        curVaoEnt_ = nullptr; curVao_ = 0;
+        curVaoEnt_ = nullptr; curVao_ = 0; s_bElemSlot = nullptr;
         glBindVertexArray(0);
-        vaoEpochSeen_ = g_kbVaoEpoch;
     }
 
     // Cache key: declaration + every stream's (buffer, offset, stride). glName() runs
