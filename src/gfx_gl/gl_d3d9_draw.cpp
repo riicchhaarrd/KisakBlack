@@ -86,6 +86,7 @@ GLint         s_bBaseVerts[kMaxBatch];
 GLuint        s_bBaseInst[kMaxBatch];
 int           s_bN = 0;
 GLIndexBuffer *s_bIb = nullptr;   // the batch's index buffer (its CPU shadow feeds merge-flush)
+unsigned     *s_bElemSlot = nullptr;   // current VAO's tracked element binding (merge updates it)
 // Merged-index snapshot, built AT APPEND TIME: a DISCARD lock may rewrite the CPU
 // shadow while a batch is still pending (the GPU buffer keeps its old contents until
 // Unlock, which flushes first — the CPU shadow has no such protection), so indices
@@ -136,7 +137,9 @@ extern "C" void KB_FlushBatchedDraws() {
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, s_bMerged.size() * sizeof(unsigned),
                      s_bMerged.data(), GL_STREAM_DRAW);
         glDrawElements(GL_TRIANGLES, (GLsizei)s_bMerged.size(), GL_UNSIGNED_INT, nullptr);
-        // no rebind here: the next batch start binds its own index buffer anyway
+        // the scratch bind landed in the current VAO — record it so the next batch
+        // start's element-bind gate doesn't skip a needed rebind
+        if (s_bElemSlot) *s_bElemSlot = s_mergeIbo;
     } else {
         for (int i = 0; i < s_bN; ++i)
             glDrawElementsBaseVertex(s_bMode, s_bCounts[i], s_bType,
@@ -448,30 +451,64 @@ void GLDevice::bindBuiltinForDraw() {
         glUniform1f(builtinAlphaRefLoc_, (float)alphaTest_.ref / 255.0f);
 }
 
-void GLDevice::applyVertexState() {
-    if (!vao_) glGenVertexArrays(1, &vao_);
-    glBindVertexArray(vao_);
+unsigned g_kbVaoEpoch = 1;   // bumped when a VB/IB/decl dies (GL names get reused)
 
-    for (int i = 0; i < 16; ++i) glDisableVertexAttribArray(i);
+void GLDevice::applyVertexState() {
+    // Buffer/decl deletion invalidates cached VAOs (a reused GL name or decl address
+    // would alias a stale entry). Rare — full clear is fine.
+    if (vaoEpochSeen_ != g_kbVaoEpoch || vaoCache_.size() > 4096) {
+        for (auto &kv : vaoCache_) glDeleteVertexArrays(1, &kv.second.vao);
+        vaoCache_.clear();
+        curVaoEnt_ = nullptr; curVao_ = 0;
+        glBindVertexArray(0);
+        vaoEpochSeen_ = g_kbVaoEpoch;
+    }
+
+    // Cache key: declaration + every stream's (buffer, offset, stride). glName() runs
+    // even on hits — pending CPU-side uploads sync at bind time there.
+    std::array<unsigned, 13> key{};
+    key[0] = (unsigned)(uintptr_t)decl_;
+    int n = 1;
+    for (int i = 0; i < 4; ++i) {
+        const Stream &s = streams_[i];
+        key[n++] = s.vb ? s.vb->glName() : 0u;
+        key[n++] = (unsigned)s.offset;
+        key[n++] = (unsigned)s.stride;
+    }
+    auto it = vaoCache_.find(key);
+    if (it != vaoCache_.end()) {
+        if (curVao_ != it->second.vao) { glBindVertexArray(it->second.vao); curVao_ = it->second.vao; }
+        curVaoEnt_ = &it->second;
+        return;
+    }
+
+    // Miss: build a fresh VAO (starts with all arrays disabled — no per-draw disables).
+    unsigned vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    curVao_ = vao;
     // D3D's default (unspecified) diffuse colour is white; GL's default generic
     // attribute is (0,0,0,1). Without this, a texcoord-only vertex would multiply
-    // the texture by black. The array, if the decl supplies COLOR0, overrides this.
+    // the texture by black. Context-global (not VAO state) — re-set per miss is cheap.
     glVertexAttrib4f(GLAttribLocation(D3DDECLUSAGE_COLOR, 0), 1.0f, 1.0f, 1.0f, 1.0f);
-    if (!decl_) return;
+    if (decl_) {
+        for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
+            int loc = GLAttribLocation(e.Usage, e.UsageIndex);
+            if (loc < 0 || e.Stream >= 4) continue;
+            const Stream &s = streams_[e.Stream];
+            if (!s.vb) continue;
 
-    for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
-        int loc = GLAttribLocation(e.Usage, e.UsageIndex);
-        if (loc < 0 || e.Stream >= 4) continue;
-        const Stream &s = streams_[e.Stream];
-        if (!s.vb) continue;
-
-        GLint size; GLenum type; GLboolean norm;
-        declType(e.Type, &size, &type, &norm);
-        glBindBuffer(GL_ARRAY_BUFFER, s.vb->glName());
-        glEnableVertexAttribArray(loc);
-        glVertexAttribPointer(loc, size, type, norm, s.stride,
-                              reinterpret_cast<const void *>(size_t(s.offset + e.Offset)));
+            GLint size; GLenum type; GLboolean norm;
+            declType(e.Type, &size, &type, &norm);
+            glBindBuffer(GL_ARRAY_BUFFER, s.vb->glName());
+            glEnableVertexAttribArray(loc);
+            glVertexAttribPointer(loc, size, type, norm, s.stride,
+                                  reinterpret_cast<const void *>(size_t(s.offset + e.Offset)));
+        }
     }
+    VaoEntry &ent = vaoCache_[key];
+    ent.vao = vao; ent.elem = 0;   // fresh VAO has no element binding captured yet
+    curVaoEnt_ = &ent;
 }
 
 HRESULT WINAPI GLDevice::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex,
@@ -506,7 +543,11 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     if (!g_kbBatchEnable) {   // batching off: the proven immediate path
         if (!useDrawProgram()) return D3D_OK;
         applyVertexState();
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib_->glName());
+        unsigned elem = ib_->glName();
+        if (!curVaoEnt_ || curVaoEnt_->elem != elem) {   // VAO captures the element binding
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elem);
+            if (curVaoEnt_) curVaoEnt_->elem = elem;
+        }
         glDrawElementsBaseVertex(mode, verts, idxType, const_cast<void *>(offset), BaseVertexIndex);
         return D3D_OK;
     }
@@ -532,7 +573,17 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     // Batch start: do the full per-state setup ONCE, then defer this draw.
     if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
     applyVertexState();
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib_->glName());
+    {
+        unsigned elem = ib_->glName();
+        if (!curVaoEnt_ || curVaoEnt_->elem != elem) {   // VAO captures the element binding
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elem);
+            if (curVaoEnt_) curVaoEnt_->elem = elem;
+        }
+        // The merge-flush rebinds its scratch IBO into whatever VAO is current; let it
+        // record that into this VAO's tracked element slot (safe for the batch's
+        // lifetime: every cache mutation is preceded by a flush).
+        s_bElemSlot = curVaoEnt_ ? &curVaoEnt_->elem : nullptr;
+    }
     s_bMode = mode; s_bType = idxType; s_bIb = ib_;
     s_bCounts[0] = verts; s_bOffsets[0] = offset; s_bInstCounts[0] = 1;
     s_bBaseVerts[0] = BaseVertexIndex; s_bBaseInst[0] = 0;

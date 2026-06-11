@@ -278,10 +278,16 @@ bool GLDevice::useDrawProgram() {
 #ifdef __EMSCRIPTEN__
     // Feed the in-shader alpha test. uAlphaTestFunc carries the D3DCMP_* value
     // (1..8) when enabled, 0 when disabled; uAlphaRef is the normalized [0,1] ref.
-    if (lp.alphaFuncLoc >= 0)
-        glUniform1i(lp.alphaFuncLoc, alphaTestOn_ ? (int)alphaFunc_ : 0);
-    if (lp.alphaRefLoc >= 0)
-        glUniform1f(lp.alphaRefLoc, (float)alphaRef_ / 255.0f);
+    // Gated on change: these vary per material batch, not per draw — unconditional
+    // re-upload was 2 GL calls on every one of ~10k draws.
+    if (lp.alphaFuncLoc >= 0) {
+        int af = alphaTestOn_ ? (int)alphaFunc_ : 0;
+        if (lp.upAlphaFunc != af) { glUniform1i(lp.alphaFuncLoc, af); lp.upAlphaFunc = af; }
+    }
+    if (lp.alphaRefLoc >= 0) {
+        float ar = (float)alphaRef_ / 255.0f;
+        if (lp.upAlphaRef != ar) { glUniform1f(lp.alphaRefLoc, ar); lp.upAlphaRef = ar; }
+    }
 #endif
 
     // Bind each referenced sampler s# to texture unit # and the matching texture.

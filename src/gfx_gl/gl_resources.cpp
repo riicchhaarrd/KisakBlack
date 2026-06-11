@@ -78,7 +78,8 @@ void GLVertexBuffer::sync() {
     }
 }
 
-GLVertexBuffer::~GLVertexBuffer() { if (vbo_) glDeleteBuffers(1, &vbo_); }
+extern unsigned g_kbVaoEpoch;   // VAO cache invalidation (gl_d3d9_draw.cpp)
+GLVertexBuffer::~GLVertexBuffer() { ++g_kbVaoEpoch; if (vbo_) glDeleteBuffers(1, &vbo_); }
 
 HRESULT WINAPI GLVertexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (!ppDevice) return E_INVALIDARG;
@@ -194,7 +195,7 @@ void GLIndexBuffer::sync() {
     }
 }
 
-GLIndexBuffer::~GLIndexBuffer() { if (ibo_) glDeleteBuffers(1, &ibo_); }
+GLIndexBuffer::~GLIndexBuffer() { ++g_kbVaoEpoch; if (ibo_) glDeleteBuffers(1, &ibo_); }
 
 HRESULT WINAPI GLIndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (!ppDevice) return E_INVALIDARG;
@@ -817,6 +818,8 @@ GLVertexDeclaration::GLVertexDeclaration(IDirect3DDevice9 *device,
     for (const D3DVERTEXELEMENT9 *e = elements; e && e->Stream != 0xFF; ++e)
         elements_.push_back(*e);
 }
+
+GLVertexDeclaration::~GLVertexDeclaration() { ++g_kbVaoEpoch; }
 
 HRESULT WINAPI GLVertexDeclaration::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (!ppDevice) return E_INVALIDARG;

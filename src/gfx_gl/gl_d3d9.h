@@ -15,6 +15,7 @@
 
 #include "gl_object.h"
 #include <map>
+#include <array>
 #include <cstdint>
 
 class GLContext;
@@ -186,6 +187,19 @@ private:
     GLIndexBuffer       *ib_   = nullptr;
     GLVertexDeclaration *decl_ = nullptr;
 
+    // VAO cache: one VAO per (decl, stream bindings) combination. applyVertexState
+    // used to re-specify ~15-20 GL calls of attrib state on EVERY draw (~200k GL
+    // calls/frame at 10k draws — measured 65ms/frame even on a local context);
+    // a cache hit is a single glBindVertexArray. Entries also track the VAO's
+    // captured GL_ELEMENT_ARRAY_BUFFER binding so unchanged index buffers skip
+    // their per-draw rebind. Invalidated wholesale when any vertex/index buffer
+    // or declaration is destroyed (g_kbVaoEpoch — GL object names get reused).
+    struct VaoEntry { unsigned vao = 0; unsigned elem = 0; };
+    std::map<std::array<unsigned, 13>, VaoEntry> vaoCache_;
+    VaoEntry *curVaoEnt_   = nullptr;
+    unsigned  curVao_      = 0;
+    unsigned  vaoEpochSeen_ = 0;
+
     // Bound textures, resolved to a GL name + target in SetTexture so the bind
     // path is texture-type aware (2D / cube / volume) without a blind downcast.
     unsigned       boundTexName_[kMaxStages]   = {};   // GL texture object (0 = none)
@@ -233,6 +247,10 @@ private:
                            // a blanket 256+256) is the main web draw-call cost reduction.
                            int vscCount = 0; int pscCount = 0;
                            int alphaFuncLoc = -1; int alphaRefLoc = -1;
+                           // Last alpha-test values uploaded — these change per material
+                           // batch, not per draw; unconditional re-upload was 2 GL calls
+                           // on every one of ~10k draws.
+                           int upAlphaFunc = -999; float upAlphaRef = -999.0f;
                            // Versions of the constant arrays last uploaded to this
                            // program — constants change per material/pass, not per
                            // draw, so most of the per-draw glUniform4fv pairs (the

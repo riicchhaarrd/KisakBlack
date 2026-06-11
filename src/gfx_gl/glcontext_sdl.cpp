@@ -70,7 +70,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B99 (perfms frame split; loc= in perf line; headless asset path)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B100 (VAO cache: 1 bind per draw instead of ~20 attrib calls; present self-heal)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -245,6 +245,13 @@ public:
         // until then, DROP frames instead of allocating more bitmaps.
         {
             static int s_frameInFlight = 0;  // 1 = an ImageBitmap is in flight to the page
+            // Ack watchdog: if the page stops consuming (a dropped message, a present
+            // error before the ack store), the flag wedges at 1 and every later frame
+            // is dropped = permanent black while the engine runs. Force-clear after a
+            // stuck second and try again.
+            static int s_stuckPresents = 0;
+            if (s_frameInFlight) { if (++s_stuckPresents > 30) { s_frameInFlight = 0; s_stuckPresents = 0; } }
+            else s_stuckPresents = 0;
             EM_ASM({
                 var c = Module['canvas'];
                 // Official pthread canvas transfer registers the OffscreenCanvas in

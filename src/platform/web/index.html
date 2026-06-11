@@ -76,7 +76,14 @@
           if (!dctx) { disp = document.getElementById('display'); dctx = disp.getContext('bitmaprenderer'); }
           if (disp.width !== bmp.width || disp.height !== bmp.height) { disp.width = bmp.width; disp.height = bmp.height; }
           dctx.transferFromImageBitmap(bmp);
-        } catch (e) { try { bmp.close(); } catch (_) {} }
+        } catch (e) {
+          try { bmp.close(); } catch (_) {}
+          // A silently-failing present = permanent black while the engine keeps
+          // running. Be loud and self-heal: drop the cached context so the next
+          // frame recreates it.
+          if (!window.__kbPresErr) { window.__kbPresErr = 1; console.error('[kbpresent] present failed (will retry): ', e); }
+          dctx = null;
+        }
         // Backpressure ack: the worker drops frames (no new ImageBitmap) until this flag
         // clears — unconsumed bitmaps piling up OOMed the GPU process (empty-log shader
         // compile failures + tab crashes). HEAP32 is the shared wasm heap.

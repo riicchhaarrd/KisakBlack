@@ -346,6 +346,7 @@ private:
 class GLVertexDeclaration final : public GLObject<IDirect3DVertexDeclaration9> {
 public:
     GLVertexDeclaration(IDirect3DDevice9 *device, const D3DVERTEXELEMENT9 *elements);
+    ~GLVertexDeclaration() override;   // bumps g_kbVaoEpoch (cached VAOs key on the decl address)
 
     HRESULT WINAPI GetDevice(IDirect3DDevice9 **ppDevice) override;
     HRESULT WINAPI GetDeclaration(D3DVERTEXELEMENT9 *pElement, UINT *pNumElements) override;
