@@ -267,6 +267,10 @@ private:
                            // fails links with empty logs; the program is deleted and
                            // re-linked later (bounded) instead of staying invalid forever.
                            int linkTries = 0; unsigned long lastFailPres = 0;
+                           // COMPLETION_STATUS is polled once per PRESENT (not per draw):
+                           // per-draw polling burns the whole budget in microseconds and
+                           // then trusts getters that don't block on this ANGLE.
+                           unsigned long lastPollPres = ~0ul;
                            // KHR_parallel_shader_compile completion polls so far. The
                            // async completion signal may need the worker's event loop
                            // (never pumped) — after a bounded number of polls the link is

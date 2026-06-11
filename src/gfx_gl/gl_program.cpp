@@ -116,26 +116,32 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
         parallel = (ext && strstr(ext, "parallel_shader_compile")) ? 1 : 0;
     }
     if (parallel) {
+        // THE ROOT of the empty-log/'impossible result' saga (B41→B44→B102): on this
+        // ANGLE-on-OpenGL context the status getters DO NOT BLOCK on an in-flight
+        // parallel link — LINK_STATUS reads false with an empty log (and SHADER_TYPE
+        // reads 0 on in-flight shaders) while the job simply isn't finished. The old
+        // code "polled" COMPLETION_STATUS 60 times PER DRAW — microseconds, same
+        // frame — then trusted the bogus getters. Poll once per PRESENT instead and
+        // give the job seconds of real time; only after ~600 presents force-finish
+        // via a uniform query (which does reach the synchronous path) and only THEN
+        // believe LINK_STATUS.
+        extern unsigned long g_kbPresentEnter;
+        if (lp.lastPollPres == g_kbPresentEnter)
+            return false;                   // already polled this frame -> still pending
+        lp.lastPollPres = g_kbPresentEnter;
         GLint done = 0;
         KB_glGetProgramiv(lp.prog, 0x91B1 /*GL_COMPLETION_STATUS_KHR*/, &done);
         if (!done) {
-            // The async completion signal may require the worker's event loop, which this
-            // render thread never pumps — COMPLETION_STATUS can then read false FOREVER
-            // and every program stays "pending" = nothing draws (the in-game black).
-            // Give the async path a bounded window (cheap polls), then FORCE the link to
-            // finish: any non-status query is REQUIRED to block until completion via the
-            // synchronous GPU-process path, no event loop needed.
-            if (++lp.pendPolls < 60)
+            if (++lp.pendPolls < 600)
                 return false;               // still compiling -> caller skips the draw
-            // Spread forced finishes across frames: 160 blocking links in one frame
-            // slammed the GPU process into the empty-log compile-failure state.
-            extern unsigned long g_kbPresentEnter;
+            // Spread forced finishes across frames: a storm of blocking finishes in
+            // one frame is its own stall.
             static unsigned long s_blockPres = ~0ul; static int s_blocksThisPres = 0;
             if (s_blockPres != g_kbPresentEnter) { s_blockPres = g_kbPresentEnter; s_blocksThisPres = 0; }
             if (s_blocksThisPres >= 4) return false;   // finish the rest next frame
             ++s_blocksThisPres;
             GLint attached = 0;
-            KB_glGetProgramiv(lp.prog, GL_ATTACHED_SHADERS, &attached);  // BLOCKS until linked
+            KB_glGetProgramiv(lp.prog, GL_ATTACHED_SHADERS, &attached);  // forces completion
         }
     }
 #endif
