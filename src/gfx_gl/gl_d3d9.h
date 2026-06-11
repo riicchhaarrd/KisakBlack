@@ -275,7 +275,14 @@ private:
                            // async completion signal may need the worker's event loop
                            // (never pumped) — after a bounded number of polls the link is
                            // FORCED to finish with a blocking query (see finalizeProgram).
-                           int pendPolls = 0; };
+                           int pendPolls = 0;
+                           // Verified-bind cache: glUseProgram is REJECTED (0x502) for a
+                           // program whose link result Chrome's client hasn't received yet
+                           // (the worker event loop that delivers it never pumps). Most
+                           // programs deliver within a few frames; until a bind succeeds,
+                           // the draw is SKIPPED (invisible) rather than run with the
+                           // previously-bound program (garbage). Set once a bind is clean.
+                           bool bindOk = false; };
     std::map<uint64_t, LinkedProgram> progCache_;
 };
 

@@ -152,70 +152,17 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
         // statuses. Treat empty-log as success and USE the program. Only a real
         // error text means a real failure (delete + bounded retry below).
         if (!log[0]) {
+            // Empty-log "failure" = link result not yet delivered to Chrome's client
+            // (NOT a real failure). DON'T verify with useProgram here — right after
+            // glLinkProgram is the worst moment (most in-flight); B116 did that, every
+            // program "failed", got deleted+relinked into the same state, and ~all
+            // draws skipped (black screen). Trust it and finish setup; the DRAW path
+            // does a verified bind later (naturally past delivery) and skips only the
+            // draws whose program still hasn't arrived.
             static int staleN = 0;
-            if (++staleN <= 3) {
-                fprintf(stderr, "[gl] link status false+empty (#%d) — trusting program; full dump follows\n", staleN);
-                // FULL FORENSICS, live (links are synchronous now): per-attached-shader
-                // compile status + log + SOURCE, and a fresh recompile of each source so
-                // the driver's real complaint (if any) prints with certainty.
-                EM_ASM({
-                    try {
-                        var p = GL.programs[$0];
-                        var att = GLctx.getAttachedShaders(p) || [];
-                        for (var i = 0; i < att.length; ++i) {
-                            var sh = att[i];
-                            var ty = GLctx.getShaderParameter(sh, 0x8B4F);
-                            var st = GLctx.getShaderParameter(sh, 0x8B81);
-                            var lg = GLctx.getShaderInfoLog(sh) || '';
-                            var src = GLctx.getShaderSource(sh) || '';
-                            var s2 = GLctx.createShader(ty ? ty : 0x8B30);
-                            var st2 = false;
-                            var lg2 = '(recompile skipped)';
-                            if (src && s2) {
-                                GLctx.shaderSource(s2, src);
-                                GLctx.compileShader(s2);
-                                st2 = GLctx.getShaderParameter(s2, 0x8B81);
-                                lg2 = GLctx.getShaderInfoLog(s2) || '';
-                                GLctx.deleteShader(s2);
-                            }
-                            console.error('[gl] LINKDUMP att#' + i + ' type=' + ty + ' status=' + st +
-                                          ' log="' + lg.substring(0, 200) + '" freshStatus=' + st2 +
-                                          ' freshLog="' + lg2.substring(0, 300) + '" srcLen=' + src.length);
-                            console.error('[gl] LINKDUMP src#' + i + ': ' + src.substring(0, 1100));
-                        }
-                        var lgp = GLctx.getProgramInfoLog(p) || '';
-                        console.error('[gl] LINKDUMP progLog="' + lgp.substring(0, 300) + '" err=0x' +
-                                      GLctx.getError().toString(16));
-                    } catch (e) { console.error('[gl] LINKDUMP threw: ' + e.message); }
-                }, (int)lp.prog);
-            }
-            // VERIFY USABILITY before trusting: bind it once and ask for the error.
-            // Chrome's client rejects useProgram on programs it considers failed
-            // ('program not valid' — INVALID_OPERATION); those draws then run with
-            // the previous program = garbage/black. The failures are TRANSIENT
-            // windows (the same trivial source fails one moment and compiles fine
-            // the next), so an unusable program goes back through the bounded
-            // delete+retry and succeeds on a later frame.
-            while (glGetError() != GL_NO_ERROR) {}
-            glUseProgram(lp.prog);
-            GLenum kbUseErr = glGetError();
-            if (kbUseErr != GL_NO_ERROR) {
-                extern unsigned long g_kbPresentEnter;
-                static int rejPrints = 0;
-                if (++rejPrints <= 8)
-                    fprintf(stderr, "[gl] program unusable (err=0x%x, try %d) — will retry\n",
-                            (unsigned)kbUseErr, lp.linkTries + 1);
-                glUseProgram(0);
-                curProgram_ = 0;
-                glDeleteProgram(lp.prog);
-                lp.prog = 0;
-                lp.pendPolls = 0;
-                ++lp.linkTries;
-                lp.lastFailPres = g_kbPresentEnter;
-                return false;
-            }
-            curProgram_ = lp.prog;   // verified AND now bound
-            ok = 1;   // fall through to uniform setup + ready=true
+            if (++staleN <= 3)
+                fprintf(stderr, "[gl] link status false+empty (#%d) — trusting; draw-path verifies the bind\n", staleN);
+            ok = 1;
         }
     }
     if (!ok) {
@@ -313,11 +260,10 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
         char name[4]; snprintf(name, sizeof(name), "s%d", i);
         lp.samplerLoc[i] = KB_glGetUniformLocation(lp.prog, name);
     }
-    // The sampler->unit mapping (s0->0, s1->1, ...) is constant per program, so bind it ONCE
-    // here instead of every draw — removes up to kMaxStages marshaled glUniform1i calls/draw.
-    glUseProgram(lp.prog); curProgram_ = lp.prog;
-    for (int i = 0; i < kMaxStages; ++i)
-        if (lp.samplerLoc[i] >= 0) glUniform1i(lp.samplerLoc[i], i);
+    // Sampler->unit mapping (s0->0, ...) is set on the FIRST verified bind in the draw
+    // path (see below) — NOT here. Binding right after link can be rejected on this
+    // driver (result undelivered), which would leave the uniforms unset; doing it at
+    // the first clean bind guarantees the program is actually current.
     lp.ready = true;
     return true;
 }
@@ -409,7 +355,7 @@ bool GLDevice::useDrawProgram() {
         glAttachShader(prog, psN);
         GLBindAttribLocations(prog);
         glLinkProgram(prog);
-        lp.prog = prog; lp.ready = false; lp.pendPolls = 0;
+        lp.prog = prog; lp.ready = false; lp.pendPolls = 0; lp.bindOk = false;
         extern unsigned long g_kbProgLinks; ++g_kbProgLinks;
     }
     if (!lp.ready && !finalizeProgram(lp)) {
@@ -417,7 +363,32 @@ bool GLDevice::useDrawProgram() {
         return false;                        // still compiling this frame -> skip the draw
     }
 
-    if (curProgram_ != lp.prog) { glUseProgram(lp.prog); curProgram_ = lp.prog; }
+    if (curProgram_ != lp.prog) {
+#if defined(__EMSCRIPTEN__)
+        if (!lp.bindOk) {
+            // Verified bind: until Chrome's client has the link result, glUseProgram is
+            // rejected (0x502). Skip the draw (invisible) rather than render with the
+            // previously-bound program (garbage); keep the program and retry next frame.
+            // The getError round-trip runs only until the first clean bind per program.
+            while (glGetError() != GL_NO_ERROR) {}
+            glUseProgram(lp.prog);
+            if (glGetError() != GL_NO_ERROR) {
+                curProgram_ = 0;            // not actually bound
+                extern unsigned long g_kbSkipPending; ++g_kbSkipPending;
+                return false;
+            }
+            lp.bindOk = true;
+            curProgram_ = lp.prog;
+            // First clean bind: set the sampler->unit mapping (constant per program).
+            for (int i = 0; i < kMaxStages; ++i)
+                if (lp.samplerLoc[i] >= 0) glUniform1i(lp.samplerLoc[i], i);
+        } else {
+            glUseProgram(lp.prog); curProgram_ = lp.prog;
+        }
+#else
+        glUseProgram(lp.prog); curProgram_ = lp.prog;
+#endif
+    }
     if (lp.vscLoc >= 0 && lp.vscCount > 0 && lp.upVsVer != vsVer_) {
 #if defined(__EMSCRIPTEN__)
         // Dirty-range upload: same program redrawing after a small constant change
