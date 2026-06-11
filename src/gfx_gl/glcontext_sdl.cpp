@@ -71,7 +71,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B116 (verify program usability via bind+getError; unusable -> bounded retry)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B117 (memory telemetry in perf line - the 10s tab-crash hunt)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -366,8 +366,14 @@ public:
             // a per-frame GPU-sync readback (GetRenderTargetData) stalling every frame.
             static unsigned long bd0 = 0, bf0 = 0, sk0 = 0, bi0 = 0, pl0 = 0;
             static unsigned long fc0[12] = {0}, mg0 = 0;
-            fprintf(stderr, "[perf/rb] %.1f fps loc=%d | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
-                    1000.0 * frames / dt, g_kbCtxIsLocal,
+            // Memory telemetry (tab-crash hunt): worker JS heap + wasm heap size.
+            int kbMemMB = EM_ASM_INT({
+                try { return (performance && performance.memory) ? (performance.memory.usedJSHeapSize / 1048576) | 0 : -1; }
+                catch (e) { return -1; }
+            });
+            int kbWasmMB = EM_ASM_INT({ try { return (HEAP8.length / 1048576) | 0; } catch (e) { return -1; } });
+            fprintf(stderr, "[perf/rb] %.1f fps loc=%d jsMB=%d wasmMB=%d | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
+                    1000.0 * frames / dt, g_kbCtxIsLocal, kbMemMB, kbWasmMB,
                     (g_kbDraws - dr0) / frames,
                     (g_kbBatchedDraws - bd0) / frames, (g_kbBatchFlushes - bf0) / frames,
                     (g_kbMergeSubmits - mg0) / frames,
