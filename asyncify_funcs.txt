@@ -2,3 +2,9 @@ KB_RenderThreadYield()
 RB_RenderThread(unsigned int)
 Sys_ThreadMain(void*)
 (anonymous namespace)::thread_thunk(void*)
+byn$fpcast-emu$RB_RenderThread(unsigned int)
+byn$fpcast-emu$Sys_ThreadMain(void*)
+byn$fpcast-emu$(anonymous namespace)::thread_thunk(void*)
+dynCall_ii
+dynCall_vi
+dynCall_v

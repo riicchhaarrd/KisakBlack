@@ -73,6 +73,7 @@ LINKFLAGS="\
   -sASYNCIFY=1 \
   -sASYNCIFY_IGNORE_INDIRECT=1 \
   -sASYNCIFY_ADD=@asyncify_funcs.txt \
+  -sASYNCIFY_IMPORTS=invoke_v,invoke_vi,invoke_ii,invoke_iii,invoke_vii \
   -O2 --profiling-funcs"
 # ASYNCIFY: lets the render thread briefly return to its Web Worker event loop
 # (KB_RenderThreadYield -> emscripten_sleep, once per frame between frames) so Chrome
