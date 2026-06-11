@@ -1,5 +1,7 @@
 #include "cg_camera.h"
 
+#include <cstdio>
+
 #include "cg_weapons.h"
 #include <bgame/bg_local.h>
 #include <cgame_mp/cg_local_mp.h>
@@ -892,6 +894,26 @@ double __cdecl CG_GetViewFov(int localClientNum)
                 viewFov = viewFov - (float)((float)(viewFov - weaponFov) * zoomFrac);
         }
         lastTime = thisTime;
+        // The engine asserts viewFov in [1,160] (asserts are disabled here). A garbage
+        // WeaponVariantDef zoom field blows zoomFrac up, viewFov leaves (-180,180],
+        // tan(fov/2) flips sign on BOTH axes and the scene renders rotated 180° while
+        // ADS. Print the inputs so the bad field is identifiable, then clamp.
+        if ( !(viewFov >= 1.0f && viewFov <= 160.0f) )
+        {
+            static int kbFovWarn;
+            if ( kbFovWarn < 16 )
+            {
+                ++kbFovWarn;
+                fprintf(stderr,
+                        "[kbfov] ADS fov=%g out of range: weaponFov=%g posLerp=%g toADS=%d "
+                        "inFrac=%g outFrac=%g zoomFov1=%g zoomFov2=%g zoomFov3=%g weap=%d\n",
+                        viewFov, weaponFov, posLerp, (int)cgameGlob->playerEntity.bPositionToADS,
+                        weapVariantDef->fAdsZoomInFrac, weapVariantDef->fAdsZoomOutFrac,
+                        weapVariantDef->fAdsZoomFov1, weapVariantDef->fAdsZoomFov2,
+                        weapVariantDef->fAdsZoomFov3, weapIndex);
+            }
+            viewFov = viewFov < 1.0f ? 1.0f : 160.0f;
+        }
     }
     if ( (cgameGlob->predictedPlayerState.otherFlags & 2) == 0
         && cgameGlob->predictedPlayerState.weaponstate == 35

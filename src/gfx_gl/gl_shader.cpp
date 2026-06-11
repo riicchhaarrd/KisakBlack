@@ -33,7 +33,8 @@ enum {  // register types
     RT_MISCTYPE = 17,   // ps_3.0 vPos (reg 0 = pixel position) / vFace (reg 1)
 };
 
-struct Operand { int type, reg, swizzle, writemask, mod, dmod; };
+struct Operand { int type, reg, swizzle, writemask, mod, dmod;
+                 bool rel = false; int relComp = 0; };  // c[a0.<relComp> + reg]
 
 Operand decodeParam(DWORD t) {
     Operand o;
@@ -44,6 +45,21 @@ Operand decodeParam(DWORD t) {
     o.mod       = (int)((t >> 24) & 0xF);   // source modifier (D3DSPSM_*)
     o.dmod      = (int)((t >> 20) & 0xF);   // dest modifier (_sat = bit 0)
     return o;
+}
+
+// Decode a parameter that may use RELATIVE ADDRESSING (bit 13): `c[a0.x + N]`, the
+// skinned-mesh bone-matrix indexing pattern. In sm2.0+ the relative flag adds an
+// EXTRA address token after the parameter; treating it as the next source operand
+// read bones from garbage registers (the M16 viewmodel spazz). Returns tokens used.
+int decodeParamRel(const DWORD *tok, Operand &o) {
+    o = decodeParam(tok[0]);
+    if (tok[0] & 0x2000) {                    // D3DSHADER_ADDRMODE_RELATIVE
+        o.rel = true;
+        Operand a = decodeParam(tok[1]);      // address token: a0 (or aL) + swizzle
+        o.relComp = a.swizzle & 0x3;          // .x/.y/.z/.w of the address register
+        return 2;
+    }
+    return 1;
 }
 
 const char *kComp = "xyzw";
@@ -88,6 +104,7 @@ struct Ctx {
     std::map<int, int> idefs;                   // DEFI integer constant reg -> count (.x)
     std::set<int> usedTemps;
     bool usedConst = false;
+    bool usedA0    = false;   // MOVA / relative addressing: declare ivec4 a0
     int  maxConst  = -1;   // highest runtime-constant register referenced (sizes vsc[]/psc[])
 };
 
@@ -105,6 +122,14 @@ std::string regName(Ctx &c, const Operand &o, bool isDest) {
     switch (o.type) {
         case RT_TEMP:    c.usedTemps.insert(o.reg); { std::ostringstream s; s << "r" << o.reg; return s.str(); }
         case RT_CONST:
+            if (o.rel) {
+                // c[a0.<comp> + N]: the runtime index can reach any register, so the
+                // array must span all 256 (clamped — OOB indexing is UB in GLSL).
+                c.usedConst = true; c.usedA0 = true; c.maxConst = 255;
+                std::ostringstream s;
+                s << c.cArr() << "[clamp(a0." << kComp[o.relComp] << " + " << o.reg << ", 0, 255)]";
+                return s.str();
+            }
             if (c.defs.count(o.reg)) { std::ostringstream s; s << "c" << o.reg << "_def"; return s.str(); }
             c.usedConst = true; if (o.reg > c.maxConst) c.maxConst = o.reg;
             { std::ostringstream s; s << c.cArr() << "[" << o.reg << "]"; return s.str(); }
@@ -165,9 +190,14 @@ void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
         body << ind << "if (any(lessThan((" << regName(c, dst, true) << ").xyz, vec3(0.0)))) discard;\n";
         return;
     }
-    // MOVA writes the address register a0 (for relative addressing, which we don't
-    // implement); it has no GLSL lvalue, so skip it rather than emit `vec4(0)=...`.
-    if (op == OP_MOVA) return;
+    // MOVA loads the address register a0 (round-to-nearest per D3D9 spec); a0 then
+    // drives relative constant addressing (bone-matrix indexing in skinned meshes).
+    if (op == OP_MOVA) {
+        c.usedA0 = true;
+        std::string m = maskStr(dst.writemask);
+        body << ind << "a0" << m << " = ivec4(floor(" << s(0) << " + 0.5))" << m << ";\n";
+        return;
+    }
     std::string expr;
     switch (op) {
         case OP_MOV:   expr = s(0); break;
@@ -403,12 +433,14 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
             ++indent; tok += len; continue;
         }
 
-        // Arithmetic / sample: dst + (len-1) srcs (simple parsing, no relative addressing).
-        Operand dst = decodeParam(tok[0]);
+        // Arithmetic / sample: dst then sources, decoded sequentially — a parameter
+        // with the relative-addressing bit consumes an extra address token, so fixed
+        // tok[1+i] offsets would read the address token as the next source.
+        Operand dst;
+        int k = decodeParamRel(tok, dst);
         Operand src[4];                      // texldd carries 4 sources (coords, sampler, ddx, ddy)
-        int nsrc = len - 1;
-        if (nsrc > 4) nsrc = 4; if (nsrc < 0) nsrc = 0;
-        for (int i = 0; i < nsrc; ++i) src[i] = decodeParam(tok[1 + i]);
+        int nsrc = 0;
+        while (k < len && nsrc < 4) k += decodeParamRel(tok + k, src[nsrc++]);
         tok += len;
         emitInstr(c, op, src, nsrc, dst, body, ind(indent), ctrl);
     }
@@ -477,8 +509,8 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
         }
     }
     // Size the constant array to the highest register the shader references (not a blanket
-    // 256), so the device uploads only that many vec4s per draw. The translator uses static
-    // const indices only, so maxConst is the true upper bound.
+    // 256), so the device uploads only that many vec4s per draw. Relative addressing
+    // (c[a0.x+N]) forces maxConst to 255 — the runtime index can reach any register.
     if (c.usedConst) o << "uniform vec4 " << c.cArr() << "[" << (c.maxConst + 1) << "];\n";
     for (auto &d : c.defs)
         o << "const vec4 c" << d.first << "_def = vec4(" << d.second[0] << ", " << d.second[1]
@@ -493,6 +525,7 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
     if (!c.isPixel) o << "invariant gl_Position;\n";
     o << "void main() {\n";
     for (int r : c.usedTemps) o << "  vec4 r" << r << " = vec4(0.0);\n";
+    if (c.usedA0) o << "  ivec4 a0 = ivec4(0);\n";
     o << body.str();
     // D3D9 -> GL clip-space depth fixup. D3D9 vertex shaders emit clip-space z in [0,w]
     // (post-divide NDC z in [0,1]); OpenGL/WebGL2 expects [-w,w] (NDC z in [-1,1]). On
