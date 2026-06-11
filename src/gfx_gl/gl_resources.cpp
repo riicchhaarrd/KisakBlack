@@ -437,7 +437,11 @@ void GLTexture::uploadLevel(UINT Level) {
     if (!reported) {
         reported = true;
         const char *ext = (const char *)glGetString(GL_EXTENSIONS);
-        bool s3tc = ext && strstr(ext, "texture_compression_s3tc");
+        // Desktop name: GL_EXT_texture_compression_s3tc; WebGL name:
+        // WEBGL_compressed_texture_s3tc. Matching only the desktop spelling made
+        // every web context report S3TC=NO (a long-lived red herring).
+        bool s3tc = ext && (strstr(ext, "texture_compression_s3tc") ||
+                            strstr(ext, "compressed_texture_s3tc"));
         fprintf(stderr, "[gl] renderer=%s | GL=%s | S3TC=%s\n",
                 glGetString(GL_RENDERER), glGetString(GL_VERSION), s3tc ? "YES" : "NO");
     }

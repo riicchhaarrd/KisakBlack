@@ -189,10 +189,20 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
                     GLctx.attachShader(p2, vs2); GLctx.attachShader(p2, fs2);
                     GLctx.linkProgram(p2);
                     var ls2 = GLctx.getProgramParameter(p2, 0x8B82);
+                    // finish() forces the whole command stream + compile jobs to complete:
+                    // on a LIVE context the trivial program MUST read true after this; on a
+                    // LOST one getParameter(VERSION) returns null (the isContextLost() flag
+                    // can lie here — its update needs this worker's never-pumped event loop).
+                    GLctx.finish();
+                    var ls2b = GLctx.getProgramParameter(p2, 0x8B82);
+                    var ver = GLctx.getParameter(0x1F02 /*VERSION*/);
+                    var err2 = GLctx.getError();
                     GLctx.deleteProgram(p2); GLctx.deleteShader(vs2); GLctx.deleteShader(fs2);
                     console.error('[gl] RAWPROG prog=' + $0 + ' lost=' + lost + ' obj=' + (p ? p.constructor.name : 'null') +
                                   ' ext=' + !!ext + ' LS=' + ls + ' err=0x' + err.toString(16) +
-                                  ' log="' + lg + '" att=[' + attS + '] trivialLS=' + ls2);
+                                  ' log="' + lg + '" att=[' + attS + '] trivialLS=' + ls2 +
+                                  ' afterFinish=' + ls2b + ' version=' + (ver === null ? 'NULL(LOST)' : 'ok') +
+                                  ' err2=0x' + err2.toString(16));
                 } catch (e) { console.error('[gl] RAWPROG threw: ' + e.message); }
             }, (int)lp.prog);
         }
