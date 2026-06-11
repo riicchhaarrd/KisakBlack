@@ -69,7 +69,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B97 (relative addressing in translator; ADS fov guard; DOM mouse map)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B98 (deproxy: hidden #kbgl transfer target dodges captureStream)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -78,6 +78,21 @@ public:
         emscripten_set_canvas_element_size("#canvas", desc.width, desc.height);
         WebInput_SetResolution(desc.width, desc.height);
         cw_ = desc.width; ch_ = desc.height;
+
+        // De-proxy target selection: if the hidden #kbgl canvas was transferred to this
+        // worker at thread spawn (KB_DEPROXY builds — win_kernel.cpp), create the context
+        // on IT for a LOCAL context. The visible #canvas can't be used: extensions /
+        // recorders captureStream() it, which forbids offscreen transfer. Size the
+        // OffscreenCanvas directly — we own it on this thread.
+        const char *kbSel = "#canvas";
+        if (EM_ASM_INT({
+                if (typeof GL === 'object' && GL.offscreenCanvases && GL.offscreenCanvases['kbgl']) {
+                    var oc = GL.offscreenCanvases['kbgl'].offscreenCanvas || GL.offscreenCanvases['kbgl'].canvas;
+                    if (oc) { oc.width = $0; oc.height = $1; return 1; }
+                }
+                return 0;
+            }, desc.width, desc.height))
+            kbSel = "#kbgl";
 
         EmscriptenWebGLContextAttributes attrs;
         emscripten_webgl_init_context_attributes(&attrs);
@@ -107,9 +122,9 @@ public:
                               ' -> ' + (keys.length ? 'LOCAL context expected' : 'PROXY fallback expected'));
             } catch (e) {}
         });
-        ctx_ = emscripten_webgl_create_context("#canvas", &attrs);
+        ctx_ = emscripten_webgl_create_context(kbSel, &attrs);
         if (ctx_ <= 0) {
-            fprintf(stderr, "[gl] emscripten_webgl_create_context(#canvas) failed: %d\n", (int)ctx_);
+            fprintf(stderr, "[gl] emscripten_webgl_create_context(%s) failed: %d\n", kbSel, (int)ctx_);
             // failed:0 with the canvas present = getContext('webgl2') returned null. After
             // a prior WebGL crash Chrome BLOCKLISTS new contexts until a full browser
             // restart — tell the user instead of silently retrying into the same wall.

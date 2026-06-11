@@ -49,6 +49,12 @@
   </div>
   <div style="position:relative">
     <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <!-- De-proxy GL target: a hidden canvas NOTHING else touches. Extensions/recorders
+         grab the visible #canvas (captureStream) which then can never be transferred
+         offscreen ("Cannot transfer OffscreenCanvas bound to element using captureStream").
+         The engine transfers THIS one to the render worker instead; frames still reach
+         the user via the #display overlay present path, and input stays on #canvas. -->
+    <canvas id="kbgl" style="display:none"></canvas>
     <!-- DE-PROXY display overlay: when the render worker owns the canvas as an
          OffscreenCanvas (KB_DEPROXY build), implicit frame propagation never happens
          (the render thread never yields its event loop), so the worker posts each frame
