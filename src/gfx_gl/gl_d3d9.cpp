@@ -218,11 +218,15 @@ HRESULT WINAPI GLDevice::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil)
             // renderbuffer for THIS pass (keep curDS_; it may match a later RT). A
             // stale-sized fboDepth_ was itself incomplete = the scene went and STAYED
             // black after a decal/DS-switch mid-game.
-            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            unsigned dsStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (dsStatus != GL_FRAMEBUFFER_COMPLETE) {
+                static int dsIncN = 0;
+                if (++dsIncN <= 6)
+                    fprintf(stderr, "[gl] DS re-apply INCOMPLETE status=0x%x ds=%ux%u(fmt=%u dsTex=%u attach=0x%x) rt=%dx%d -> auto rb\n",
+                            dsStatus, curDS_->width(), curDS_->height(), (unsigned)curDS_->format(),
+                            curDS_->texName(), attach, fbWidth_, fbHeight_);
                 dsLive_ = false;
                 kbRestoreAutoDepth(fbWidth_, fbHeight_);
-                static bool once = false;
-                if (!once) { once = true; fprintf(stderr, "[gl] DS re-apply left FBO incomplete -> sized auto renderbuffer\n"); }
             }
         } else if (fboDepth_ && fboDepthW_ == fbWidth_ && fboDepthH_ == fbHeight_) {
             // DS size != live RT (WebGL2 forbids unequal dims), auto rb already correct:
