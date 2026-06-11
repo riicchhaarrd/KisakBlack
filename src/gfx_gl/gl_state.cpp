@@ -185,7 +185,6 @@ HRESULT WINAPI GLDevice::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATET
 }
 
 HRESULT WINAPI GLDevice::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) {
-    KB_FlushBatchedDraws();
     if (Stage >= (DWORD)kMaxStages) return D3D_OK;
     // Resolve to a GL name + target now (via the resource's D3D type) so the bind
     // path stays type-correct for 2D, cube and volume textures alike — a blind
@@ -211,6 +210,11 @@ HRESULT WINAPI GLDevice::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture
         }
     }
     if (!pTexture || target != GL_TEXTURE_2D) boundTexIsDepth_[Stage] = false;
+    // No-change fast path AFTER resolution: glName() above must still run (pending
+    // texture uploads sync there), but identical bindings need no batch flush.
+    if (boundTexName_[Stage] == name && boundTexTarget_[Stage] == target)
+        return D3D_OK;
+    KB_FlushBatchedDraws();
     boundTexName_[Stage]   = name;
     boundTexTarget_[Stage] = target;
     return D3D_OK;

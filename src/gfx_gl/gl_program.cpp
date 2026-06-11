@@ -23,14 +23,18 @@ HRESULT WINAPI GLDevice::CreatePixelShader(const DWORD *pFunction, IDirect3DPixe
 }
 
 HRESULT WINAPI GLDevice::SetVertexShader(IDirect3DVertexShader9 *pShader) {
+    GLVertexShader *vs = static_cast<GLVertexShader *>(pShader);
+    if (vs_ == vs) return D3D_OK;   // no-change fast path (engine re-sets per drawSurf)
     KB_FlushBatchedDraws();
-    vs_ = static_cast<GLVertexShader *>(pShader);
+    vs_ = vs;
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetPixelShader(IDirect3DPixelShader9 *pShader) {
+    GLPixelShader *ps = static_cast<GLPixelShader *>(pShader);
+    if (ps_ == ps) return D3D_OK;   // no-change fast path
     KB_FlushBatchedDraws();
-    ps_ = static_cast<GLPixelShader *>(pShader);
+    ps_ = ps;
     return D3D_OK;
 }
 

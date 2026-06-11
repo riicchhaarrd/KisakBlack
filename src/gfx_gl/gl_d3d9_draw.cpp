@@ -294,23 +294,30 @@ HRESULT WINAPI GLDevice::CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pEleme
 // ---- Geometry binding (device holds non-owning refs; the app owns lifetime) -
 HRESULT WINAPI GLDevice::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9 *pStreamData,
                                          UINT OffsetInBytes, UINT Stride) {
-    KB_FlushBatchedDraws();
     if (StreamNumber >= 4) return D3D_OK;  // TODO: support >4 streams if needed
-    streams_[StreamNumber].vb     = static_cast<GLVertexBuffer *>(pStreamData);
-    streams_[StreamNumber].offset = OffsetInBytes;
-    streams_[StreamNumber].stride = Stride;
+    Stream &s = streams_[StreamNumber];
+    GLVertexBuffer *vb = static_cast<GLVertexBuffer *>(pStreamData);
+    // No-change fast path: the engine re-sets identical bindings around most draws;
+    // an unconditional flush here kept draw batches at size 1 (flushes/f == draws/f).
+    if (s.vb == vb && s.offset == OffsetInBytes && s.stride == Stride) return D3D_OK;
+    KB_FlushBatchedDraws();
+    s.vb = vb; s.offset = OffsetInBytes; s.stride = Stride;
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetIndices(IDirect3DIndexBuffer9 *pIndexData) {
+    GLIndexBuffer *ib = static_cast<GLIndexBuffer *>(pIndexData);
+    if (ib_ == ib) return D3D_OK;   // no-change fast path
     KB_FlushBatchedDraws();
-    ib_ = static_cast<GLIndexBuffer *>(pIndexData);
+    ib_ = ib;
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) {
+    GLVertexDeclaration *d = static_cast<GLVertexDeclaration *>(pDecl);
+    if (decl_ == d) return D3D_OK;   // no-change fast path
     KB_FlushBatchedDraws();
-    decl_ = static_cast<GLVertexDeclaration *>(pDecl);
+    decl_ = d;
     return D3D_OK;
 }
 
