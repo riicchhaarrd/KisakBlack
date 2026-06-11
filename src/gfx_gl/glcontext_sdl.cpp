@@ -82,7 +82,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: G5 (instancing run-break diagnostic [perf/brk] - why capture is only ~22%)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: G6 (blit-patch present fix + ctrPx canary readback OFF default; gpusync default on)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -288,12 +288,15 @@ public:
         double kbT0 = g_kbTimeDraws ? emscripten_get_now() : 0.0;  // ?perfms=1
         ++g_kbPresentEnter;            // reached present (before commit_frame) this frame
         KB_DrawCompFrame();           // ?drawcomp=1 histogram (no-op unless enabled)
-        // Sample the rendered frame's center pixel HERE — before commit_frame and the
-        // present's transferToImageBitmap (which CLEARS the OffscreenCanvas, so a
-        // readback afterwards races the clear). This is what the engine just rendered.
+        // Diagnostic center-pixel canary (ctrPx in [perf/rb]). A 1px glReadPixels still forces a
+        // full GPU pipeline flush + sync round-trip on the proxied context (it waits for the whole
+        // deep command queue) — a periodic stall every 30 frames (readPixels = 3.6% in a trace).
+        // OFF by default; KB_CANARY=1 re-enables it for render-vs-present-black diagnosis.
         {
+            static int kbCanary = -1;
+            if (kbCanary < 0) { const char *e = getenv("KB_CANARY"); kbCanary = (e && *e == '1') ? 1 : 0; }
             static int kbPxCtr = 0;
-            if (++kbPxCtr >= 30) {
+            if (kbCanary && ++kbPxCtr >= 30) {
                 kbPxCtr = 0;
                 glBindFramebuffer(GL_FRAMEBUFFER, 0);
                 unsigned char px[4] = {0,0,0,0};
