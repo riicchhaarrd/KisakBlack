@@ -175,10 +175,20 @@
             Module.arguments.push('+set', 'r_dof_enable', '0');
           // ?nodistort=1: disable the distortion/refraction pass (scope/heat-haze full-screen warp).
           if (q.get('nodistort') === '1') Module.arguments.push('+set', 'r_distortion', '0');
+          // ?nogpusync=1: r_gpuSync off. Default ("adaptive") spin-waits on a GPU fence at the END
+          // of every frame (R_FinishGpuFence) — on the proxied build each poll is a glClientWaitSync
+          // round-trip to the DOM thread, and the wait SERIALIZES backend command production with
+          // the DOM thread draining + GPU finishing this frame. Off lets them overlap (it's a mouse-
+          // latency tweak, not correctness). Watch for hitches at spawn (CPU outrunning the GPU).
+          // r_gpuSync DEFAULT OFF on web (measured faster; the per-frame fence spin serializes the
+          // backend with the DOM/GPU drain — a native latency tweak that's a net loss proxied).
+          // ?gpusync=1 restores adaptive sync if spawn-time command-queue flooding ever shows up.
+          if (q.get('gpusync') !== '1') Module.arguments.push('+set', 'r_gpuSync', '0');
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
           if (q.get('novao') === '1')    ENV.KB_NOVAO = '1';     // bypass VAO cache (bisect)
+          if (q.get('dumpskin') === '1') ENV.KB_DUMPSKIN = '1';  // [kbskin] dump skinned vertex decls (M16 spazz)
           var rm = q.get('rmode');                               // ?rmode=640x480
           if (rm && /^\d+x\d+$/.test(rm)) Module.arguments.push('+set', 'r_mode', rm);
         } catch (e) {}
