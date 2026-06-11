@@ -117,7 +117,12 @@ static void WebInput_PumpKeys() {
             case KIND_KEY: { int k = WebDomKeyToKeyNum(val);
                              if (k != K_NONE) Sys_QueEvent(0, SE_KEY, k, down, 0, nullptr); break; }
             case KIND_CHAR:  Sys_QueEvent(0, SE_CHAR, val, 0, 0, nullptr); break;
-            case KIND_MBTN:  Sys_QueEvent(0, SE_KEY, K_MOUSE1 + val, down, 0, nullptr); break;
+            case KIND_MBTN: {
+                // DOM MouseEvent.button: 0=left 1=MIDDLE 2=RIGHT; engine order is
+                // MOUSE1=left MOUSE2=right MOUSE3=middle. Passing the DOM code through
+                // sent right-click to K_MOUSE3 (default +frag) — ADS threw a grenade.
+                int b = val == 1 ? 2 : val == 2 ? 1 : val;
+                Sys_QueEvent(0, SE_KEY, K_MOUSE1 + b, down, 0, nullptr); break; }
             case KIND_WHEEL: { int k = val ? K_MWHEELUP : K_MWHEELDOWN;
                                Sys_QueEvent(0, SE_KEY, k, 1, 0, nullptr);   // press + release
                                Sys_QueEvent(0, SE_KEY, k, 0, 0, nullptr); break; }
