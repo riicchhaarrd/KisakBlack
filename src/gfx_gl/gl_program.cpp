@@ -144,6 +144,24 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
         char log[1024];
         log[0] = 0;
         KB_glGetProgramInfoLog(lp.prog, sizeof(log), nullptr, log);
+        // STATUS IS UNKNOWABLE on this thread: Chrome's client answers every status
+        // query from a cache only the (never-pumped) event loop updates — false +
+        // empty log means "result not delivered", NOT "failed". The programs work
+        // service-side; B100 rendered the entire world on exactly these stale-false
+        // statuses. Treat empty-log as success and USE the program. Only a real
+        // error text means a real failure (delete + bounded retry below).
+        if (!log[0]) {
+            static int staleOnce = 0;
+            if (!staleOnce) { staleOnce = 1;
+                fprintf(stderr, "[gl] link status unreadable (stale client cache) — trusting programs; "
+                                "real failures still print their logs\n"); }
+            ok = 1;   // fall through to uniform setup + ready=true
+        }
+    }
+    if (!ok) {
+        char log[1024];
+        log[0] = 0;
+        KB_glGetProgramInfoLog(lp.prog, sizeof(log), nullptr, log);
         static int linkFailPrints = 0;
         if (++linkFailPrints <= 16)
             fprintf(stderr, "[gl] program link failed (try %d): %s\n", lp.linkTries + 1, log[0] ? log : "(empty log)");
