@@ -167,6 +167,11 @@
           // shim always runs because supportsIntZ=0 — NOT gated by r_depthPrepass). Big draw
           // cut; may glitch depth-based effects (soft particles/fog/DOF). No black screen.
           if (q.get('nofloatz') === '1') ENV.KB_NOFLOATZ = '1';
+          // ?nodof=1: disable depth-of-field (the ADS blur). Diagnostic for the broken-ADS-view
+          // bug — if ADS looks clean (sharp zoom) with this, the DOF GL post-pass is the culprit.
+          if (q.get('nodof') === '1')    Module.arguments.push('+set', 'r_dof_enable', '0');
+          // ?nodistort=1: disable the distortion/refraction pass (scope/heat-haze full-screen warp).
+          if (q.get('nodistort') === '1') Module.arguments.push('+set', 'r_distortion', '0');
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)

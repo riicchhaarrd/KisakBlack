@@ -53,6 +53,21 @@ fi
 NOBJ=$(ls "$OBJDIR"/*.o | wc -l)
 echo "linking $NOBJ pthread objects -> $OUTDIR/blackops.{js,wasm} ..."
 
+# KB_PERF (default 1): drop the development safety instrumentation for a faster runtime.
+#   ASSERTIONS=1 injects runtime guards (stack/heap/proxying checks) throughout the JS glue
+#   and wasm — a DISTRIBUTED cost that never shows as one hot function in a trace. We've fixed
+#   the bugs those caught (e.g. the normalize_thread proxying assert -> KB_EnsureCtxOnThread),
+#   so ASSERTIONS=0 is the default daily build (user-measured: fewer dips, steadier fps).
+#   Re-enable for debugging a crash with clean error messages: KB_PERF=0 ./link_web_mt.sh
+: "${KB_PERF:=1}"
+if [ "${KB_PERF}" = "1" ]; then
+  PERF_FLAGS="-sASSERTIONS=0"
+  echo "  [KB_PERF] release instrumentation OFF (ASSERTIONS=0) — default; KB_PERF=0 to re-enable"
+else
+  PERF_FLAGS="-sASSERTIONS=1"
+  echo "  [KB_PERF=0] ASSERTIONS=1 (debug error messages)"
+fi
+
 LINKFLAGS="\
   -pthread \
   -sPROXY_TO_PTHREAD \
@@ -67,7 +82,7 @@ LINKFLAGS="\
   -sEXPORTED_FUNCTIONS=_main,_malloc,_free \
   -lopenal \
   -sALLOW_TABLE_GROWTH=1 \
-  -sASSERTIONS=1 \
+  $PERF_FLAGS \
   -sEMULATE_FUNCTION_POINTER_CASTS=1 \
   -sINVOKE_RUN=0 \
   -O2 --profiling-funcs"

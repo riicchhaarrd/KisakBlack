@@ -988,6 +988,23 @@ void __cdecl CG_CalcFov(int localClientNum, float fov_x)
 
     fov_x = CG_UpdateCameraTweenFOV(localClientNum, fov_x);
 
+    // POINT-OF-TRUTH projection guard. tanHalfFov = tan(fov_x/2)*0.75 goes NEGATIVE once
+    // fov_x > 180, which Y-flips (and X-flips) the perspective matrix -> the whole view, the
+    // viewmodel included, renders UPSIDE-DOWN and mouse-look feels inverted (the ADS bug). The
+    // [kbfov] clamp inside CG_GetViewFov only covers that one caller; a garbage zoom field can
+    // still reach here via a different caller or CG_UpdateCameraTweenFOV inflating fov_x after.
+    // Clamp at the tan() itself so NO path can flip the projection; print the offender once.
+    if ( !(fov_x >= 1.0f && fov_x <= 160.0f) )
+    {
+        static int kbCalcFovWarn = 0;
+        if ( kbCalcFovWarn < 16 )
+        {
+            ++kbCalcFovWarn;
+            fprintf(stderr, "[kbfov] CG_CalcFov fov_x=%g out of [1,160] -> clamped (projection-flip guard)\n", fov_x);
+        }
+        fov_x = fov_x < 1.0f ? 1.0f : 160.0f;
+    }
+
     dxDzAtDefaultAspectRatio = tan(DEG2RAD(fov_x) * 0.5);
     cgameGlob->refdef.tanHalfFovX = (dxDzAtDefaultAspectRatio * 0.75) * cgs->viewAspect;
     cgameGlob->refdef.tanHalfFovY = dxDzAtDefaultAspectRatio * 0.75;
