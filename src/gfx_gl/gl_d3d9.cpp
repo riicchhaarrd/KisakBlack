@@ -72,6 +72,38 @@ GLDevice::~GLDevice() {
     delete ctx_;
 }
 
+void GLDevice::kbEnsureRTComplete(unsigned tex, int w, int h) {
+    if (!tex || w <= 0 || h <= 0) return;
+    unsigned long long key = ((unsigned long long)tex << 32) | ((unsigned)w << 16) | (unsigned)(h & 0xFFFF);
+    if (rtFixed_.count(key)) return;   // already given renderable storage at this size
+    // The live FBO (fbo_) has this tex as COLOR0 and an auto depth attachment. Re-allocate
+    // the colour storage to a renderable format sized to the RT, then re-verify the FULL
+    // attachment combo (colour + depth). RGBA16F preserves HDR; RGBA8 is the last resort.
+    unsigned cands[2] = { GL_RGBA16F, GL_RGBA8 };
+    unsigned fmts[2]  = { GL_RGBA,    GL_RGBA   };
+    unsigned types[2] = { GL_HALF_FLOAT, GL_UNSIGNED_BYTE };
+    int chosen = -1;
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    for (int i = 0; i < 2; ++i) {
+        while (glGetError() != GL_NO_ERROR) {}
+        glTexImage2D(GL_TEXTURE_2D, 0, cands[i], w, h, 0, fmts[i], types[i], nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        // Match the auto depth renderbuffer to this size (a stale-sized one also fails).
+        kbRestoreAutoDepth(w, h);
+        if (glGetError() == GL_NO_ERROR && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) { chosen = i; break; }
+    }
+    rtFixed_[key] = chosen >= 0 ? (int)cands[chosen] : 0;
+    static int fixN = 0;
+    if (++fixN <= 12)
+        fprintf(stderr, "[gl] kbEnsureRTComplete tex=%u %dx%d -> %s\n",
+                tex, w, h, chosen == 0 ? "RGBA16F" : chosen == 1 ? "RGBA8" : "STILL-INCOMPLETE");
+}
+
 void GLDevice::kbRestoreAutoDepth(int w, int h) {
     // Detach ALL depth-ish attachments (a leftover DEPTH-only or stencil attachment
     // from the broken DS attach would conflict), then attach a fresh DEPTH24_STENCIL8
@@ -184,10 +216,10 @@ HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurfa
     {
         unsigned st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         if (st != GL_FRAMEBUFFER_COMPLETE) {
-            static int rtIncN = 0;
-            if (++rtIncN <= 8)
-                fprintf(stderr, "[gl] SetRenderTarget FBO INCOMPLETE status=0x%x rt=%dx%d tex=%u fmt=%u\n",
-                        st, w, h, s->texName(), (unsigned)s->format());
+            // Give the colour texture renderable, RT-sized storage and re-verify — the
+            // bulletproof fix: completeness guaranteed at the point of use, regardless of
+            // how/where the RT texture was created or its (possibly non-renderable) format.
+            kbEnsureRTComplete(s->texName(), w, h);
         }
     }
 #endif

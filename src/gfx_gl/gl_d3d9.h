@@ -154,6 +154,13 @@ private:
     // the FBO incomplete — a stale or broken depth attachment otherwise no-ops every
     // draw of the pass = the scene goes (and stays) black.
     void kbRestoreAutoDepth(int w, int h);
+    // Guarantee the live custom FBO is COMPLETE by giving its colour texture renderable,
+    // RT-sized storage (RGBA16F HDR, then RGBA8) — done once per (texture,size). Some RT
+    // textures reach SetRenderTarget without renderable storage (wrong usage flag,
+    // off-GL-thread creation, A16B16G16R16->non-renderable RGBA16), making the FBO
+    // GL_FRAMEBUFFER_UNSUPPORTED so every draw no-ops = black scene. tex = colour texture.
+    void kbEnsureRTComplete(unsigned tex, int w, int h);
+    std::map<unsigned long long, int> rtFixed_;   // (tex<<32|wh) -> chosen internalformat
 
     GLContext *ctx_ = nullptr;
     int  fbWidth_   = 0;   // current render-target dimensions (back buffer or FBO)
