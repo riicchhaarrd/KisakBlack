@@ -58,7 +58,7 @@ playerFileOperations controllerFileOps[1];
 unsigned __int64 s_tempXuid;
 unsigned __int64 s_XuidOfOtherPlayer;
 int s_lastStatsUpdateTimeForOtherPlayer;
-unsigned __int8 s_tempStatsBuffer[40168];
+unsigned __int8 s_tempStatsBuffer[40960];
 char s_matchRecordBinaryData[66560];
 
 const TaskDefinition task_LiveDeleteUserFile[1] =
@@ -501,7 +501,7 @@ void __cdecl LiveStorage_CorrectStatsError(char *msg)
 
 int __cdecl LiveStorage_GetStatsBufferSize()
 {
-    return 40168;
+    return 40960;
 }
 
 unsigned __int8 __cdecl LiveStorage_GetStatsChecksumValid(int controllerIndex, statsLocation playerStatsLocation)
@@ -548,8 +548,8 @@ int __cdecl LiveStorage_ValidateWithDDL(int controllerIndex, statsLocation locat
         LiveStorage_SetStatsDDLValidated(controllerIndex, location, 1);
         return 1;
     }
-    else if ( DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats.ddl", backupBuffer, 40168)
-                 || DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats_archive.ddl", backupBuffer, 40168) )
+    else if ( DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats.ddl", backupBuffer, 40960)
+                 || DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats_archive.ddl", backupBuffer, 40960) )
     {
         DDL_NoCheckPrintWarning(
             "DDL: Stats buffer updated to version %d for controller index %d.\n",
@@ -1732,7 +1732,7 @@ TaskRecord *__cdecl LiveStorage_ReadCommonStats(
     {
         memset(s_tempStatsBuffer, 0, sizeof(s_tempStatsBuffer));
         fileInfo->fileBuffer = s_tempStatsBuffer;
-        fileInfo->bufferSize = 40168;
+        fileInfo->bufferSize = 40960;
     }
     nestedTask = LiveStorage_ReadDWFile(controllerIndex, fileInfo);
     return LiveStorage_SetupNestedTask(taskDef, controllerIndex, nestedTask, fileInfo);
@@ -1925,7 +1925,7 @@ TaskRecord *__cdecl LiveStorage_WriteBasicTrainingStats(int controllerIndex)
     }
     if ( !LiveStorage_DoWeHaveStats(controllerIndex, STATS_LOCATION_BASICTRAINING) )
         return 0;
-    if ( !controllerNetworkData[controllerIndex].basicTrainingStats[40168] )
+    if ( !controllerNetworkData[controllerIndex].basicTrainingStats[40960] )
         return 0;
     if ( !controllerNetworkData[controllerIndex].basicTrainingStats[40170] )
         return 0;

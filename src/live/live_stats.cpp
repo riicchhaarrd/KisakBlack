@@ -145,8 +145,8 @@ int __cdecl LiveStats_ValidateGlobalWithDDL(int controllerIndex)
         LiveStorage_SetStatsDDLValidated(controllerIndex, STATS_LOCATION_NORMAL, 1);
         return 1;
     }
-    else if ( DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats.ddl", backupBuffer, 40168)
-                 || DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats_archive.ddl", backupBuffer, 40168) )
+    else if ( DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats.ddl", backupBuffer, 40960)
+                 || DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats_archive.ddl", backupBuffer, 40960) )
     {
         DDL_NoCheckPrintWarning(
             "DDL: Stats buffer updated to version %d for controller index %d.\n",
@@ -810,7 +810,7 @@ void __cdecl LiveStats_SetStatChanged(int controllerIndex, const char *hexMsg)
             statChangeCommand[runCount] = hexMsg[i];
             if ( sizeFound && runCount == 2 * size - 1 )
             {
-                LiveStats_ProcessStatChangedData(controllerIndex, (char *)buffer, 40168, startOffset, size, statChangeCommand);
+                LiveStats_ProcessStatChangedData(controllerIndex, (char *)buffer, 40960, startOffset, size, statChangeCommand);
                 runCount = 0;
                 offsetFound = 0;
                 sizeFound = 0;

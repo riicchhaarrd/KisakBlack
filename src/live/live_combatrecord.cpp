@@ -968,10 +968,10 @@ void __cdecl LiveCombatRecord_BuildSortedItem(
             if ( LiveStats_GetStatsDDL() && LiveStats_GetStatsDDL()->version != HeaderVersion )
             {
                 StatsDDL = LiveStats_GetStatsDDL();
-                if ( !DDL_FixBufferVersion(buffer, StatsDDL, "ddl_mp/stats_archive.ddl", backupBuffer, 40168) )
+                if ( !DDL_FixBufferVersion(buffer, StatsDDL, "ddl_mp/stats_archive.ddl", backupBuffer, 40960) )
                 {
                     v8 = LiveStats_GetStatsDDL();
-                    if ( !DDL_FixBufferVersion(buffer, v8, "ddl_mp/stats.ddl", backupBuffer, 40168) )
+                    if ( !DDL_FixBufferVersion(buffer, v8, "ddl_mp/stats.ddl", backupBuffer, 40960) )
                     {
                         v9 = LiveStats_GetStatsDDL();
                         Com_PrintError(

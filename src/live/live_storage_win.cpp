@@ -244,8 +244,8 @@ void __cdecl LiveStorage_ResetStats(unsigned __int8 *buffer)
             "LiveStorage_ResetStats: resetstats called - writing statversion %i to buffer\n",
             stat_version->current.integer);
         memset(buffer, 0, 0x9CE8u);
-        DDL_AssociateBuffer((char *)buffer, 40168, g_statsDDL);
-        LiveStats_WriteChecksumToBuffer(buffer, 40168);
+        DDL_AssociateBuffer((char *)buffer, 40960, g_statsDDL);
+        LiveStats_WriteChecksumToBuffer(buffer, 40960);
         LiveStats_SetPlayerStatByKey(
             "PlayerStatsList",
             MP_PLAYERSTATSKEY_STATS_VERSION,
@@ -1606,7 +1606,7 @@ void __cdecl SV_DWReadClientStats(client_t *client)
                 fileInfo->isCompressedFile = 1;
                 fileInfo->fileTask.m_filename = (char*)"globalstatsCompressed";
                 fileInfo->fileBuffer = client->globalStats;
-                fileInfo->bufferSize = 40168;
+                fileInfo->bufferSize = 40960;
                 fileInfo->fileOperationSucessFunction = (void (__cdecl *)(const int, void *))SV_DWReadClientGlobalStatsSuccess;
                 fileInfo->fileNotFoundFunction = (taskCompleteResults (__cdecl *)(const int, void *))SV_DWReadClientGlobalStatsFailure;
                 fileInfo->ownerID = client->dw_userID;
@@ -1682,10 +1682,10 @@ char __cdecl SV_IsStatsBlobOK(char *data)
 
     v4 = 0;
     buffer = data;
-    if ( DDL_AssociateBuffer(data, 40168, g_statsDDL) )
+    if ( DDL_AssociateBuffer(data, 40960, g_statsDDL) )
         return 1;
-    if ( DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats.ddl", backupBuffer, 40168)
-        || DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats_archive.ddl", backupBuffer, 40168) )
+    if ( DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats.ddl", backupBuffer, 40960)
+        || DDL_FixBufferVersion(buffer, g_statsDDL, "ddl_mp/stats_archive.ddl", backupBuffer, 40960) )
     {
         DDL_NoCheckPrintWarning("DDL: Stats buffer updated to version %d\n", g_statsDDL->version);
         return 1;
@@ -1745,7 +1745,7 @@ void __cdecl SV_DWReadClientCAC(client_t *client)
                 v1 = "mpstatsCompressed";
             fileInfo->fileTask.m_filename = (char *)v1;
             fileInfo->fileBuffer = client->stats;
-            fileInfo->bufferSize = 40168;
+            fileInfo->bufferSize = 40960;
             fileInfo->fileOperationSucessFunction = (void (__cdecl *)(const int, void *))SV_DWReadClientCACSuccess;
             fileInfo->fileNotFoundFunction = (taskCompleteResults (__cdecl *)(const int, void *))SV_DWReadClientCACFailure;
             fileInfo->ownerID = client->dw_userID;
@@ -1855,7 +1855,7 @@ void __cdecl SV_DWWriteClientStats(client_t *client)
                     fileInfo->isCompressedFile = 1;
                     fileInfo->fileTask.m_filename = (char*)"globalstatsCompressed";
                     fileInfo->fileBuffer = client->globalStats;
-                    fileInfo->bufferSize = 40168;
+                    fileInfo->bufferSize = 40960;
                     fileInfo->fileOperationSucessFunction = (void (__cdecl *)(const int, void *))SV_DWWriteClientGlobalStatsSuccess;
                     fileInfo->ownerID = client->dw_userID;
                     checksum = (int *)client->globalStats;
@@ -1932,7 +1932,7 @@ void __cdecl SV_DWWriteClientGlobalStatsSuccess(int controllerIndex, unsigned __
     {
         uid = SV_GetBdUidFromFileInfo((uint64*)data);
     }
-    LiveStorage_SendStatsBufferToClient(uid, data[62], 40168, BLOB_TYPE_GLOBAL, 0);
+    LiveStorage_SendStatsBufferToClient(uid, data[62], 40960, BLOB_TYPE_GLOBAL, 0);
     SV_ResetFileOp((dwFileOperationInfo*)data);
 }
 
@@ -2467,15 +2467,15 @@ void __cdecl SV_CACValidate_EvaluateStatsBlobs(
     *oldcacok = 0;
     if ( globalsize > 0 )
     {
-        if ( DDL_AssociateBuffer(globalblob, 40168, g_statsDDL) )
+        if ( DDL_AssociateBuffer(globalblob, 40960, g_statsDDL) )
         {
             *globalok = 1;
         }
         else
         {
             memset(dst, 0, 0x9CE8u);
-            if ( DDL_FixBufferVersion(globalblob, g_statsDDL, "ddl_mp/stats.ddl", (char *)dst, 40168)
-                || DDL_FixBufferVersion(globalblob, g_statsDDL, "ddl_mp/stats_archive.ddl", (char *)dst, 40168) )
+            if ( DDL_FixBufferVersion(globalblob, g_statsDDL, "ddl_mp/stats.ddl", (char *)dst, 40960)
+                || DDL_FixBufferVersion(globalblob, g_statsDDL, "ddl_mp/stats_archive.ddl", (char *)dst, 40960) )
             {
                 DDL_NoCheckPrintWarning("CACValidate: Globalbuffer updated to version %d\n", g_statsDDL->version);
                 *globalok = 1;
@@ -2484,15 +2484,15 @@ void __cdecl SV_CACValidate_EvaluateStatsBlobs(
     }
     if ( oldcacsize > 0 )
     {
-        if ( DDL_AssociateBuffer(oldcacblob, 40168, g_statsDDL) )
+        if ( DDL_AssociateBuffer(oldcacblob, 40960, g_statsDDL) )
         {
             *oldcacok = 1;
         }
         else
         {
             memset(dst, 0, 0x9CE8u);
-            if ( DDL_FixBufferVersion(oldcacblob, g_statsDDL, "ddl_mp/stats.ddl", (char *)dst, 40168)
-                || DDL_FixBufferVersion(oldcacblob, g_statsDDL, "ddl_mp/stats_archive.ddl", (char *)dst, 40168) )
+            if ( DDL_FixBufferVersion(oldcacblob, g_statsDDL, "ddl_mp/stats.ddl", (char *)dst, 40960)
+                || DDL_FixBufferVersion(oldcacblob, g_statsDDL, "ddl_mp/stats_archive.ddl", (char *)dst, 40960) )
             {
                 DDL_NoCheckPrintWarning("CACValidate: Oldcacbuffer updated to version %d\n", g_statsDDL->version);
                 *oldcacok = 1;
@@ -2564,7 +2564,7 @@ void __cdecl SV_CACValidateWriteCACSuccess(int controllerIndex, void *data)
     LiveStorage_SendStatsBufferToClient(
         *((_QWORD *)data + 34),
         *((unsigned __int8 **)data + 62),
-        40168,
+        40960,
         BLOB_TYPE_CAC,
         g_cacvalidateState == CAC_IDLE);
     SV_ResetFileOp(data);
@@ -2591,7 +2591,7 @@ void __cdecl SV_CACValidateWriteGlobal(unsigned __int64 client, unsigned __int8 
         if ( !globalsize )
         {
             LiveStorage_ResetStats(globalblob);
-            globalsize = 40168;
+            globalsize = 40960;
         }
         if ( (int)g_newCACBlobSize <= 0
             && !Assert_MyHandler(
@@ -2632,7 +2632,7 @@ void __cdecl SV_CACValidateWriteGlobalSuccess(int controllerIndex, void *data)
     LiveStorage_SendStatsBufferToClient(
         *((_QWORD *)data + 34),
         *((unsigned __int8 **)data + 62),
-        40168,
+        40960,
         BLOB_TYPE_GLOBAL,
         g_cacvalidateState == CAC_IDLE);
     SV_ResetFileOp(data);
@@ -2961,7 +2961,7 @@ void __cdecl Live_OnNewStatsFromServer(unsigned __int8 *compressedblob, unsigned
     persistentStats *v9; // [esp+8h] [ebp-9CF4h]
     unsigned __int8 to[40172]; // [esp+Ch] [ebp-9CF0h] BYREF
 
-    memset(to, 0, 40168);
+    memset(to, 0, 40960);
     if ( blobtype )
     {
         if ( blobtype == BLOB_TYPE_GLOBAL )
@@ -3008,7 +3008,7 @@ char __cdecl Live_CACValidate_DispatchMessage(
     int v4; // [esp+0h] [ebp-13A38h]
     unsigned int v5; // [esp+4h] [ebp-13A34h]
     blobtype_t blobtype; // [esp+Ch] [ebp-13A2Ch]
-    unsigned __int8 compressedblob[40168]; // [esp+10h] [ebp-13A28h] BYREF
+    unsigned __int8 compressedblob[40960]; // [esp+10h] [ebp-13A28h] BYREF
     int v8; // [esp+9CF8h] [ebp-9D40h]
     _BYTE v9[5]; // [esp+9CFFh] [ebp-9D39h] BYREF
     int v10; // [esp+9D04h] [ebp-9D34h] BYREF
@@ -3037,7 +3037,7 @@ char __cdecl Live_CACValidate_DispatchMessage(
                 return v16;
             }
             MSG_ReadData(&buf, (unsigned __int8 *)&v14, 4);
-            memset(compressedcac, 0, 40168);
+            memset(compressedcac, 0, 40960);
             MSG_ReadData(&buf, compressedcac, len);
             v12 = Com_BlockChecksumKey32(compressedcac, len, 0);
             if ( v12 == v14 )
@@ -3166,7 +3166,7 @@ TaskRecord *__cdecl LiveStorage_ReadPlayerGlobalBlob()
         fileInfo->isCompressedFile = 1;
         fileInfo->fileTask.m_filename = "globalstatsCompressed";
         fileInfo->fileBuffer = s_tempGlobalStatsBuffer;
-        fileInfo->bufferSize = 40168;
+        fileInfo->bufferSize = 40960;
         fileInfo->fileTask.m_optional = 1;
         fileInfo->fileOperationSucessFunction = (void (__cdecl *)(const int, void *))LiveStorage_GetGlobalBlobSuccess;
         fileInfo->fileNotFoundFunction = (taskCompleteResults (__cdecl *)(const int, void *))LiveStorage_GetGlobalBlobFileNotFound;
