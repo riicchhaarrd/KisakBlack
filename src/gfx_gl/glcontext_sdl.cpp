@@ -70,7 +70,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B100 (VAO cache: 1 bind per draw instead of ~20 attrib calls; present self-heal)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B101 (UNMASKED renderer print - software-vs-GPU context, settled per run)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -195,6 +195,19 @@ public:
         fprintf(stderr, "[gl] VENDOR='%s' RENDERER='%s' VERSION='%s'\n",
                 (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER),
                 (const char *)glGetString(GL_VERSION));
+        // THE REAL BACKEND: GL_RENDERER above is masked ('WebKit WebGL'). Chrome can hand
+        // a worker OffscreenCanvas a SOFTWARE (SwiftShader) context while the page gets
+        // the GPU — fingerprints: S3TC=NO + ~0.1ms returning calls + sub-10fps "local"
+        // rendering. This line settles hardware-vs-software per run.
+        EM_ASM({
+            try {
+                var gl = GLctx;
+                var ext = gl.getExtension('WEBGL_debug_renderer_info');
+                console.error('[gl] UNMASKED: ' +
+                    (ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) + ' | ' + gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)
+                         : (gl.getParameter(gl.RENDERER) + ' (debug_renderer_info unavailable)')));
+            } catch (e) { console.error('[gl] UNMASKED probe failed: ' + e); }
+        });
         // Uniform-vector limits of THIS context. vs_3_0 shaders use up to 256 const regs
         // (vsc[256]) + our injected uniforms; the GLES3 guaranteed minimum is exactly 256
         // vertex / 224 fragment vectors, so a min-spec compiler rejects the big world
