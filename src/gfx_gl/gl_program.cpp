@@ -119,32 +119,22 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
         parallel = (ext && strstr(ext, "parallel_shader_compile")) ? 1 : 0;
     }
     if (parallel) {
-        // THE ROOT of the empty-log/'impossible result' saga (B41→B44→B102): on this
-        // ANGLE-on-OpenGL context the status getters DO NOT BLOCK on an in-flight
-        // parallel link — LINK_STATUS reads false with an empty log (and SHADER_TYPE
-        // reads 0 on in-flight shaders) while the job simply isn't finished. The old
-        // code "polled" COMPLETION_STATUS 60 times PER DRAW — microseconds, same
-        // frame — then trusted the bogus getters. Poll once per PRESENT instead and
-        // give the job seconds of real time; only after ~600 presents force-finish
-        // via a uniform query (which does reach the synchronous path) and only THEN
-        // believe LINK_STATUS.
-        extern unsigned long g_kbPresentEnter;
-        if (lp.lastPollPres == g_kbPresentEnter)
-            return false;                   // already polled this frame -> still pending
-        lp.lastPollPres = g_kbPresentEnter;
+        // THE STALE-RESULT TRAP (the whole B41→B106 saga, finally): on this Chrome/
+        // ANGLE, a blocking program query delivers a FRESH result only while the
+        // parallel link job is still IN FLIGHT. Once the job completes in the
+        // background, its result sits in a completion queue this worker can never
+        // pump (no event loop) — and every status query returns the stale "not done"
+        // (false/0/empty, no error) FOREVER; even glFinish() doesn't deliver it.
+        // B100 worked because it force-blocked microseconds after linking; B102's
+        // per-frame force-finish cap pushed most programs seconds late — into the
+        // trap — and then deleted them as "failed".
+        // Rule: force-finish IMMEDIATELY after glLinkProgram, never later. The
+        // caller kicks at most a few links per frame, so this block is bounded.
         GLint done = 0;
         KB_glGetProgramiv(lp.prog, 0x91B1 /*GL_COMPLETION_STATUS_KHR*/, &done);
         if (!done) {
-            if (++lp.pendPolls < 600)
-                return false;               // still compiling -> caller skips the draw
-            // Spread forced finishes across frames: a storm of blocking finishes in
-            // one frame is its own stall.
-            static unsigned long s_blockPres = ~0ul; static int s_blocksThisPres = 0;
-            if (s_blockPres != g_kbPresentEnter) { s_blockPres = g_kbPresentEnter; s_blocksThisPres = 0; }
-            if (s_blocksThisPres >= 4) return false;   // finish the rest next frame
-            ++s_blocksThisPres;
             GLint attached = 0;
-            KB_glGetProgramiv(lp.prog, GL_ATTACHED_SHADERS, &attached);  // forces completion
+            KB_glGetProgramiv(lp.prog, GL_ATTACHED_SHADERS, &attached);  // BLOCKS while in-flight
         }
     }
 #endif
@@ -294,9 +284,25 @@ bool GLDevice::useDrawProgram() {
         return true;
     }
 
+    // Per-frame NEW-LINK budget: each kicked link is force-finished immediately
+    // (see finalizeProgram — stale results are unreadable on this driver), so this
+    // bounds the per-frame stall. Programs over budget skip their draws and get
+    // kicked on a later frame.
+    extern unsigned long g_kbPresentEnter;
+    static unsigned long s_linkPres = ~0ul; static int s_linksThisPres = 0;
+    auto linkBudgetOk = [&]() -> bool {
+        if (s_linkPres != g_kbPresentEnter) { s_linkPres = g_kbPresentEnter; s_linksThisPres = 0; }
+        return s_linksThisPres < 4;
+    };
+
     uint64_t key = (uint64_t(vsN) << 32) | psN;
     auto it = progCache_.find(key);
     if (it == progCache_.end()) {
+        if (!linkBudgetOk()) {
+            extern unsigned long g_kbSkipPending; ++g_kbSkipPending;
+            return false;                   // kick the link on a later frame
+        }
+        ++s_linksThisPres;
         unsigned prog = glCreateProgram();
         glAttachShader(prog, vsN);
         glAttachShader(prog, psN);
@@ -314,11 +320,11 @@ bool GLDevice::useDrawProgram() {
         // A failed link was deleted for retry. Cooldown + bounded attempts: a real
         // (deterministic) link error stops after 8 tries; a transient GPU-process
         // failure heals on a later frame instead of leaving materials black forever.
-        extern unsigned long g_kbPresentEnter;
-        if (lp.linkTries >= 8 || g_kbPresentEnter - lp.lastFailPres < 30) {
+        if (lp.linkTries >= 8 || g_kbPresentEnter - lp.lastFailPres < 30 || !linkBudgetOk()) {
             extern unsigned long g_kbSkipPending; ++g_kbSkipPending;
             return false;
         }
+        ++s_linksThisPres;
         unsigned prog = glCreateProgram();
         glAttachShader(prog, vsN);
         glAttachShader(prog, psN);
