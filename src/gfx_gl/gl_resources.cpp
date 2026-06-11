@@ -1,6 +1,7 @@
 // gl_resources.cpp — GL-backed vertex/index buffers + vertex declaration.
 #include "gl_resources.h"
 #include "gl_format.h"
+#include "gl_optrace.h"
 
 #include <GL/glew.h>
 #include <cstdio>
@@ -183,6 +184,7 @@ void GLIndexBuffer::sync() {
     // whatever VAO was current — the per-VAO bind-skip cache then drew with the
     // WRONG index buffer (the spazzing-triangle corruption under the VAO cache).
     if (!ibo_) {
+        KB_OpTag("ibCreate", length_, 0, 0);
         glGenBuffers(1, &ibo_);
         glBindBuffer(GL_COPY_WRITE_BUFFER, ibo_);
         glBufferData(GL_COPY_WRITE_BUFFER, length_, shadow_.data(),
@@ -350,6 +352,7 @@ void GLTexture::createGL() {
 
 void GLTexture::ensureDepthStorage() {
     if (isDepth_) return;
+    KB_OpTag("dsRetrofit", width_, height_, 0);
     if (!tex_) createGL();
     glBindTexture(GL_TEXTURE_2D, tex_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width_, height_, 0,
@@ -449,6 +452,7 @@ void GLTexture::uploadLevel(UINT Level) {
         fprintf(stderr, "[gl] renderer=%s | GL=%s | S3TC=%s\n",
                 glGetString(GL_RENDERER), glGetString(GL_VERSION), s3tc ? "YES" : "NO");
     }
+    KB_OpTag("tex2dUp", (unsigned)format_, (w << 16) | h, Level);
     glBindTexture(GL_TEXTURE_2D, tex_);
     while (glGetError() != GL_NO_ERROR) {}  // drain prior errors
     int blockBytes = 0; unsigned cfmt = D3DCompressedGLFormat(format_, &blockBytes);
@@ -602,6 +606,7 @@ void GLCubeTexture::maybeGenMips() {
     // "vaseline" gloss). Once all 6 level-0 faces have data, build the chain ourselves.
     if (mipsGenned_ || levels_ != 1 || level0Faces_ != 0x3F || !tex_) return;
     mipsGenned_ = true;
+    KB_OpTag("genMips", edge_, 0, 0);
     // ?nomips=1 kill switch: the three "auto-generated mip chain" lines are the last
     // GL ops before the deproxy context's GPU channel wedges on NVIDIA/ANGLE-GL
     // (every later compile/link returns false/empty). Also: with S3TC working these
@@ -697,6 +702,7 @@ void GLCubeTexture::uploadFaceLevel(unsigned Face, UINT Level) {
     UINT e = edge_ >> Level ? edge_ >> Level : 1;
     std::vector<unsigned char> &shadow = levelShadow_[Face][Level];
     GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + Face;
+    KB_OpTag("cubeUp", (unsigned)format_, e, Level);
     glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
     int blockBytes = 0; unsigned cfmt = D3DCompressedGLFormat(format_, &blockBytes);
     if (cfmt) {

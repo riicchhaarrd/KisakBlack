@@ -6,6 +6,7 @@
 // downsample) via glBlitFramebuffer.
 #include "gl_d3d9.h"
 #include "gl_resources.h"
+#include "gl_optrace.h"
 #include "gl_format.h"
 
 #include <GL/glew.h>
@@ -134,6 +135,7 @@ HRESULT WINAPI GLDevice::StretchRect(IDirect3DSurface9 *pSourceSurface, const RE
                                      IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
                                      D3DTEXTUREFILTERTYPE Filter) {
     KB_FlushTagged(11);
+    KB_OpTag("blit", 0, 0, 0);
     extern unsigned long g_kbBlits; ++g_kbBlits;
     GLSurface *src = static_cast<GLSurface *>(pSourceSurface);
     GLSurface *dst = static_cast<GLSurface *>(pDestSurface);

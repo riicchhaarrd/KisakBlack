@@ -2,6 +2,7 @@
 // constant registers, and link+cache the bound (vs, ps) pair into a GL program.
 #include "gl_d3d9.h"
 #include "gl_shader.h"
+#include "gl_optrace.h"
 #include "gl_resources.h"
 
 #include <GL/glew.h>
@@ -354,6 +355,7 @@ bool GLDevice::useDrawProgram() {
             return false;                   // kick the link on a later frame
         }
         ++s_linksThisPres;
+        KB_OpTag("link", vsN, psN, 0);
         unsigned prog = glCreateProgram();
         glAttachShader(prog, vsN);
         glAttachShader(prog, psN);

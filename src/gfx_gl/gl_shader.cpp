@@ -1,5 +1,6 @@
 // gl_shader.cpp — DX9 bytecode → GLSL 120 translator + GL shader objects.
 #include "gl_shader.h"
+#include "gl_optrace.h"
 
 #include <GL/glew.h>
 #include <map>
@@ -607,6 +608,7 @@ static unsigned compileGL(GLenum stage, const std::string &src, const char *labe
         snprintf(path, sizeof(path), "%s/%04d.%s", dir, n++, stage == GL_VERTEX_SHADER ? "vert" : "frag");
         if (FILE *f = fopen(path, "wb")) { fwrite(src.data(), 1, src.size(), f); fclose(f); }
     }
+    KB_OpTag("compile", stage, (unsigned)src.size(), 0);
     unsigned s = glCreateShader(stage);
     if (!s) {
         // glCreateShader=0 = NO GL CONTEXT on this thread (or context lost) — never a

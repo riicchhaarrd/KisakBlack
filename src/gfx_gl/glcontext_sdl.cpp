@@ -5,6 +5,7 @@
 // GL backend. GLEW is initialised here so the rest of src/gfx_gl can call modern
 // GL entry points directly.
 #include "glcontext.h"
+#include "gl_optrace.h"
 
 #include <GL/glew.h>
 #include <SDL2/SDL.h>
@@ -70,7 +71,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B114 (IB uploads via COPY_WRITE - VAO element state never touched; cube mips OFF)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B115 (GL-op ring trace + per-present canary: the killing call gets NAMED)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -330,22 +331,23 @@ public:
         // LINK_STATUS=true, a later false means Chrome dropped the GPU-process side of
         // this context without any detectable loss event — name the exact moment.
         {
-            static int kbCanaryCtr = 0;
-            if (++kbCanaryCtr >= 30) {
-                kbCanaryCtr = 0;
-                EM_ASM({
-                    try {
-                        if (Module.__kbCanary && !Module.__kbCanaryDead) {
-                            var ok = GLctx.getProgramParameter(Module.__kbCanary, 0x8B82);
-                            if (ok) Module.__kbCanaryOk = 1;
-                            else if (Module.__kbCanaryOk) {
-                                Module.__kbCanaryDead = 1;
-                                console.error('[gl] *** GPU CHANNEL DEAD (canary flipped true->false) pres=' + $0 + ' ***');
-                            }
+            // Every present: the moment the canary flips, dump the GL-op ring — the
+            // killing call is in the last few entries.
+            int kbDead = EM_ASM_INT({
+                try {
+                    if (Module.__kbCanary && !Module.__kbCanaryDead) {
+                        var ok = GLctx.getProgramParameter(Module.__kbCanary, 0x8B82);
+                        if (ok) Module.__kbCanaryOk = 1;
+                        else if (Module.__kbCanaryOk) {
+                            Module.__kbCanaryDead = 1;
+                            console.error('[gl] *** GPU CHANNEL DEAD (canary flipped true->false) pres=' + $0 + ' ***');
+                            return 1;
                         }
-                    } catch (e) {}
-                }, (int)g_kbPresentEnter);
-            }
+                    }
+                } catch (e) {}
+                return 0;
+            }, (int)g_kbPresentEnter);
+            if (kbDead) KB_DumpOpRing();
         }
         static double kbMsPresent = 0.0;   // ?perfms=1: time in this function per second
         if (kbT0 != 0.0) kbMsPresent += emscripten_get_now() - kbT0;

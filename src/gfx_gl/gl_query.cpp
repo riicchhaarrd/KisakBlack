@@ -1,5 +1,34 @@
 // gl_query.cpp — GL occlusion / event queries + GLDevice::CreateQuery.
 #include "gl_query.h"
+
+#include "gl_optrace.h"
+
+// ---- GL-op ring trace (see gl_optrace.h) ------------------------------------
+extern unsigned long g_kbDraws;
+namespace {
+struct KbOp { const char *tag; unsigned a, b, c; unsigned long draws; };
+KbOp     s_ops[96];
+unsigned s_opIdx = 0;        // monotonically increasing; slot = idx % 96
+}
+extern "C" void KB_OpTag(const char *tag, unsigned a, unsigned b, unsigned c) {
+    KbOp &o = s_ops[s_opIdx % 96];
+    o.tag = tag; o.a = a; o.b = b; o.c = c; o.draws = g_kbDraws;
+    ++s_opIdx;
+}
+extern "C" void KB_DumpOpRing(void) {
+    static int dumped = 0;
+    if (dumped) return;
+    dumped = 1;
+    unsigned n = s_opIdx < 96 ? s_opIdx : 96;
+    unsigned start = s_opIdx - n;
+    fprintf(stderr, "[gl] ===== OP RING (oldest->newest, %u ops, draws=%lu) =====\n", n, g_kbDraws);
+    for (unsigned i = 0; i < n; ++i) {
+        const KbOp &o = s_ops[(start + i) % 96];
+        fprintf(stderr, "[gl] op[%u] %s a=%u b=%u c=%u draws=%lu\n",
+                start + i, o.tag ? o.tag : "?", o.a, o.b, o.c, o.draws);
+    }
+    fprintf(stderr, "[gl] ===== OP RING END =====\n");
+}
 #include "gl_d3d9.h"
 
 #include <GL/glew.h>

@@ -2,6 +2,7 @@
 #include "gl_d3d9.h"
 #include "glcontext.h"
 #include "gl_resources.h"
+#include "gl_optrace.h"
 
 #include <GL/glew.h>
 extern "C" void KB_FlushBatchedDraws();
@@ -73,6 +74,7 @@ GLDevice::~GLDevice() {
 
 HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) {
     KB_FlushTagged(11);
+    KB_OpTag("setRT", (unsigned)(uintptr_t)pRenderTarget, 0, 0);
     if (RenderTargetIndex != 0) return D3D_OK;  // single render target for now (MRT: TODO)
     GLSurface *s = static_cast<GLSurface *>(pRenderTarget);
     // A null target, or the back-buffer surface itself, means the default framebuffer.
@@ -153,6 +155,7 @@ HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurfa
 
 HRESULT WINAPI GLDevice::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) {
     KB_FlushTagged(11);
+    KB_OpTag("setDS", (unsigned)(uintptr_t)pNewZStencil, 0, 0);
     GLSurface *ds = static_cast<GLSurface *>(pNewZStencil);
     { extern unsigned long g_kbSetDS, g_kbSetDSTex;
       ++g_kbSetDS; if (ds && ds->texName()) ++g_kbSetDSTex; }
