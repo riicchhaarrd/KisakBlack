@@ -2052,9 +2052,13 @@ void __cdecl destroy_broad_phase_group(broad_phase_group *bpg)
     p_g_list_broad_phase_group = &G_BPM->g_list_broad_phase_group;
     if ( bpg )
     {
-        PMM_VALIDATE((char *)&bpg[-1].m_list_bpi_head, 0x80u, 0x10u);
-        //phys_free_list<broad_phase_group>::remove(p_g_list_broad_phase_group, (phys_free_list<broad_phase_group>::T_internal *)&bpg[-1].m_list_bpi_head);
-        p_g_list_broad_phase_group->remove((phys_free_list<broad_phase_group>::T_internal *) &bpg[-1].m_list_bpi_head);
+        // FIX (decompiler negative-index aliasing — the ragdoll-death OOB crash): the original
+        // `&bpg[-1].m_list_bpi_head` is undefined behaviour (OOB access on bpg[-1]); Clang -O2
+        // miscompiles it into the heap-corrupting out-of-bounds write seen in
+        // destroy_broad_phase_group <- Ragdoll_DestroyPhysObjs. The free-list's remove(T*) overload
+        // does precisely the intended thing: container_of(bpg, T_internal, m_data) + PMM_VALIDATE
+        // + unlink/free. Pass the data pointer and let it compute the node correctly.
+        p_g_list_broad_phase_group->remove(bpg);
     }
 }
 
