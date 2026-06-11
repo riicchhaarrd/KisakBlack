@@ -43,6 +43,11 @@ HRESULT WINAPI GLDevice::SetPixelShader(IDirect3DPixelShader9 *pShader) {
     return D3D_OK;
 }
 
+// Instancing (gl_d3d9_draw.cpp): the per-object matrix candidate = the vs-const range changed
+// since the last draw, tracked here.
+extern int g_kbInstEnable, g_kbVscCalls; extern unsigned g_kbVscChangedMin, g_kbVscChangedMax;
+extern int g_kbInstActive, g_kbInstMatCount, g_kbInstLocs[4]; extern unsigned g_kbInstMatBase;
+
 HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) {
     // No-change fast path: the engine re-sets identical constants around most draws.
     // Flushing+bumping only on REAL changes keeps draw batches alive (flushes/f used
@@ -57,6 +62,11 @@ HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const floa
             if (StartRegister < vsDirtyMin_) vsDirtyMin_ = StartRegister;
             if (StartRegister + Vec4Count - 1 > vsDirtyMax_) vsDirtyMax_ = StartRegister + Vec4Count - 1;
             ++vsVer_;
+            if (g_kbInstEnable > 0) {            // record the changed range for instance detection
+                if (StartRegister < g_kbVscChangedMin) g_kbVscChangedMin = StartRegister;
+                if (StartRegister + Vec4Count - 1 > g_kbVscChangedMax) g_kbVscChangedMax = StartRegister + Vec4Count - 1;
+                ++g_kbVscCalls;
+            }
         }
     }
     return D3D_OK;
@@ -294,7 +304,11 @@ bool GLDevice::useDrawProgram() {
             fprintf(stderr, "[gl] shadow sampler variant active (stage mask=0x%x)\n", shadowMask);
         }
     }
-    unsigned vsN = vs_->glShader(), psN = ps_->glShader(shadowMask);
+    // Instanced draw (flushInstanceRun): use the variant whose per-object matrix reads from
+    // instanced attributes. Distinct GL shader id => the program cache links it as its own entry.
+    unsigned vsN = g_kbInstActive ? vs_->glShaderInstanced(g_kbInstMatBase, g_kbInstMatCount, g_kbInstLocs)
+                                  : vs_->glShader();
+    unsigned psN = ps_->glShader(shadowMask);
     if (!vsN || !psN) {
         // Engine-supplied shaders degraded to the builtin passthrough: world geometry
         // drawn this way lands at garbage clip coords = INVISIBLE for the frame.

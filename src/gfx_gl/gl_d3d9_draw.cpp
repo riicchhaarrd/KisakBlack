@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <vector>
 #include <mutex>
+#include <cstring>
 #include <unordered_map>
 #include <cstdint>
 
@@ -115,6 +116,36 @@ void kbMergeAppend(int i) {
 }
 }
 
+// ---- GPU instancing of repeated geometry (?inst) — state declared here (used by KB_FlushTagged
+// below) ; flushInstanceRun() defined later. See the ?inst notes near the draw path.
+int g_kbInstEnable = -1;          // 0=off 1=detect+per-instance-normal(validate) 2=instanced draw
+unsigned g_kbVscChangedMin = 256, g_kbVscChangedMax = 0;   // vs-const range changed since last draw
+int      g_kbVscCalls = 0, g_kbNonMatrixDirty = 0;
+int      g_kbInstActive = 0, g_kbInstMatCount = 0, g_kbInstLocs[4] = {0,0,0,0};
+unsigned g_kbInstMatBase = 0;
+GLDevice *g_kbInstDev = nullptr;
+unsigned long g_kbInstRuns = 0, g_kbInstSaved = 0;
+namespace {
+struct InstGeom {
+    uintptr_t decl, vb, ib; unsigned start, prim, baseVert, off, stride;
+    bool operator==(const InstGeom &o) const {
+        return decl==o.decl && vb==o.vb && ib==o.ib && start==o.start && prim==o.prim
+            && baseVert==o.baseVert && off==o.off && stride==o.stride;
+    }
+};
+int      s_iN = 0;
+InstGeom s_iGeom;
+unsigned s_iMatBase = 0; int s_iMatCount = 0;
+GLenum   s_iMode = GL_TRIANGLES; GLsizei s_iVerts = 0; GLenum s_iIdxType = GL_UNSIGNED_SHORT;
+const void *s_iOffset = nullptr;
+std::vector<float> s_iMatrices;
+bool s_haveLast = false; InstGeom s_lastGeom; unsigned s_lastMatBase = 0; int s_lastMatCount = 0;
+unsigned s_instVbo = 0;
+} // namespace
+static inline void kbInstResetTrack() {
+    g_kbVscChangedMin = 256; g_kbVscChangedMax = 0; g_kbVscCalls = 0; g_kbNonMatrixDirty = 0;
+}
+
 extern "C" void KB_FlushBatchedDraws() {
     KB_EnsureCtxOnThread();
     if (!s_bN) return;
@@ -161,6 +192,13 @@ unsigned long g_kbFlushCause[12] = {0};
 extern "C" void KB_FlushTagged(int cause) {
     if (s_bN > 0 && (unsigned)cause < 12u) ++g_kbFlushCause[cause];
     KB_FlushBatchedDraws();
+    // Instancing: cause 0 is a vs-constant change (the per-object matrix candidate) and must NOT
+    // break an open run; ANY other mutator (texture/stream/state/decl/RT/clear) is a real state
+    // change -> mark non-matrix-dirty and emit the run now.
+    if (g_kbInstEnable > 0 && cause != 0) {
+        g_kbNonMatrixDirty = 1;
+        if (s_iN > 0 && g_kbInstDev) g_kbInstDev->flushInstanceRun();
+    }
 }
 #else
 extern "C" void KB_FlushBatchedDraws() {}   // native: draws are immediate, nothing to flush
@@ -498,6 +536,70 @@ extern "C" void KB_DrawCompFrame() {
     g_kbDrawCompMap.clear();
 }
 
+void GLDevice::flushInstanceRun() {
+    int n = s_iN; s_iN = 0;                       // close first (re-entrancy safe)
+    if (n < 1) return;
+    const int mc = s_iMatCount;
+    const float *mats = s_iMatrices.data();
+    auto bindElem = [&]() {
+        unsigned elem = ib_ ? ib_->glName() : 0;
+        if (!curVaoEnt_ || curVaoEnt_->elem != elem) {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elem); if (curVaoEnt_) curVaoEnt_->elem = elem;
+        }
+    };
+    // Per-instance NORMAL render — always correct (restores each matrix into vsConst_ and draws
+    // the same as if it were never deferred). Used for validate mode, n==1, or any time the
+    // instanced path can't apply. This is the safety net: instancing only ever ADDS a fast path.
+    auto emitNormal = [&]() {
+        for (int i = 0; i < n; ++i) {
+            std::memcpy(vsConst_ + s_iMatBase * 4, mats + (size_t)i * mc * 4, (size_t)mc * 4 * sizeof(float));
+            if (vsDirtyMin_ > vsDirtyMax_) vsDirtyBaseVer_ = vsVer_;
+            if (s_iMatBase < vsDirtyMin_) vsDirtyMin_ = s_iMatBase;
+            if (s_iMatBase + mc - 1 > vsDirtyMax_) vsDirtyMax_ = s_iMatBase + mc - 1;
+            ++vsVer_;
+            if (!useDrawProgram()) continue;
+            applyVertexState(); bindElem();
+            glDrawElementsBaseVertex(s_iMode, s_iVerts, s_iIdxType,
+                                     const_cast<void *>(s_iOffset), (int)s_iGeom.baseVert);
+        }
+    };
+
+    ++g_kbInstRuns;
+    if (n >= 2) g_kbInstSaved += (n - 1);
+    extern int g_kbHasMultiDraw;
+    if (g_kbInstEnable != 2 || n < 2 || g_kbHasMultiDraw != 1) { emitNormal(); return; }
+
+    // INSTANCED path. Free attribute locations = those the decl doesn't use (prefer high).
+    bool used[16] = {};
+    if (decl_) for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
+        int l = GLAttribLocation(e.Usage, e.UsageIndex); if (l >= 0 && l < 16) used[l] = true;
+    }
+    int locs[4], got = 0;
+    for (int l = 15; l >= 0 && got < mc; --l) if (!used[l]) locs[got++] = l;
+    if (got < mc) { emitNormal(); return; }       // no room -> safe fallback
+
+    g_kbInstActive = 1; g_kbInstMatBase = s_iMatBase; g_kbInstMatCount = mc;
+    for (int i = 0; i < mc; ++i) g_kbInstLocs[i] = locs[i];
+    if (!useDrawProgram()) { g_kbInstActive = 0; emitNormal(); return; }  // instanced variant not ready
+    applyVertexState();
+
+    if (!s_instVbo) glGenBuffers(1, &s_instVbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_instVbo);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(s_iMatrices.size() * sizeof(float)), mats, GL_DYNAMIC_DRAW);
+    const GLsizei stride = (GLsizei)(mc * 4 * sizeof(float));
+    for (int i = 0; i < mc; ++i) {
+        glEnableVertexAttribArray(locs[i]);
+        glVertexAttribPointer(locs[i], 4, GL_FLOAT, GL_FALSE, stride, (const void *)(size_t)(i * 4 * sizeof(float)));
+        glVertexAttribDivisor(locs[i], 1);
+    }
+    bindElem();
+    glDrawElementsInstancedBaseVertexBaseInstanceWEBGL(s_iMode, s_iVerts, s_iIdxType,
+        const_cast<void *>(s_iOffset), n, (int)s_iGeom.baseVert, 0);
+    // Restore the cached VAO: disable the instance attribs (free locations, divisor back to 0).
+    for (int i = 0; i < mc; ++i) { glDisableVertexAttribArray(locs[i]); glVertexAttribDivisor(locs[i], 0); }
+    g_kbInstActive = 0;
+}
+
 void GLDevice::applyVertexState() {
     // ?novao=1 kill switch: bypass the VAO cache (full attrib re-spec per draw, the
     // pre-B100 path) to bisect geometry corruption vs the cache.
@@ -685,6 +787,40 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     const void *offset = reinterpret_cast<const void *>(size_t(startIndex) * idxSize);
 
 #if defined(__EMSCRIPTEN__)
+    // ---- INSTANCING detection (?inst) -------------------------------------------------
+    if (g_kbInstEnable < 0) { const char *e = getenv("KB_INST"); g_kbInstEnable = e ? (*e - '0') : 0;
+                              if (g_kbInstEnable < 0 || g_kbInstEnable > 2) g_kbInstEnable = 0; }
+    if (g_kbInstEnable) {
+        g_kbInstDev = this;
+        // Since the last draw, was the ONLY change a single contiguous vs-const block <=4 regs?
+        // That block is the per-object matrix; everything else identical => instanceable.
+        bool matOnly = !g_kbNonMatrixDirty && g_kbVscCalls == 1
+                    && g_kbVscChangedMin <= g_kbVscChangedMax
+                    && (g_kbVscChangedMax - g_kbVscChangedMin + 1) <= 4;
+        unsigned mBase = g_kbVscChangedMin;
+        int      mCount = (g_kbVscChangedMin <= g_kbVscChangedMax)
+                        ? (int)(g_kbVscChangedMax - g_kbVscChangedMin + 1) : 0;
+        InstGeom g{ (uintptr_t)decl_, (uintptr_t)streams_[0].vb, (uintptr_t)ib_,
+                    startIndex, primCount, (unsigned)BaseVertexIndex,
+                    streams_[0].offset, streams_[0].stride };
+        if (s_iN > 0) {
+            if (matOnly && g == s_iGeom && mBase == s_iMatBase && mCount == s_iMatCount) {
+                const float *src = vsConst_ + mBase * 4;          // append this instance's matrix
+                s_iMatrices.insert(s_iMatrices.end(), src, src + mCount * 4);
+                ++s_iN; kbInstResetTrack(); return D3D_OK;        // deferred
+            }
+            flushInstanceRun();                                   // pattern broke -> emit run
+        }
+        if (matOnly && s_haveLast && g == s_lastGeom && mBase == s_lastMatBase && mCount == s_lastMatCount) {
+            s_iN = 1; s_iGeom = g; s_iMatBase = mBase; s_iMatCount = mCount;
+            s_iMode = mode; s_iVerts = verts; s_iIdxType = idxType; s_iOffset = offset;
+            s_iMatrices.assign(vsConst_ + mBase * 4, vsConst_ + mBase * 4 + mCount * 4);
+            s_haveLast = false; kbInstResetTrack(); return D3D_OK;
+        }
+        // Drawn normally below; remember as the potential run head (its matrix range is known).
+        s_lastGeom = g; s_lastMatBase = mBase; s_lastMatCount = mCount; s_haveLast = (mCount > 0);
+        kbInstResetTrack();
+    }
     KbDrawTimer kbtm_;        // ?perfms=1 frame-split accounting
     if (!g_kbBatchEnable) {   // batching off: the proven immediate path
         if (!useDrawProgram()) return D3D_OK;

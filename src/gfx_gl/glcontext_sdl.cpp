@@ -55,6 +55,7 @@ extern unsigned long g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks;
 extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
 extern unsigned long g_kbDraws, g_kbReadbacks, g_kbPresentEnter;
 extern unsigned long g_kbBatchedDraws, g_kbBatchFlushes;  // draw batcher (gl_d3d9_draw.cpp)
+extern unsigned long g_kbInstRuns, g_kbInstSaved;        // ?inst instancing (gl_d3d9_draw.cpp)
 extern unsigned long g_kbFlushCause[12], g_kbMergeSubmits; // flush-cause telemetry + merge path
 extern int g_kbTimeDraws; extern double g_kbMsDraw;        // ?perfms=1 frame split (gl_d3d9_draw.cpp)
 extern unsigned long g_kbSkipPending, g_kbBuiltinFall;    // dropped/degraded draws (gl_program.cpp)
@@ -80,7 +81,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: G3 (draw-composition diag ?drawcomp: instanceable vs unique, to target the right reducer)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: G4 (GPU instancing ?inst=1 validate / ?inst=2 instanced-draw; inst/f + sv/f counters)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -395,7 +396,7 @@ public:
         if (dt >= 1000.0) {   // time-based: also a render-thread heartbeat (stops if RB stalls)
             // Per-FRAME draws/occlusion/readbacks: draws ~50k => culling off; readbk>0 =>
             // a per-frame GPU-sync readback (GetRenderTargetData) stalling every frame.
-            static unsigned long bd0 = 0, bf0 = 0, sk0 = 0, bi0 = 0, pl0 = 0;
+            static unsigned long bd0 = 0, bf0 = 0, sk0 = 0, bi0 = 0, pl0 = 0, ir0 = 0, is0 = 0;
             static unsigned long fc0[12] = {0}, mg0 = 0;
             // Memory telemetry (tab-crash hunt): worker JS heap + wasm heap size.
             int kbMemMB = EM_ASM_INT({
@@ -408,7 +409,7 @@ public:
             // present/display path; black -> the engine rendered black.
             unsigned kbPx = kbCtrPx_;
             static unsigned long pp0 = 0, pd0 = 0, yl0 = 0;
-            fprintf(stderr, "[perf/rb] %.1f fps loc=%d jsMB=%d wasmMB=%d ctrPx=%06x yld/f=%lu post/f=%lu drop/f=%lu | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
+            fprintf(stderr, "[perf/rb] %.1f fps loc=%d jsMB=%d wasmMB=%d ctrPx=%06x yld/f=%lu post/f=%lu drop/f=%lu | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu inst/f=%lu sv/f=%lu\n",
                     1000.0 * frames / dt, g_kbCtxIsLocal, kbMemMB, kbWasmMB, kbPx,
                     (g_kbYields - yl0) / frames,
                     (g_kbPresPosted - pp0) / frames, (g_kbPresDropped - pd0) / frames,
@@ -419,7 +420,8 @@ public:
                     (g_kbBufBytes - buf0) / 1024 / frames,
                     (g_kbSkipPending - sk0) / frames,
                     (g_kbBuiltinFall - bi0) / frames,
-                    g_kbProgLinks - pl0);
+                    g_kbProgLinks - pl0,
+                    (g_kbInstRuns - ir0) / frames, (g_kbInstSaved - is0) / frames);
             // What interrupted batches, per frame (vc/pc=vs/ps constants, vs/ps=shader
             // binds, tex/smp/rs, vtx=stream+indices+decl, geo=mode-change/full, oth).
             fprintf(stderr, "[perf/fc] vc=%lu pc=%lu vs=%lu ps=%lu tex=%lu smp=%lu rs=%lu vtx=%lu geo=%lu oth=%lu\n",
@@ -446,6 +448,7 @@ public:
             pp0 = g_kbPresPosted; pd0 = g_kbPresDropped; yl0 = g_kbYields;
             bd0 = g_kbBatchedDraws; bf0 = g_kbBatchFlushes;
             sk0 = g_kbSkipPending; bi0 = g_kbBuiltinFall; pl0 = g_kbProgLinks;
+            ir0 = g_kbInstRuns; is0 = g_kbInstSaved;
             t0 = now; frames = 0; occl0 = g_kbOcclGetData; dr0 = g_kbDraws; rb0 = g_kbReadbacks; buf0 = g_kbBufBytes;
         }
     }
