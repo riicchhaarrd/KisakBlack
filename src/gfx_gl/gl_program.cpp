@@ -114,23 +114,18 @@ static inline void KB_glGetActiveUniform(unsigned p, unsigned i, int bs, int *le
 
 bool GLDevice::finalizeProgram(LinkedProgram &lp) {
 #if defined(__EMSCRIPTEN__)
-    // KHR_parallel_shader_compile is deliberately NOT enabled on web anymore
-    // (glcontext_sdl.cpp curated list): its results are delivered via the worker's
-    // never-pumped event loop, making every status unreadable forever and Chrome's
-    // client reject useProgram. Links are synchronous now — statuses below are live.
-    const int parallel = 0;
+    // B100 RECIPE (restored B123): with KHR_parallel_shader_compile enabled, force the
+    // link to finish with a BLOCKING query IMMEDIATELY after glLinkProgram — while the
+    // job is still IN FLIGHT, which is the only window where the result gets delivered
+    // on this no-event-loop worker. The caller kicks <=4 links/frame, so this is
+    // bounded. This is the config that reliably rendered the whole world; without it
+    // delivery is nondeterministic (all-draws-skip blackouts).
+    static int parallel = -1;
+    if (parallel < 0) {
+        const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+        parallel = (ext && strstr(ext, "parallel_shader_compile")) ? 1 : 0;
+    }
     if (parallel) {
-        // THE STALE-RESULT TRAP (the whole B41→B106 saga, finally): on this Chrome/
-        // ANGLE, a blocking program query delivers a FRESH result only while the
-        // parallel link job is still IN FLIGHT. Once the job completes in the
-        // background, its result sits in a completion queue this worker can never
-        // pump (no event loop) — and every status query returns the stale "not done"
-        // (false/0/empty, no error) FOREVER; even glFinish() doesn't deliver it.
-        // B100 worked because it force-blocked microseconds after linking; B102's
-        // per-frame force-finish cap pushed most programs seconds late — into the
-        // trap — and then deleted them as "failed".
-        // Rule: force-finish IMMEDIATELY after glLinkProgram, never later. The
-        // caller kicks at most a few links per frame, so this block is bounded.
         GLint done = 0;
         KB_glGetProgramiv(lp.prog, 0x91B1 /*GL_COMPLETION_STATUS_KHR*/, &done);
         if (!done) {

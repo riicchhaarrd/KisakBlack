@@ -72,7 +72,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B122 (DS-incomplete diagnostic: status+dims+attach; shadow-FBO suspect)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B123 (RESTORE B100 shader delivery: parallel compile + immediate in-flight block)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -183,6 +183,14 @@ public:
                     "OES_texture_float_linear",
                     "EXT_texture_filter_anisotropic",
                     "EXT_float_blend",
+                    // RE-ENABLED (B123): parallel compile gives the COMPLETION_STATUS query,
+                    // and the B100 recipe — kick a few links/frame + an IMMEDIATE blocking
+                    // query while the job is still in-flight — is the ONLY config that
+                    // reliably delivered link results on this no-event-loop worker (B100
+                    // rendered the whole world). Without it ANGLE still compiles async but
+                    // gives no in-flight window to force delivery -> nondeterministic
+                    // 'program not valid' / all-draws-skip blackouts.
+                    "KHR_parallel_shader_compile",
                 };
                 for (const char *e : kbExts) emscripten_webgl_enable_extension(ctx_, e);
             }
