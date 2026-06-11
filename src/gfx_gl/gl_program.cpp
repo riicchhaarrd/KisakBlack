@@ -167,8 +167,9 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
                             var st = GLctx.getShaderParameter(sh, 0x8B81);
                             var lg = GLctx.getShaderInfoLog(sh) || '';
                             var src = GLctx.getShaderSource(sh) || '';
-                            var s2 = GLctx.createShader(ty || ($0 + i === 0 ? 0x8B31 : 0x8B30) || 0x8B30);
-                            var st2 = false, lg2 = '(recompile skipped)';
+                            var s2 = GLctx.createShader(ty ? ty : 0x8B30);
+                            var st2 = false;
+                            var lg2 = '(recompile skipped)';
                             if (src && s2) {
                                 GLctx.shaderSource(s2, src);
                                 GLctx.compileShader(s2);
