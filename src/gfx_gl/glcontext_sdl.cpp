@@ -70,7 +70,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B105 (RAWPROG v2: finish-forced trivial link + VERSION null = lost-context oracle)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B106 (visible 2x2 kbgl placeholder + GPU-channel death canary)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -174,6 +174,27 @@ public:
             fprintf(stderr, "[gl] ctxLocal=%d multi_draw=%d batch=%d coalesce=%d\n",
                     g_kbCtxIsLocal, g_kbHasMultiDraw, g_kbBatchEnable, g_kbCoalesceEnable);
         }
+        // Canary program for GPU-channel death detection: client-side state (VERSION,
+        // getError, isContextLost) stays "alive" when Chrome drops the GPU-process side
+        // of this context, while every object query round-trip returns null/false/0 —
+        // an UNANNOUNCED loss (the lost event needs this worker's never-pumped event
+        // loop). SwapBuffers re-reads this program's LINK_STATUS periodically; a
+        // true->false flip is the moment of death.
+        EM_ASM({
+            try {
+                var gl = GLctx;
+                var vs = gl.createShader(0x8B31);
+                gl.shaderSource(vs, '#version 300 es\nvoid main(){gl_Position=vec4(0.);}');
+                gl.compileShader(vs);
+                var fs = gl.createShader(0x8B30);
+                gl.shaderSource(fs, '#version 300 es\nprecision highp float;\nout vec4 o;\nvoid main(){o=vec4(1.);}');
+                gl.compileShader(fs);
+                var p = gl.createProgram();
+                gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+                Module.__kbCanary = p;
+            } catch (e) {}
+        });
+
         // GLEW emulation still maps the entry points the engine calls onto the active
         // WebGL2 context; init it so glew* tables are populated on this worker.
         glewExperimental = GL_TRUE;
@@ -281,6 +302,27 @@ public:
                     catch (e) { Atomics.store(HEAP32, $0 >> 2, 0); }
                 }
             }, &s_frameInFlight);
+        }
+        // GPU-channel canary (every 30 presents): once the canary program has read
+        // LINK_STATUS=true, a later false means Chrome dropped the GPU-process side of
+        // this context without any detectable loss event — name the exact moment.
+        {
+            static int kbCanaryCtr = 0;
+            if (++kbCanaryCtr >= 30) {
+                kbCanaryCtr = 0;
+                EM_ASM({
+                    try {
+                        if (Module.__kbCanary && !Module.__kbCanaryDead) {
+                            var ok = GLctx.getProgramParameter(Module.__kbCanary, 0x8B82);
+                            if (ok) Module.__kbCanaryOk = 1;
+                            else if (Module.__kbCanaryOk) {
+                                Module.__kbCanaryDead = 1;
+                                console.error('[gl] *** GPU CHANNEL DEAD (canary flipped true->false) pres=' + $0 + ' ***');
+                            }
+                        }
+                    } catch (e) {}
+                }, (int)g_kbPresentEnter);
+            }
         }
         static double kbMsPresent = 0.0;   // ?perfms=1: time in this function per second
         if (kbT0 != 0.0) kbMsPresent += emscripten_get_now() - kbT0;

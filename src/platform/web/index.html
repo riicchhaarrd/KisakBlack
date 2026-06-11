@@ -54,7 +54,12 @@
          offscreen ("Cannot transfer OffscreenCanvas bound to element using captureStream").
          The engine transfers THIS one to the render worker instead; frames still reach
          the user via the #display overlay present path, and input stays on #canvas. -->
-    <canvas id="kbgl" style="display:none"></canvas>
+    <!-- VISIBLE (2x2, near-transparent, in-viewport): Chrome discards the GPU context
+         of never-composited canvases first under memory pressure — a display:none
+         placeholder made the worker's context the designated victim at map load
+         (half-dead channel: client-side queries fine, every GPU round-trip nulls). -->
+    <canvas id="kbgl" width="2" height="2"
+            style="position:fixed;right:0;bottom:0;width:2px;height:2px;opacity:0.01;pointer-events:none"></canvas>
     <!-- DE-PROXY display overlay: when the render worker owns the canvas as an
          OffscreenCanvas (KB_DEPROXY build), implicit frame propagation never happens
          (the render thread never yields its event loop), so the worker posts each frame
