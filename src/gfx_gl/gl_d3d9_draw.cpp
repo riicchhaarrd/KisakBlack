@@ -454,6 +454,32 @@ void GLDevice::bindBuiltinForDraw() {
 unsigned g_kbVaoEpoch = 1;   // bumped when a VB/IB/decl dies (GL names get reused)
 
 void GLDevice::applyVertexState() {
+    // ?novao=1 kill switch: bypass the VAO cache (full attrib re-spec per draw, the
+    // pre-B100 path) to bisect geometry corruption vs the cache.
+    static int noVao = -1;
+    if (noVao < 0) { const char *v = getenv("KB_NOVAO"); noVao = (v && *v == '1') ? 1 : 0; }
+    if (noVao) {
+        if (!vao_) glGenVertexArrays(1, &vao_);
+        glBindVertexArray(vao_);
+        curVao_ = vao_; curVaoEnt_ = nullptr;   // element-bind gate disabled (no entry)
+        for (int i = 0; i < 16; ++i) glDisableVertexAttribArray(i);
+        glVertexAttrib4f(GLAttribLocation(D3DDECLUSAGE_COLOR, 0), 1.0f, 1.0f, 1.0f, 1.0f);
+        if (!decl_) return;
+        for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
+            int loc = GLAttribLocation(e.Usage, e.UsageIndex);
+            if (loc < 0 || e.Stream >= 4) continue;
+            const Stream &s = streams_[e.Stream];
+            if (!s.vb) continue;
+            GLint size; GLenum type; GLboolean norm;
+            declType(e.Type, &size, &type, &norm);
+            glBindBuffer(GL_ARRAY_BUFFER, s.vb->glName());
+            glEnableVertexAttribArray(loc);
+            glVertexAttribPointer(loc, size, type, norm, s.stride,
+                                  reinterpret_cast<const void *>(size_t(s.offset + e.Offset)));
+        }
+        return;
+    }
+
     // Buffer/decl deletion invalidates cached VAOs (a reused GL name or decl address
     // would alias a stale entry). Rare — full clear is fine.
     if (vaoEpochSeen_ != g_kbVaoEpoch || vaoCache_.size() > 4096) {
