@@ -149,6 +149,11 @@ private:
     bool applyTextures();         // bind stage-0 texture + sampler state; returns true if sampling
     void applyStageSampler(unsigned stage, unsigned target); // apply stage's filter/wrap to bound tex
     GLSurface *backBufferSurface(); // lazily create the back-buffer surface (FBO 0 view)
+    // Attach a correctly-sized auto depth-stencil renderbuffer to the live FBO and
+    // GUARANTEE completeness (color-only last resort). Used wherever a DS attach left
+    // the FBO incomplete — a stale or broken depth attachment otherwise no-ops every
+    // draw of the pass = the scene goes (and stays) black.
+    void kbRestoreAutoDepth(int w, int h);
 
     GLContext *ctx_ = nullptr;
     int  fbWidth_   = 0;   // current render-target dimensions (back buffer or FBO)

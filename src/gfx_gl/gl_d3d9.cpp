@@ -72,6 +72,31 @@ GLDevice::~GLDevice() {
     delete ctx_;
 }
 
+void GLDevice::kbRestoreAutoDepth(int w, int h) {
+    // Detach ALL depth-ish attachments (a leftover DEPTH-only or stencil attachment
+    // from the broken DS attach would conflict), then attach a fresh DEPTH24_STENCIL8
+    // renderbuffer sized to the live color target. WebGL2 requires depth dims == color
+    // dims, so a stale-sized fboDepth_ would itself leave the FBO incomplete.
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
+    if (w > 0 && h > 0) {
+        if (fboDepthW_ != w || fboDepthH_ != h || !fboDepth_) {
+            if (!fboDepth_) glGenRenderbuffers(1, &fboDepth_);
+            glBindRenderbuffer(GL_RENDERBUFFER, fboDepth_);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+            glBindRenderbuffer(GL_RENDERBUFFER, 0);
+            fboDepthW_ = w; fboDepthH_ = h;
+        }
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fboDepth_);
+    } else {
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+    }
+    // Last resort: color-only beats a permanently-black scene.
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+}
+
 HRESULT WINAPI GLDevice::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) {
     KB_FlushTagged(11);
     KB_OpTag("setRT", (unsigned)(uintptr_t)pRenderTarget, 0, 0);
@@ -189,20 +214,27 @@ HRESULT WINAPI GLDevice::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil)
             glFramebufferTexture2D(GL_FRAMEBUFFER, attach, GL_TEXTURE_2D, curDS_->texName(), 0);
             dsLive_ = true;
             { extern unsigned long g_kbShadowFbo; ++g_kbShadowFbo; }
-            // Never leave a broken FBO live: incomplete -> auto renderbuffer for THIS
-            // pass (keep curDS_; it may match a later render target).
+            // Never leave a broken FBO live: incomplete -> a correctly-sized auto
+            // renderbuffer for THIS pass (keep curDS_; it may match a later RT). A
+            // stale-sized fboDepth_ was itself incomplete = the scene went and STAYED
+            // black after a decal/DS-switch mid-game.
             if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
                 dsLive_ = false;
-                glFramebufferTexture2D(GL_FRAMEBUFFER, attach, GL_TEXTURE_2D, 0, 0);
-                if (fboDepth_)
-                    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fboDepth_);
+                kbRestoreAutoDepth(fbWidth_, fbHeight_);
                 static bool once = false;
-                if (!once) { once = true; fprintf(stderr, "[gl] DS re-apply left FBO incomplete -> auto renderbuffer this pass\n"); }
+                if (!once) { once = true; fprintf(stderr, "[gl] DS re-apply left FBO incomplete -> sized auto renderbuffer\n"); }
             }
-        } else if (fboDepth_) {
+        } else if (fboDepth_ && fboDepthW_ == fbWidth_ && fboDepthH_ == fbHeight_) {
+            // DS size != live RT (WebGL2 forbids unequal dims), auto rb already correct:
+            // cheap re-attach, no completeness check (the hot path, ~9 DS sets/frame).
             dsLive_ = false;
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fboDepth_);
+        } else {
+            // Auto rb missing or wrong-sized: size + attach + verify.
+            dsLive_ = false;
+            kbRestoreAutoDepth(fbWidth_, fbHeight_);
         }
     }
     return D3D_OK;
