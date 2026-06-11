@@ -190,10 +190,12 @@
           if (q.get('novao') === '1')    ENV.KB_NOVAO = '1';     // bypass VAO cache (bisect)
           if (q.get('dumpskin') === '1') ENV.KB_DUMPSKIN = '1';  // [kbskin] dump skinned vertex decls (M16 spazz)
           if (q.get('drawcomp') === '1') ENV.KB_DRAWCOMP = '1';  // [perf/comp] instanceable-vs-unique draw histogram
-          // ?inst=1: detect instanceable runs + render per-instance NORMALLY (validate the
-          // accumulation safely — identical pixels, no instanced-draw risk). ?inst=2: actual
-          // GPU instancing (one glDrawElementsInstanced per run). ?inst=0 / absent: off.
-          { var iv = q.get('inst'); if (iv === '1' || iv === '2') ENV.KB_INST = iv; }
+          // GPU instancing of consecutive same-geometry draws (one glDrawElementsInstanced per
+          // run; matrix via instanced attributes). DEFAULT ON (=2, measured ~+33% dense, clean,
+          // reorders nothing). ?inst=1 = validate (per-instance normal render); ?noinst / ?inst=0
+          // = off (fallback if any prop misplacement ever shows up).
+          { var iv = q.get('inst'); if (q.get('noinst') === '1') iv = '0';
+            ENV.KB_INST = (iv === '0' || iv === '1' || iv === '2') ? iv : '2'; }
           var rm = q.get('rmode');                               // ?rmode=640x480
           if (rm && /^\d+x\d+$/.test(rm)) Module.arguments.push('+set', 'r_mode', rm);
         } catch (e) {}
