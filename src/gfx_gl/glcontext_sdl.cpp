@@ -67,25 +67,11 @@ extern unsigned long g_kbGLCtxHandle;                     // context handle for 
 unsigned long g_kbPresPosted = 0, g_kbPresDropped = 0;   // de-proxy present delivery
 unsigned long g_kbYields = 0;                            // render-thread event-loop yields
 
-// THE DE-PROXY DELIVERY FIX: the render thread is a blocking loop that never returns to
-// its Web Worker's event loop, so Chrome can never deliver WebGL shader/link COMPLETION
-// (useProgram stays rejected forever -> nondeterministic in-game black). emscripten_sleep
-// (ASYNCIFY) unwinds this thread back to the worker event loop, lets Chrome dispatch the
-// pending completions, then resumes — once per frame, between frames (shallow stack, so
-// ASYNCIFY only instruments the render-thread entry chain, not the per-draw path). Only
-// when the context is LOCAL (de-proxy); on the proxied build the DOM thread already has an
-// event loop so emscripten_sleep is never reached (zero overhead, no behavior change).
-extern "C" void KB_RenderThreadYield() {
-    if (!g_kbCtxIsLocal) return;
-    // Only yield while shaders are actually being linked — the event-loop round-trip
-    // has a per-frame cost, and once a map's programs are all compiled there are no more
-    // completions to deliver. A new link (g_kbProgLinks bumps) re-arms the yield for a
-    // window of frames so the result gets delivered; then it goes quiet = full speed.
-    static unsigned long lastLinks = ~0ul;
-    static int armed = 0;
-    if (g_kbProgLinks != lastLinks) { lastLinks = g_kbProgLinks; armed = 60; }
-    if (armed > 0) { --armed; ++g_kbYields; emscripten_sleep(0); }
-}
+// No-op on this (proxied-focus) branch — the DOM thread has its own event loop, so WebGL
+// shader/link completions are delivered without the render thread yielding. The real
+// ASYNCIFY yield (emscripten_sleep) that fixed de-proxy shader delivery lives on the
+// `deproxy` branch (kept off here to avoid the ~6MB + render-loop instrumentation).
+extern "C" void KB_RenderThreadYield() {}
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -93,7 +79,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B131 (RT-incomplete forensics: texErr/colorOnly status — why RGBA8 fails)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: P1 (proxied-focus branch: asyncify removed, perf campaign for 144fps)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
