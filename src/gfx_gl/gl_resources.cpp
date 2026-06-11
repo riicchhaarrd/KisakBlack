@@ -178,19 +178,23 @@ void GLIndexBuffer::sync() {
         upMin = pendMin_; upMax = pendMax_; upDiscard = pendDiscard_;
         pendMin_ = ~0u; pendMax_ = 0; pendDiscard_ = false;
     }
+    // Uploads go through GL_COPY_WRITE_BUFFER: the ELEMENT_ARRAY binding is VAO
+    // STATE, so binding here silently rewrote (then zeroed) the element binding of
+    // whatever VAO was current — the per-VAO bind-skip cache then drew with the
+    // WRONG index buffer (the spazzing-triangle corruption under the VAO cache).
     if (!ibo_) {
         glGenBuffers(1, &ibo_);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, length_, shadow_.data(),
+        glBindBuffer(GL_COPY_WRITE_BUFFER, ibo_);
+        glBufferData(GL_COPY_WRITE_BUFFER, length_, shadow_.data(),
                      (usage_ & D3DUSAGE_DYNAMIC) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
         g_kbBufBytes += length_;
     } else if (upMax > upMin) {
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, ibo_);
         if (upDiscard)
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, length_, nullptr, GL_DYNAMIC_DRAW);
-        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, upMin, upMax - upMin, shadow_.data() + upMin);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+            glBufferData(GL_COPY_WRITE_BUFFER, length_, nullptr, GL_DYNAMIC_DRAW);
+        glBufferSubData(GL_COPY_WRITE_BUFFER, upMin, upMax - upMin, shadow_.data() + upMin);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
         g_kbBufBytes += upMax - upMin;
     }
 }
@@ -602,9 +606,14 @@ void GLCubeTexture::maybeGenMips() {
     // GL ops before the deproxy context's GPU channel wedges on NVIDIA/ANGLE-GL
     // (every later compile/link returns false/empty). Also: with S3TC working these
     // cubes are COMPRESSED, where GenerateMipmap is invalid anyway.
-    { static int noMips = -1;
-      if (noMips < 0) { const char *v = getenv("KB_NOMIPS"); noMips = (v && *v == '1') ? 1 : 0; }
-      if (noMips) return; }
+    // DISABLED on web: glGenerateMipmap on cube maps WEDGES the NVIDIA/ANGLE-GL
+    // context service-side (compressed AND uncompressed — the 64x64 RGBA probe cube
+    // reproduced it with the compressed guard already in place). The gloss blur loses
+    // its mip chain until a CPU-side mip build replaces this (TODO). ?mips=1 re-enables
+    // for experiments.
+    { static int wantMips = -1;
+      if (wantMips < 0) { const char *v = getenv("KB_MIPS"); wantMips = (v && *v == '1') ? 1 : 0; }
+      if (!wantMips) return; }
     { int blockBytes = 0;
       if (D3DCompressedGLFormat(format_, &blockBytes) != 0) return; }  // compressed: no GenerateMipmap
     glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);

@@ -138,7 +138,7 @@
           if (q.get('noportal') === '1') Module.arguments.push('+set', 'r_kbNoPortal', '1');
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
-          if (q.get('nomips') === '1')   ENV.KB_NOMIPS = '1';    // skip cube glGenerateMipmap
+          if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
           if (q.get('novao') === '1')    ENV.KB_NOVAO = '1';     // bypass VAO cache (bisect)
           var rm = q.get('rmode');                               // ?rmode=640x480
           if (rm && /^\d+x\d+$/.test(rm)) Module.arguments.push('+set', 'r_mode', rm);
