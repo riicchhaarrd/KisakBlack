@@ -10,6 +10,9 @@ extern "C" void KB_FlushTagged(int cause); // same, +flush-cause telemetry
 
 #include <cstdio>
 #include <cstring>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>   // EM_ASM (RAWPROG link-failure probe)
+#endif
 
 HRESULT WINAPI GLDevice::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) {
     if (!ppShader || !pFunction) return E_INVALIDARG;
