@@ -18,6 +18,9 @@
 #include <cstdint>
 
 class GLContext;
+
+// Shadow-stack opt-in switch (gl_resources.cpp; ?shadows=1 -> ENV.KB_SHADOWS).
+extern "C" int KB_ShadowsEnabled();
 class GLVertexBuffer;
 class GLIndexBuffer;
 class GLVertexDeclaration;
@@ -99,7 +102,7 @@ public:
     HRESULT WINAPI SetPixelShader(IDirect3DPixelShader9 *pShader) override;
     HRESULT WINAPI SetPixelShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) override;
     HRESULT WINAPI SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) override;
-    HRESULT WINAPI SetDepthStencilSurface(IDirect3DSurface9 *) override { return D3D_OK; }
+    HRESULT WINAPI SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) override;
     void    WINAPI SetGammaRamp(UINT, DWORD, const D3DGAMMARAMP *) override {}
 
     // --- Not yet ported: textures / surfaces / shaders / queries — TODO(task #4/#5) ---
@@ -171,6 +174,13 @@ private:
     int      builtinAlphaFuncLoc_ = -1;  // GL-style compare func, or 0 = disabled
     int      builtinAlphaRefLoc_  = -1;  // [0,1] reference
 
+    // Redundant-state elimination (WebGL hates per-draw state changes; each is a marshaled
+    // call on the proxied context). curProgram_ skips redundant glUseProgram; rsCache_/rsSet_
+    // skip redundant SetRenderState GL calls (blend/depth/cull/colorwrite/etc.).
+    unsigned      curProgram_ = 0;
+    DWORD         rsCache_[256] = {};
+    unsigned char rsSet_[256]   = {};
+
     struct Stream { GLVertexBuffer *vb = nullptr; UINT offset = 0; UINT stride = 0; };
     Stream               streams_[4];
     GLIndexBuffer       *ib_   = nullptr;
@@ -180,6 +190,12 @@ private:
     // path is texture-type aware (2D / cube / volume) without a blind downcast.
     unsigned       boundTexName_[kMaxStages]   = {};   // GL texture object (0 = none)
     unsigned       boundTexTarget_[kMaxStages] = {};   // GL_TEXTURE_2D / _CUBE_MAP / _3D
+    bool           boundTexIsDepth_[kMaxStages] = {};  // depth texture bound (shadow sampling)
+    GLSurface     *curDS_     = nullptr;               // engine-set depth-stencil (shadow map)
+    bool           fboActive_ = false;                 // rendering to fbo_ (not the backbuffer)
+    bool           dsLive_    = false;                 // honored DS attached (shadow build pass)
+    unsigned long long fboOkPairs_[8] = {};            // (colorTex<<32|dsTex) pairs verified COMPLETE
+    int            fboOkN_ = 0;
     GLSamplerState samplers_[kMaxStages];
     GLTextureStageState texStage0_;     // stage-0 fixed-function combine (built-in program)
     GLAlphaTestState    alphaTest_;     // alpha-test emulation (built-in program)
@@ -203,6 +219,10 @@ private:
     float           vsConst_[256 * 4] = {};
     float           psConst_[256 * 4] = {};
     struct LinkedProgram { unsigned prog = 0; int vscLoc = -1; int pscLoc = -1;
+                           // Number of vec4s the shader's vsc[]/psc[] constant array
+                           // actually declares. Uploading only these per draw (instead of
+                           // a blanket 256+256) is the main web draw-call cost reduction.
+                           int vscCount = 0; int pscCount = 0;
                            int alphaFuncLoc = -1; int alphaRefLoc = -1;
                            // Sampler uniform locations ("s0".."s15"), queried ONCE at
                            // link. Per-draw glGetUniformLocation is a sync round-trip on
@@ -210,7 +230,12 @@ private:
                            int samplerLoc[kMaxStages] = {};
                            // false until the async link completes and locs are cached;
                            // draws using it are skipped until then (no DOM-thread stall).
-                           bool ready = false; };
+                           bool ready = false;
+                           // KHR_parallel_shader_compile completion polls so far. The
+                           // async completion signal may need the worker's event loop
+                           // (never pumped) — after a bounded number of polls the link is
+                           // FORCED to finish with a blocking query (see finalizeProgram).
+                           int pendPolls = 0; };
     std::map<uint64_t, LinkedProgram> progCache_;
 };
 
@@ -225,7 +250,17 @@ public:
     HRESULT WINAPI GetAdapterDisplayMode(UINT, D3DDISPLAYMODE *pMode) override;
     HRESULT WINAPI GetDeviceCaps(UINT, D3DDEVTYPE, D3DCAPS9 *pCaps) override;
     HRESULT WINAPI CheckDeviceType(UINT, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, BOOL) override { return D3D_OK; }
-    HRESULT WINAPI CheckDeviceFormat(UINT, D3DDEVTYPE, D3DFORMAT, DWORD, D3DRESOURCETYPE, D3DFORMAT) override { return D3D_OK; }
+    HRESULT WINAPI CheckDeviceFormat(UINT, D3DDEVTYPE, D3DFORMAT, DWORD, D3DRESOURCETYPE,
+                                     D3DFORMAT CheckFormat) override {
+        // The engine PROBES formats in preference order — saying yes to everything makes
+        // it pick vendor FOURCC hacks ('NULL', INTZ, ...) this layer cannot back. Reject
+        // unknown FOURCCs (DXT1/3/5 excepted) so the probe falls through to a real format.
+        unsigned f = (unsigned)CheckFormat;
+        if (KB_ShadowsEnabled() && f > 0x200 &&
+            f != 827611204u /*DXT1*/ && f != 861165636u /*DXT3*/ && f != 894720068u /*DXT5*/)
+            return D3DERR_NOTAVAILABLE;
+        return D3D_OK;
+    }
     HRESULT WINAPI CheckDeviceMultiSampleType(UINT, D3DDEVTYPE, D3DFORMAT, BOOL, D3DMULTISAMPLE_TYPE, DWORD *pQ) override { if (pQ) *pQ = 1; return D3D_OK; }
     HRESULT WINAPI CheckDepthStencilMatch(UINT, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, D3DFORMAT) override { return D3D_OK; }
     HRESULT WINAPI CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow,

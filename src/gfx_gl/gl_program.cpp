@@ -5,6 +5,8 @@
 #include "gl_resources.h"
 
 #include <GL/glew.h>
+extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
+
 #include <cstdio>
 #include <cstring>
 
@@ -21,22 +23,26 @@ HRESULT WINAPI GLDevice::CreatePixelShader(const DWORD *pFunction, IDirect3DPixe
 }
 
 HRESULT WINAPI GLDevice::SetVertexShader(IDirect3DVertexShader9 *pShader) {
+    KB_FlushBatchedDraws();
     vs_ = static_cast<GLVertexShader *>(pShader);
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetPixelShader(IDirect3DPixelShader9 *pShader) {
+    KB_FlushBatchedDraws();
     ps_ = static_cast<GLPixelShader *>(pShader);
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) {
+    KB_FlushBatchedDraws();
     if (pData && StartRegister + Vec4Count <= 256)
         std::memcpy(vsConst_ + StartRegister * 4, pData, Vec4Count * 4 * sizeof(float));
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetPixelShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) {
+    KB_FlushBatchedDraws();
     if (pData && StartRegister + Vec4Count <= 256)
         std::memcpy(psConst_ + StartRegister * 4, pData, Vec4Count * 4 * sizeof(float));
     return D3D_OK;
@@ -46,6 +52,36 @@ HRESULT WINAPI GLDevice::SetPixelShaderConstantF(UINT StartRegister, const float
 // and, once linked, cache all uniform locations. Returns false while still compiling.
 // Blocking on glGetProgramiv(GL_LINK_STATUS) here would serialize ~120 synchronous shader
 // compiles on the DOM thread on the first 3D frame -> multi-second "page unresponsive".
+#if defined(__EMSCRIPTEN__)
+// Direct (non-GLEW, non-funcptr) getters — see the note in gl_shader.cpp compileGL.
+// The COMPLETION_STATUS read below gates EVERY draw: if a mangled getter leaves `done`
+// at 0 forever, every program reads "still compiling" and the world draws nothing.
+extern "C" void emscripten_glGetProgramiv(unsigned program, unsigned pname, int *params);
+extern "C" void emscripten_glGetProgramInfoLog(unsigned program, int maxLength, int *length, char *infoLog);
+extern "C" int  emscripten_glGetUniformLocation(unsigned program, const char *name);
+extern "C" void emscripten_glGetActiveUniform(unsigned program, unsigned index, int bufSize,
+                                              int *length, int *size, unsigned *type, char *name);
+extern int g_kbCtxIsLocal;   // 1 = direct calls legal; 0 = proxied, use GLEW dispatch
+static inline void KB_glGetProgramiv(unsigned p, unsigned pn, int *o) {
+    if (g_kbCtxIsLocal) emscripten_glGetProgramiv(p, pn, o); else glGetProgramiv(p, pn, o);
+}
+static inline void KB_glGetProgramInfoLog(unsigned p, int n, int *len, char *log) {
+    if (g_kbCtxIsLocal) emscripten_glGetProgramInfoLog(p, n, len, log); else glGetProgramInfoLog(p, n, len, log);
+}
+static inline int KB_glGetUniformLocation(unsigned p, const char *nm) {
+    return g_kbCtxIsLocal ? emscripten_glGetUniformLocation(p, nm) : glGetUniformLocation(p, nm);
+}
+static inline void KB_glGetActiveUniform(unsigned p, unsigned i, int bs, int *len, int *sz, unsigned *ty, char *nm) {
+    if (g_kbCtxIsLocal) emscripten_glGetActiveUniform(p, i, bs, len, sz, ty, nm);
+    else                glGetActiveUniform(p, i, bs, len, sz, (GLenum *)ty, nm);
+}
+#else
+#define KB_glGetProgramiv        glGetProgramiv
+#define KB_glGetProgramInfoLog   glGetProgramInfoLog
+#define KB_glGetUniformLocation  glGetUniformLocation
+#define KB_glGetActiveUniform    glGetActiveUniform
+#endif
+
 bool GLDevice::finalizeProgram(LinkedProgram &lp) {
 #if defined(__EMSCRIPTEN__)
     static int parallel = -1;               // -1 unknown, 0 unsupported, 1 supported
@@ -55,27 +91,63 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
     }
     if (parallel) {
         GLint done = 0;
-        glGetProgramiv(lp.prog, 0x91B1 /*GL_COMPLETION_STATUS_KHR*/, &done);
-        if (!done) return false;            // still compiling -> caller skips the draw
+        KB_glGetProgramiv(lp.prog, 0x91B1 /*GL_COMPLETION_STATUS_KHR*/, &done);
+        if (!done) {
+            // The async completion signal may require the worker's event loop, which this
+            // render thread never pumps — COMPLETION_STATUS can then read false FOREVER
+            // and every program stays "pending" = nothing draws (the in-game black).
+            // Give the async path a bounded window (cheap polls), then FORCE the link to
+            // finish: any non-status query is REQUIRED to block until completion via the
+            // synchronous GPU-process path, no event loop needed.
+            if (++lp.pendPolls < 60)
+                return false;               // still compiling -> caller skips the draw
+            GLint attached = 0;
+            KB_glGetProgramiv(lp.prog, GL_ATTACHED_SHADERS, &attached);  // BLOCKS until linked
+        }
     }
 #endif
     GLint ok = 0;
-    glGetProgramiv(lp.prog, GL_LINK_STATUS, &ok);   // ready now (or native): does not stall
+    KB_glGetProgramiv(lp.prog, GL_LINK_STATUS, &ok);   // ready now (or native): does not stall
     if (!ok) {
         char log[1024];
-        glGetProgramInfoLog(lp.prog, sizeof(log), nullptr, log);
-        fprintf(stderr, "[gl] program link failed: %s\n", log);
+        log[0] = 0;
+        KB_glGetProgramInfoLog(lp.prog, sizeof(log), nullptr, log);
+        // Empty log + status 0 = unreadable status, not a proven failure (see compileGL).
+        if (log[0])
+            fprintf(stderr, "[gl] program link failed: %s\n", log);
     }
-    lp.vscLoc = glGetUniformLocation(lp.prog, "vsc");
-    lp.pscLoc = glGetUniformLocation(lp.prog, "psc");
+    lp.vscLoc = KB_glGetUniformLocation(lp.prog, "vsc");
+    lp.pscLoc = KB_glGetUniformLocation(lp.prog, "psc");
+    // How many vec4s the constant arrays actually declare (the translator now sizes them
+    // to the shader's highest referenced register, not a blanket 256). Upload only these
+    // per draw — the per-draw 256+256 vec4 upload was the dominant web draw-call cost.
+    auto arraySize = [&](int loc, const char *want) -> int {
+        if (loc < 0) return 0;
+        GLint nu = 0; KB_glGetProgramiv(lp.prog, GL_ACTIVE_UNIFORMS, &nu);
+        size_t wl = strlen(want);
+        for (int i = 0; i < nu; ++i) {
+            char nm[80]; GLint sz = 0; GLenum ty = 0; GLsizei len = 0;
+            nm[0] = 0;
+            KB_glGetActiveUniform(lp.prog, i, sizeof(nm), &len, &sz, &ty, nm);
+            if (!strncmp(nm, want, wl) && (nm[wl] == '[' || nm[wl] == '\0')) return sz;
+        }
+        return 0;
+    };
+    lp.vscCount = arraySize(lp.vscLoc, "vsc");
+    lp.pscCount = arraySize(lp.pscLoc, "psc");
 #ifdef __EMSCRIPTEN__
-    lp.alphaFuncLoc = glGetUniformLocation(lp.prog, "uAlphaTestFunc");
-    lp.alphaRefLoc  = glGetUniformLocation(lp.prog, "uAlphaRef");
+    lp.alphaFuncLoc = KB_glGetUniformLocation(lp.prog, "uAlphaTestFunc");
+    lp.alphaRefLoc  = KB_glGetUniformLocation(lp.prog, "uAlphaRef");
 #endif
     for (int i = 0; i < kMaxStages; ++i) {
         char name[4]; snprintf(name, sizeof(name), "s%d", i);
-        lp.samplerLoc[i] = glGetUniformLocation(lp.prog, name);
+        lp.samplerLoc[i] = KB_glGetUniformLocation(lp.prog, name);
     }
+    // The sampler->unit mapping (s0->0, s1->1, ...) is constant per program, so bind it ONCE
+    // here instead of every draw — removes up to kMaxStages marshaled glUniform1i calls/draw.
+    glUseProgram(lp.prog); curProgram_ = lp.prog;
+    for (int i = 0; i < kMaxStages; ++i)
+        if (lp.samplerLoc[i] >= 0) glUniform1i(lp.samplerLoc[i], i);
     lp.ready = true;
     return true;
 }
@@ -89,12 +161,43 @@ bool GLDevice::useDrawProgram() {
         return true;
     }
 
-    uint64_t key = (uint64_t(vs_->glShader()) << 32) | ps_->glShader();
+    // glShader() compiles lazily; a GLSL compile REJECTION leaves it 0. Never attach a
+    // 0 shader — on a local (de-proxied) context the TypeError is synchronous and kills
+    // the render worker mid-frame (the proxied build only "tolerated" this because the
+    // exception landed on the DOM thread). Draw with the builtin instead, like !ok().
+    // Shadow-sampler mask: stages with a DEPTH texture bound need the pixel shader's
+    // matching samplers typed sampler2DShadow (depth-compare). glShader(mask) returns a
+    // cached per-mask variant; the program cache keys on shader ids so variants link
+    // independently.
+    // NO sampler retyping: the GLSL dump of the real shaders proved Black Ops does
+    // MANUAL PCF — plain texture(s2, xy) taps reading raw depth + in-shader compares.
+    // sampler2DShadow variants broke every tap (no vec2 overload) and the draws fell
+    // to the builtin = black ground. Depth textures sample as regular sampler2D with
+    // COMPARE_MODE NONE, returning depth in .x — exactly what the shaders expect.
+    unsigned shadowMask = 0;
+    (void)0;
+    {
+        static bool once = false;
+        if (shadowMask && !once) {
+            once = true;
+            fprintf(stderr, "[gl] shadow sampler variant active (stage mask=0x%x)\n", shadowMask);
+        }
+    }
+    unsigned vsN = vs_->glShader(), psN = ps_->glShader(shadowMask);
+    if (!vsN || !psN) {
+        // Engine-supplied shaders degraded to the builtin passthrough: world geometry
+        // drawn this way lands at garbage clip coords = INVISIBLE for the frame.
+        extern unsigned long g_kbBuiltinFall; ++g_kbBuiltinFall;
+        bindBuiltinForDraw();
+        return true;
+    }
+
+    uint64_t key = (uint64_t(vsN) << 32) | psN;
     auto it = progCache_.find(key);
     if (it == progCache_.end()) {
         unsigned prog = glCreateProgram();
-        glAttachShader(prog, vs_->glShader());
-        glAttachShader(prog, ps_->glShader());
+        glAttachShader(prog, vsN);
+        glAttachShader(prog, psN);
         // Match the device's canonical attribute locations (see gl_shader.cpp).
         GLBindAttribLocations(prog);
         glLinkProgram(prog);                // kicks off the (async on web) link
@@ -105,12 +208,14 @@ bool GLDevice::useDrawProgram() {
     }
 
     LinkedProgram &lp = it->second;
-    if (!lp.ready && !finalizeProgram(lp))
+    if (!lp.ready && !finalizeProgram(lp)) {
+        extern unsigned long g_kbSkipPending; ++g_kbSkipPending;
         return false;                        // still compiling this frame -> skip the draw
+    }
 
-    glUseProgram(lp.prog);
-    if (lp.vscLoc >= 0) glUniform4fv(lp.vscLoc, 256, vsConst_);
-    if (lp.pscLoc >= 0) glUniform4fv(lp.pscLoc, 256, psConst_);
+    if (curProgram_ != lp.prog) { glUseProgram(lp.prog); curProgram_ = lp.prog; }
+    if (lp.vscLoc >= 0 && lp.vscCount > 0) glUniform4fv(lp.vscLoc, lp.vscCount, vsConst_);
+    if (lp.pscLoc >= 0 && lp.pscCount > 0) glUniform4fv(lp.pscLoc, lp.pscCount, psConst_);
 
 #ifdef __EMSCRIPTEN__
     // Feed the in-shader alpha test. uAlphaTestFunc carries the D3DCMP_* value
@@ -126,7 +231,7 @@ bool GLDevice::useDrawProgram() {
     for (int i = 0; i < kMaxStages; ++i) {
         int loc = lp.samplerLoc[i];
         if (loc < 0) continue;
-        glUniform1i(loc, i);
+        // (sampler->unit binding now done once at link, see finalizeProgram)
         if (boundTexName_[i]) {
             glActiveTexture(GL_TEXTURE0 + i);
             glBindTexture(boundTexTarget_[i], boundTexName_[i]);

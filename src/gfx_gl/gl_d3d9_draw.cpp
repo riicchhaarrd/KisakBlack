@@ -12,11 +12,123 @@
 #include <GL/glew.h>
 #include <cstdio>
 
+// ---- Batched indexed draws (web only) ---------------------------------------------
+// On the proxied web context every GL call is marshaled to the canvas-owning thread, so
+// the per-frame cost is dominated by CALL COUNT (~2500-8000 draws/frame). Consecutive
+// DrawIndexedPrimitive calls between which NO device state changed are accumulated here
+// and submitted as ONE glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL call.
+// Correctness invariant: EVERY state-mutating entry point (Set*, Clear, Present, blits,
+// query Issue, resource Unlock...) calls KB_FlushBatchedDraws() FIRST, so a batch only
+// ever contains draws with bitwise-identical device state, and the flush executes them
+// BEFORE the mutator's GL change applies. Program setup, uniform upload and vertex-attrib
+// setup run once per batch instead of once per draw — a second large saving.
+#if defined(__EMSCRIPTEN__)
+#include <webgl/webgl2_ext.h>   // glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL
+#include <emscripten/html5_webgl.h>
+
+// THE normalize_thread ABORT FIX: emscripten's proxied GL dispatches each call to
+// GetOwningThread(emscripten_webgl_get_current_context()) — read from the CALLING
+// thread's current-context TLS. The engine sometimes executes render commands on a
+// thread that never made the context current (frontend-inline backend work during sync
+// points; ALWAYS with r_smp_backend 0): TLS is 0 there, the owner is read from a null
+// handle, and the dispatch aborts ("Assertion failed: target_thread"). Attach the
+// context to any GL-issuing thread on first use; for a PROXIED context this is legal
+// from any thread (it is just TLS + a dispatch token).
+unsigned long g_kbGLCtxHandle = 0;   // set by glcontext_sdl.cpp at context creation
+extern "C" void KB_EnsureCtxOnThread() {
+    static thread_local bool attached = false;
+    if (!attached) {
+        attached = true;
+        if (!emscripten_webgl_get_current_context() && g_kbGLCtxHandle)
+            emscripten_webgl_make_context_current((EMSCRIPTEN_WEBGL_CONTEXT_HANDLE)g_kbGLCtxHandle);
+    }
+}
+#else
+extern "C" void KB_EnsureCtxOnThread() {}
+#endif
+
+#if defined(__EMSCRIPTEN__)
+int g_kbHasMultiDraw = -1;        // set at context init: 1 = extension available
+// 1 = worker-LOCAL WebGL context (direct emscripten_gl* calls legal), 0 = PROXIED
+// (calls must go through the proxy-aware GLEW pointers or they hit a stub GLctx).
+int g_kbCtxIsLocal = 0;
+// Opt-in switches (?batch=1 / ?coalesce=1 on the page URL -> ENV -> here). Default OFF:
+// a post-B45 in-game crash (a zeroed runtime global -> null proxy-dispatch target) needs
+// isolating, and these two changes shift heap layout/draw timing the most.
+int g_kbBatchEnable = 0;
+int g_kbCoalesceEnable = 0;
+unsigned long g_kbBatchedDraws = 0;   // draws that rode in a batch (appended, no GL calls)
+unsigned long g_kbBatchFlushes = 0;   // multi-draw submissions
+
+namespace {
+const int kMaxBatch = 256;
+GLenum        s_bMode = 0;
+GLenum        s_bType = 0;
+GLsizei       s_bCounts[kMaxBatch];
+const GLvoid *s_bOffsets[kMaxBatch];
+GLsizei       s_bInstCounts[kMaxBatch];
+GLint         s_bBaseVerts[kMaxBatch];
+GLuint        s_bBaseInst[kMaxBatch];
+int           s_bN = 0;
+}
+
+extern "C" void KB_FlushBatchedDraws() {
+    KB_EnsureCtxOnThread();
+    if (!s_bN) return;
+    ++g_kbBatchFlushes;
+    if (s_bN == 1) {
+        glDrawElementsBaseVertex(s_bMode, s_bCounts[0], s_bType,
+                                 const_cast<void *>(s_bOffsets[0]), s_bBaseVerts[0]);
+    } else if (g_kbHasMultiDraw == 1) {
+        glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(
+            s_bMode, s_bCounts, s_bType, s_bOffsets, s_bInstCounts, s_bBaseVerts, s_bBaseInst, s_bN);
+    } else {
+        for (int i = 0; i < s_bN; ++i)
+            glDrawElementsBaseVertex(s_bMode, s_bCounts[i], s_bType,
+                                     const_cast<void *>(s_bOffsets[i]), s_bBaseVerts[i]);
+    }
+    s_bN = 0;
+}
+#else
+extern "C" void KB_FlushBatchedDraws() {}   // native: draws are immediate, nothing to flush
+#endif
+
 namespace {
 
 // The built-in 2D program consumes the canonical POSITION / COLOR0 / TEXCOORD0
 // attribute names (see GLAttribName in gl_shader.cpp), so the same vertex setup
 // drives it and the translated programs.
+#if defined(__EMSCRIPTEN__)
+const char *kBuiltinVS =
+    "#version 300 es\n"
+    "in vec4 aPos;\n"               // POSITIONT: x,y in screen pixels, z depth, w=rhw
+    "in vec4 aColor0;\n"
+    "in vec2 aTexCoord0;\n"
+    "uniform vec2 uViewport;\n"
+    "out vec4 vColor;\n"
+    "out vec2 vTexCoord;\n"
+    "void main() {\n"
+    "  float x = (aPos.x / uViewport.x) * 2.0 - 1.0;\n"
+    "  float y = 1.0 - (aPos.y / uViewport.y) * 2.0;\n"  // D3D top-left -> GL bottom-left
+    "  gl_Position = vec4(x, y, aPos.z, 1.0);\n"
+    "  vColor = aColor0;\n"
+    "  vTexCoord = aTexCoord0;\n"
+    "}\n";
+
+const char *kBuiltinFS =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "uniform sampler2D uTex;\n"
+    "uniform int uUseTexture;\n"
+    "in vec4 vColor;\n"
+    "in vec2 vTexCoord;\n"
+    "out vec4 oColor;\n"
+    "void main() {\n"
+    "  vec4 c = vColor;\n"
+    "  if (uUseTexture != 0) c *= texture(uTex, vTexCoord);\n"
+    "  oColor = c;\n"
+    "}\n";
+#else
 const char *kBuiltinVS =
     "#version 120\n"
     "attribute vec4 aPos;\n"        // POSITIONT: x,y in screen pixels, z depth, w=rhw
@@ -62,6 +174,7 @@ const char *kBuiltinFS =
     "  if (!alphaPass(c.a)) discard;\n"
     "  gl_FragColor = c;\n"
     "}\n";
+#endif
 
 unsigned compile(GLenum stage, const char *src) {
     unsigned s = glCreateShader(stage);
@@ -71,8 +184,12 @@ unsigned compile(GLenum stage, const char *src) {
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok) {
         char log[1024];
+        log[0] = 0;
         glGetShaderInfoLog(s, sizeof(log), nullptr, log);
-        fprintf(stderr, "[gl] built-in shader compile failed: %s\n", log);
+        // Empty log + status 0 = the proxied status readback came back unfilled (a
+        // phantom; see gl_shader.cpp compileGL) — not a real failure; stay quiet.
+        if (log[0])
+            fprintf(stderr, "[gl] built-in shader compile failed: %s\n", log);
     }
     return s;
 }
@@ -177,6 +294,7 @@ HRESULT WINAPI GLDevice::CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pEleme
 // ---- Geometry binding (device holds non-owning refs; the app owns lifetime) -
 HRESULT WINAPI GLDevice::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9 *pStreamData,
                                          UINT OffsetInBytes, UINT Stride) {
+    KB_FlushBatchedDraws();
     if (StreamNumber >= 4) return D3D_OK;  // TODO: support >4 streams if needed
     streams_[StreamNumber].vb     = static_cast<GLVertexBuffer *>(pStreamData);
     streams_[StreamNumber].offset = OffsetInBytes;
@@ -185,11 +303,13 @@ HRESULT WINAPI GLDevice::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffe
 }
 
 HRESULT WINAPI GLDevice::SetIndices(IDirect3DIndexBuffer9 *pIndexData) {
+    KB_FlushBatchedDraws();
     ib_ = static_cast<GLIndexBuffer *>(pIndexData);
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) {
+    KB_FlushBatchedDraws();
     decl_ = static_cast<GLVertexDeclaration *>(pDecl);
     return D3D_OK;
 }
@@ -233,7 +353,7 @@ static GLenum alphaFuncToGL(DWORD d3dCmp) {
 // Bind the built-in program and set its frame/texture uniforms before a draw.
 void GLDevice::bindBuiltinForDraw() {
     ensureBuiltinProgram();
-    glUseProgram(builtinProg_);
+    if (curProgram_ != builtinProg_) { glUseProgram(builtinProg_); curProgram_ = builtinProg_; }
     if (builtinViewportLoc_ >= 0)
         glUniform2f(builtinViewportLoc_, (float)fbWidth_, (float)fbHeight_);
     bool sampling = applyTextures();
@@ -281,6 +401,7 @@ void GLDevice::applyVertexState() {
 
 HRESULT WINAPI GLDevice::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex,
                                        UINT PrimitiveCount) {
+    KB_FlushBatchedDraws();   // also attaches the context to this thread (first use)
     extern unsigned long g_kbDraws; ++g_kbDraws;
     if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
     applyVertexState();
@@ -295,18 +416,53 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
                                               UINT /*MinVertexIndex*/, UINT /*NumVertices*/,
                                               UINT startIndex, UINT primCount) {
     if (!ib_) return D3D_OK;
+    KB_EnsureCtxOnThread();
     extern unsigned long g_kbDraws; ++g_kbDraws;
-    if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
-    applyVertexState();
 
     GLenum mode; GLsizei verts;
     primInfo(Type, primCount, &mode, &verts);
-
     bool is16 = (ib_->format() == D3DFMT_INDEX16);
     GLenum idxType = is16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
     size_t idxSize = is16 ? 2 : 4;
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib_->glName());
     const void *offset = reinterpret_cast<const void *>(size_t(startIndex) * idxSize);
+
+#if defined(__EMSCRIPTEN__)
+    if (!g_kbBatchEnable) {   // batching off: the proven immediate path
+        if (!useDrawProgram()) return D3D_OK;
+        applyVertexState();
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib_->glName());
+        glDrawElementsBaseVertex(mode, verts, idxType, const_cast<void *>(offset), BaseVertexIndex);
+        return D3D_OK;
+    }
+    // Batch path: if a batch is open, device state is IDENTICAL to the batch's first draw
+    // (every mutator flushes first), so just append — zero GL calls for this draw.
+    if (s_bN > 0) {
+        if (mode == s_bMode && idxType == s_bType && s_bN < kMaxBatch) {
+            s_bCounts[s_bN]     = verts;
+            s_bOffsets[s_bN]    = offset;
+            s_bInstCounts[s_bN] = 1;
+            s_bBaseVerts[s_bN]  = BaseVertexIndex;
+            s_bBaseInst[s_bN]   = 0;
+            ++s_bN;
+            ++g_kbBatchedDraws;
+            return D3D_OK;
+        }
+        KB_FlushBatchedDraws();   // mode/type changed or batch full
+    }
+    // Batch start: do the full per-state setup ONCE, then defer this draw.
+    if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
+    applyVertexState();
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib_->glName());
+    s_bMode = mode; s_bType = idxType;
+    s_bCounts[0] = verts; s_bOffsets[0] = offset; s_bInstCounts[0] = 1;
+    s_bBaseVerts[0] = BaseVertexIndex; s_bBaseInst[0] = 0;
+    s_bN = 1;
+    return D3D_OK;
+#else
+    if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
+    applyVertexState();
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib_->glName());
     glDrawElementsBaseVertex(mode, verts, idxType, const_cast<void *>(offset), BaseVertexIndex);
     return D3D_OK;
+#endif
 }

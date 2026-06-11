@@ -18,10 +18,16 @@
 
 #include "gl_object.h"
 #include <string>
+#include <vector>
+#include <map>
 
-// Translate a DX9 shader token stream to GLSL 120. On success fills `glslOut` and
+// Translate a DX9 shader token stream to GLSL. On success fills `glslOut` and
 // `*outIsPixel`; on an unsupported token returns false (glslOut holds a comment).
-bool TranslateD3D9Shader(const DWORD *tokens, std::string &glslOut, bool *outIsPixel);
+// `shadowSamplerMask` bit N declares sampler sN as sampler2DShadow and emits its
+// texldp lookups as depth-compared textureProj — the D3D9 hardware-shadow idiom.
+// `outSamplerMask` (optional) reports which sampler registers the shader uses.
+bool TranslateD3D9Shader(const DWORD *tokens, std::string &glslOut, bool *outIsPixel,
+                         unsigned shadowSamplerMask = 0, unsigned *outSamplerMask = nullptr);
 
 // Canonical generic-vertex-attribute mapping for a D3D vertex-declaration usage +
 // usage index. A single source of truth shared by the translator (which names the
@@ -36,17 +42,26 @@ std::string GLAttribName(int usage, int usageIndex);
 // the shader does not declare are simply ignored by GL.
 void        GLBindAttribLocations(unsigned program);
 
+// LAZY GL COMPILE: the engine calls Create{Vertex,Pixel}Shader from loader threads.
+// On the de-proxied web build the GL context is LOCAL to the render worker, so
+// glCreateShader on a loader thread silently returns 0 (empty info log) -> black
+// world. Translation (pure CPU) still happens in the constructor; the GL compile is
+// deferred into glShader(), whose only callers are the program-link path that runs
+// at draw time on the render thread with the context current. ok() reports
+// translation success so material loading can proceed off-thread.
 class GLVertexShader final : public GLObject<IDirect3DVertexShader9> {
 public:
     GLVertexShader(IDirect3DDevice9 *device, const DWORD *function);
     ~GLVertexShader() override;
     HRESULT WINAPI GetDevice(IDirect3DDevice9 **ppDevice) override;
     HRESULT WINAPI GetFunction(void *, UINT *pSize) override { if (pSize) *pSize = 0; return D3D_OK; }
-    unsigned glShader() const { return shader_; }
-    bool ok() const { return shader_ != 0; }
+    unsigned glShader();                       // lazy: compiles on first use (GL thread)
+    bool ok() const { return translatedOk_; }
 private:
     IDirect3DDevice9 *device_;
     unsigned          shader_ = 0;
+    bool              translatedOk_ = false;
+    bool              compileFailed_ = false;  // latch: don't recompile/reprint every draw
     std::string       glsl_;
 };
 
@@ -56,12 +71,22 @@ public:
     ~GLPixelShader() override;
     HRESULT WINAPI GetDevice(IDirect3DDevice9 **ppDevice) override;
     HRESULT WINAPI GetFunction(void *, UINT *pSize) override { if (pSize) *pSize = 0; return D3D_OK; }
-    unsigned glShader() const { return shader_; }
-    bool ok() const { return shader_ != 0; }
+    unsigned glShader() { return glShader(0); }
+    // Shadow-sampler variant: same bytecode retranslated with the masked samplers typed
+    // sampler2DShadow (depth-compare lookups). Mask 0 = the plain shader. Variants are
+    // cached; the program cache keys on GL shader ids so (vs, ps-variant) pairs link
+    // independently.
+    unsigned glShader(unsigned shadowMask);
+    bool ok() const { return translatedOk_; }
 private:
     IDirect3DDevice9 *device_;
     unsigned          shader_ = 0;
+    bool              translatedOk_ = false;
+    bool              compileFailed_ = false;  // latch: don't recompile/reprint every draw
+    unsigned          samplerMask_ = 0;        // sampler registers this shader reads
     std::string       glsl_;
+    std::vector<DWORD> func_;                  // bytecode copy for variant retranslation
+    std::map<unsigned, unsigned> variants_;    // shadowMask -> GL shader (0 = failed)
 };
 
 #endif // KISAK_GL_SHADER_H

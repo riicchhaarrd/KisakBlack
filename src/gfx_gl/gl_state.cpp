@@ -10,6 +10,8 @@
 #include "gl_resources.h"
 
 #include <GL/glew.h>
+extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
+
 
 namespace {
 
@@ -52,11 +54,40 @@ GLint glWrap(DWORD d)   { return d == D3DTADDRESS_CLAMP ? GL_CLAMP_TO_EDGE : GL_
 } // namespace
 
 HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
+    KB_FlushBatchedDraws();
+    // Skip the GL call when this state already holds this value — on the proxied web
+    // context every glEnable/glBlendFunc/glDepthMask is a cross-thread marshaled call, and
+    // the engine re-sets the same blend/depth/cull states constantly between draws.
+    if ((unsigned)State < 256) {
+        if (rsSet_[State] && rsCache_[State] == Value) return D3D_OK;
+        rsSet_[State] = 1; rsCache_[State] = Value;
+    }
     switch (State) {
         case D3DRS_ZENABLE:
             if (Value) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
             break;
         case D3DRS_ZWRITEENABLE:    glDepthMask(Value ? GL_TRUE : GL_FALSE); break;
+        case D3DRS_DEPTHBIAS:
+        case D3DRS_SLOPESCALEDEPTHBIAS: {
+            // The engine biases the shadowmap build (r_state.cpp). Dropping these gave
+            // every near-cascade texel self-shadowing acne = black gun/surfaces up
+            // close, shimmering as the map re-rendered each frame. D3D bias is in
+            // normalized depth units; GL units are smallest-resolvable-depth steps
+            // (~2^-24 for D24), hence the 2^24 scale.
+            DWORD bBits = (State == D3DRS_DEPTHBIAS) ? Value : rsCache_[D3DRS_DEPTHBIAS];
+            DWORD sBits = (State == D3DRS_SLOPESCALEDEPTHBIAS) ? Value : rsCache_[D3DRS_SLOPESCALEDEPTHBIAS];
+            float bias, slope;
+            memcpy(&bias, &bBits, 4); memcpy(&slope, &sBits, 4);
+            if (bias != 0.0f || slope != 0.0f) {
+                extern unsigned long g_kbBiasSets; ++g_kbBiasSets;
+                glEnable(GL_POLYGON_OFFSET_FILL);
+                glPolygonOffset(slope, bias * 16777216.0f);
+            } else {
+                glPolygonOffset(0.0f, 0.0f);
+                glDisable(GL_POLYGON_OFFSET_FILL);
+            }
+            break;
+        }
         case D3DRS_ZFUNC:           glDepthFunc(glCmp(Value));               break;
         case D3DRS_CULLMODE:
             // The vertex path flips Y in clip space (D3D's Y-down screen -> GL's
@@ -122,6 +153,7 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
 }
 
 HRESULT WINAPI GLDevice::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
+    KB_FlushBatchedDraws();
     if (Sampler >= (DWORD)kMaxStages) return D3D_OK;
     GLSamplerState &s = samplers_[Sampler];
     switch (Type) {
@@ -149,6 +181,7 @@ HRESULT WINAPI GLDevice::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATET
 }
 
 HRESULT WINAPI GLDevice::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) {
+    KB_FlushBatchedDraws();
     if (Stage >= (DWORD)kMaxStages) return D3D_OK;
     // Resolve to a GL name + target now (via the resource's D3D type) so the bind
     // path stays type-correct for 2D, cube and volume textures alike — a blind
@@ -164,20 +197,29 @@ HRESULT WINAPI GLDevice::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture
             name   = static_cast<GLVolumeTexture *>(static_cast<IDirect3DVolumeTexture9 *>(pTexture))->glName();
             target = GL_TEXTURE_3D;
             break;
-        default:  // D3DRTYPE_TEXTURE
-            name   = static_cast<GLTexture *>(static_cast<IDirect3DTexture9 *>(pTexture))->glName();
+        default: {  // D3DRTYPE_TEXTURE
+            GLTexture *t = static_cast<GLTexture *>(static_cast<IDirect3DTexture9 *>(pTexture));
+            name   = t->glName();
             target = GL_TEXTURE_2D;
+            boundTexIsDepth_[Stage] = t->isDepth();   // shadow-map sampling needs a shadow sampler
             break;
         }
+        }
     }
+    if (!pTexture || target != GL_TEXTURE_2D) boundTexIsDepth_[Stage] = false;
     boundTexName_[Stage]   = name;
     boundTexTarget_[Stage] = target;
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetScissorRect(const RECT *pRect) {
+    KB_FlushBatchedDraws();
     if (pRect)
-        glScissor(pRect->left, fbHeight_ - pRect->bottom,
+        // Y flip only for the window target — see SetViewport (FBO sub-rects keep
+        // D3D placement so sampled atlases match D3D-convention coordinates).
+        glScissor(pRect->left,
+                  (fboActive_ && dsLive_ && (fbWidth_ != bbWidth_ || fbHeight_ != bbHeight_))
+                      ? pRect->top : fbHeight_ - pRect->bottom,
                   pRect->right - pRect->left, pRect->bottom - pRect->top);
     return D3D_OK;
 }
@@ -205,8 +247,17 @@ bool GLDevice::applyTextures() {
 void GLDevice::applyStageSampler(unsigned stage, unsigned target) {
     if (stage >= (unsigned)kMaxStages) return;
     const GLSamplerState &s = samplers_[stage];
-    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, glFilter(s.minFilter));
-    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, glFilter(s.magFilter));
+    // DEPTH textures (shadowmaps, sampled raw with compare NONE): LINEAR makes the
+    // texture INCOMPLETE in ES3 (depth + linear is unfilterable) -> every sample
+    // returns 0 -> everything reads "fully in shadow" (the black gun/world). The
+    // engine's shadowmap sampler state asks for bilinear; force NEAREST instead.
+    if (boundTexIsDepth_[stage]) {
+        glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    } else {
+        glTexParameteri(target, GL_TEXTURE_MIN_FILTER, glFilter(s.minFilter));
+        glTexParameteri(target, GL_TEXTURE_MAG_FILTER, glFilter(s.magFilter));
+    }
     glTexParameteri(target, GL_TEXTURE_WRAP_S,     glWrap(s.addressU));
     glTexParameteri(target, GL_TEXTURE_WRAP_T,     glWrap(s.addressV));
 }

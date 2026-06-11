@@ -23,8 +23,15 @@ bool D3DToGLFormat(D3DFORMAT fmt, unsigned *internal, unsigned *format, unsigned
         case D3DFMT_A16B16G16R16F: *internal = GL_RGBA16F; *format = GL_RGBA; *type = GL_HALF_FLOAT; *bpp = 8; return true;
         case D3DFMT_G16R16F:  *internal = GL_RG16F; *format = GL_RG; *type = GL_HALF_FLOAT; *bpp = 4; return true;
         case D3DFMT_R32F:     *internal = GL_R32F; *format = GL_RED; *type = GL_FLOAT; *bpp = 4; return true;
-        // A16B16G16R16 (GL_RGBA16) / G16R16 (GL_RG16) are 16-bit *normalized* formats
-        // absent from WebGL2 core; leave unhandled (HDR/normal targets) until needed.
+        // G16R16 is the secondary lightmap (lightmaps[].secondaryB, "lightmapLum") and the
+        // "$g16r16" default. 16-bit *normalized* RG (GL_RG16) is absent from WebGL2 core
+        // (needs EXT_texture_norm16), so we down-convert to 8-bit RG8 at upload time (see
+        // the G16R16 branch in GLTexture::UnlockRect) — 8 bits is plenty for a smooth
+        // lightmap. WITHOUT this the secondary lightmap never uploads and samples as the
+        // neutral (~white) placeholder, washing the world out (overblown lighting). bpp=4
+        // keeps the lock/shadow buffer sized for the incoming 16-bit source pixels.
+        case D3DFMT_G16R16:   *internal = GL_RG8; *format = GL_RG; *type = GL_UNSIGNED_BYTE; *bpp = 4; return true;
+        // A16B16G16R16 (GL_RGBA16) likewise absent from WebGL2 core; leave unhandled until needed.
         default: return false;
     }
 #else

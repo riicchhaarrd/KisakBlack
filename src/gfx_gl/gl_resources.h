@@ -9,7 +9,28 @@
 
 #include "gl_object.h"
 #include <vector>
+#include <mutex>
 
+// DEFERRED GL (all resource classes below): the engine creates and Lock/Unlocks
+// resources from loader threads. On the de-proxied web build the GL context is LOCAL
+// to the render worker; Emscripten forwards GL calls from context-less threads to the
+// browser main thread, which has no context there either -> "undefined.createBuffer"
+// crash (the proxied build masked this because the DOM thread held the proxied
+// context). So: when an op runs OFF the GL thread, the GL work (creation + upload) is
+// recorded as pending against the CPU shadow and replayed by sync(), which glName()
+// triggers at bind time on the render thread. On the GL thread behavior is unchanged.
+//
+// CONCURRENT LOCKS (the SMP world flicker): the engine's dynamic VB/IB are a SINGLE
+// shared ring (gfxBuf.dynamic*BufferPool[1], D3D9 NOOVERWRITE contract) — the
+// frontend appends frame N+1 geometry while the backend tess-fills frame N's draws
+// from the SAME object, so two Lock/Unlock windows legitimately overlap. Per-object
+// single-slot lock bookkeeping gets clobbered by the second Lock and one range is
+// never uploaded -> stale/garbage geometry for one frame. So buffers keep a UNION of
+// all outstanding lock ranges under a mutex, fold it into the pending range at every
+// Unlock (over-upload is safe: later folds re-upload), and sync() snapshots+clears
+// pend under the same mutex. glName()'s unlocked pend check is only a fast hint: the
+// data a draw needs was folded either on this thread or before the SMP handoff, both
+// of which it observes.
 class GLVertexBuffer final : public GLObject<IDirect3DVertexBuffer9> {
 public:
     GLVertexBuffer(IDirect3DDevice9 *device, UINT length, DWORD usage, DWORD fvf, D3DPOOL pool);
@@ -26,7 +47,8 @@ public:
     HRESULT WINAPI Unlock() override;
     HRESULT WINAPI GetDesc(D3DVERTEXBUFFER_DESC *pDesc) override;
 
-    unsigned glName() const { return vbo_; }
+    unsigned glName() { if (!vbo_ || pendMax_ > pendMin_) sync(); return vbo_; }
+    void     sync();   // GL thread only: create + replay pending uploads
 
 private:
     IDirect3DDevice9         *device_;
@@ -36,9 +58,14 @@ private:
     DWORD                     fvf_;
     D3DPOOL                   pool_;
     std::vector<unsigned char> shadow_;  // CPU mirror backing Lock()
-    UINT                      lockOffset_ = 0;
-    UINT                      lockSize_   = 0;
-    bool                      dirty_      = false;
+    std::mutex                lockMu_;        // guards lock/pend bookkeeping (FE+BE lock concurrently)
+    UINT                      lockDepth_   = 0;
+    UINT                      outMin_      = ~0u; // union of outstanding lock ranges
+    UINT                      outMax_      = 0;
+    bool                      outDiscard_  = false;
+    UINT                      pendMin_     = ~0u; // deferred dirty range [pendMin_, pendMax_)
+    UINT                      pendMax_     = 0;
+    bool                      pendDiscard_ = false;
 };
 
 class GLIndexBuffer final : public GLObject<IDirect3DIndexBuffer9> {
@@ -55,7 +82,8 @@ public:
     HRESULT WINAPI Unlock() override;
     HRESULT WINAPI GetDesc(D3DINDEXBUFFER_DESC *pDesc) override;
 
-    unsigned glName() const { return ibo_; }
+    unsigned glName() { if (!ibo_ || pendMax_ > pendMin_) sync(); return ibo_; }
+    void     sync();
     D3DFORMAT format() const { return format_; }
 
 private:
@@ -66,9 +94,14 @@ private:
     D3DFORMAT                 format_;
     D3DPOOL                   pool_;
     std::vector<unsigned char> shadow_;
-    UINT                      lockOffset_ = 0;
-    UINT                      lockSize_   = 0;
-    bool                      dirty_      = false;
+    std::mutex                lockMu_;
+    UINT                      lockDepth_   = 0;
+    UINT                      outMin_      = ~0u;
+    UINT                      outMax_      = 0;
+    bool                      outDiscard_  = false;
+    UINT                      pendMin_     = ~0u;
+    UINT                      pendMax_     = 0;
+    bool                      pendDiscard_ = false;
 };
 
 class GLSurface;
@@ -97,12 +130,21 @@ public:
     HRESULT WINAPI UnlockRect(UINT Level) override;
     HRESULT WINAPI AddDirtyRect(const RECT *) override { return D3D_OK; }
 
-    unsigned  glName() const { return tex_; }
+    unsigned  glName() { if (!tex_ || pendLevels_) sync(); return tex_; }
+    void      sync();
+    bool      isDepth() const { return isDepth_; }   // depth-format (shadow map) texture
+    // Retrofit: the engine's shadowmap image reaches CreateTexture with format AND
+    // usage that don't identify it as depth (decompiled flag soup). When it shows up
+    // at SetDepthStencilSurface, convert the storage to real depth + compare mode.
+    void      ensureDepthStorage();
     UINT      width()  const { return width_; }
     UINT      height() const { return height_; }
     D3DFORMAT format() const { return format_; }
 
 private:
+    void createGL();              // glGen + storage/placeholder (GL thread only)
+    void uploadLevel(UINT Level); // shadow -> GL upload for one mip (GL thread only)
+
     IDirect3DDevice9 *device_;
     unsigned          tex_ = 0;
     UINT              width_, height_, levels_;
@@ -112,6 +154,8 @@ private:
     std::vector<std::vector<unsigned char>> levelShadow_;  // CPU mirror per mip level
     UINT              lockLevel_ = 0;
     bool              dirty_     = false;
+    unsigned          pendLevels_ = 0;  // bitmask of mips awaiting upload on the GL thread
+    bool              isDepth_   = false;  // D24S8/D16-family: GL depth texture + compare mode
 };
 
 // A 3D (volume) texture — colour-grading LUTs etc. Maps to a GL_TEXTURE_3D.
@@ -132,9 +176,13 @@ public:
     HRESULT WINAPI LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, const D3DBOX *, DWORD) override;
     HRESULT WINAPI UnlockBox(UINT Level) override;
 
-    unsigned  glName() const { return tex_; }
+    unsigned  glName() { if (!tex_ || pendLevels_) sync(); return tex_; }
+    void      sync();
     D3DFORMAT format() const { return format_; }
 private:
+    void createGL();
+    void uploadLevel(UINT Level);
+
     IDirect3DDevice9 *device_;
     unsigned          tex_ = 0;
     UINT              width_, height_, depth_, levels_;
@@ -143,6 +191,7 @@ private:
     D3DPOOL           pool_;
     std::vector<std::vector<unsigned char>> levelShadow_;
     bool              dirty_ = false;
+    unsigned          pendLevels_ = 0;
 };
 
 // A cube texture (sky / reflection probes). Maps to a GL_TEXTURE_CUBE_MAP; D3D's
@@ -173,11 +222,16 @@ public:
                             const RECT *pRect, DWORD Flags) override;
     HRESULT WINAPI UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) override;
 
-    unsigned  glName() const { return tex_; }
+    unsigned  glName() { if (!tex_ || pendAny_) sync(); return tex_; }
+    void      maybeGenMips();
+    void      sync();
     UINT      edgeLength() const { return edge_; }
     D3DFORMAT format() const { return format_; }
 
 private:
+    void createGL();
+    void uploadFaceLevel(unsigned Face, UINT Level);
+
     IDirect3DDevice9 *device_;
     unsigned          tex_ = 0;
     UINT              edge_, levels_;
@@ -186,6 +240,10 @@ private:
     D3DPOOL           pool_;
     std::vector<std::vector<unsigned char>> levelShadow_[6];  // [face][level] CPU mirror
     bool              dirty_ = false;
+    unsigned          pendLevels_[6] = {};  // per-face bitmask of pending mips
+    bool              pendAny_ = false;
+    unsigned          level0Faces_ = 0;     // faces with level-0 data uploaded
+    bool              mipsGenned_ = false;  // auto-genned mips for a 1-mip cube
 };
 
 // Tag selecting the back-buffer constructor: a surface that is a view onto the
@@ -234,6 +292,8 @@ public:
     bool      sysmem()  const { return sysmem_; }
     bool      isBackbuffer()   const { return backbuffer_; }
     bool      isDepthStencil() const { return depthStencil_; }
+    bool      texIsDepthStencil() const { return ownTexIsDepth_; }
+    GLTexture *ownerTex() const { return owner_; }
     std::vector<unsigned char> &shadow() { return shadow_; }
 
 private:
@@ -242,6 +302,7 @@ private:
     GLCubeTexture    *cubeOwner_ = nullptr; // cube-face view (non-owning)
     D3DCUBEMAP_FACES  cubeFace_ = D3DCUBEMAP_FACE_POSITIVE_X;
     unsigned          ownTex_ = 0;        // standalone render target: owned GL texture
+    bool              ownTexIsDepth_ = false; // ownTex_ has DEPTH_STENCIL storage (shadow DS)
     UINT              level_  = 0;
     UINT              width_  = 0;
     UINT              height_ = 0;

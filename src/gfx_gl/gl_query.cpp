@@ -3,9 +3,12 @@
 #include "gl_d3d9.h"
 
 #include <GL/glew.h>
+extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
+
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #include <cstdio>
+#include <cstring>
 #endif
 
 // WebGL2/GLES3 has no GL_SAMPLES_PASSED (exact sample count) occlusion target — only
@@ -33,12 +36,27 @@ unsigned long g_kbBufBytes    = 0;   // bytes of vertex/index buffer data upload
 unsigned long g_kbComFrames   = 0;   // Com_Frame() entries (game/main-thread liveness)
 unsigned long g_kbSvFrames    = 0;   // SV_Frame() entries (server/physics liveness)
 unsigned long g_kbReadbacks   = 0;   // glReadPixels calls (per-frame GPU-sync readbacks)
+unsigned long g_kbSkipPending = 0;   // draws DROPPED because the program is still linking (flicker source)
+unsigned long g_kbBuiltinFall = 0;   // draws degraded to the builtin program (translate/compile gave 0)
+unsigned long g_kbShadowFbo   = 0;   // SetRenderTarget passes with the honored DS attached COMPLETE
+unsigned long g_kbBiasSets    = 0;   // nonzero depth-bias SetRenderState applications
+unsigned long g_kbSetDS       = 0;   // SetDepthStencilSurface calls
+unsigned long g_kbSetDSTex    = 0;   // ... with a texture-backed DS (shadowmap candidates)
+unsigned long g_kbPrimDrop    = 0;   // surfaces dropped by primDrawSurf buffer overflow (mesh pops!)
 unsigned long g_kbBlits       = 0;   // StretchRect / glBlitFramebuffer calls
 unsigned long g_kbPresentEnter= 0;   // SwapBuffers entries (before commit_frame)
 unsigned long g_kbDevSpin     = 0;   // frontend spin iterations waiting for the DX device lock
 int           g_kbBackStage   = 0;   // RB_RenderThread loop stage (where the backend is now)
 int           g_kbFrontStage  = 0;   // R_ToggleSmpFrameCmd stage (where the frontend is now)
 const char   *g_kbWorkerCmdName = "-"; // name of the job-queue batch whose Code is running ("-"=none)
+const char   *g_kbWaitName       = "-"; // name of the worker-cmd group currently being waited/flushed
+int           g_kbDbcf           = -1;  // fx_draw gate: *frontEndDataOut->dynamicBufferCurrentFrame
+int           g_kbFc             = -1;  // fx_draw gate: frontEndDataOut->frameCount
+int           g_kbFxStage        = 0;   // FX_GenerateVerts sub-step (where it hangs)
+int           g_kbGlassLock      = -1;  // glass rendererLock.lock value at a spinlock acquire
+unsigned long g_kbVisCells       = 0;   // popcount(cellVisibleBits) at end of portal walk (flicker probe)
+int           g_kbCameraCell      = -2;  // cameraCellIndex (which cell the camera is in) for web-vs-native compare
+unsigned long g_kbVisSurfs        = 0;   // popcount(surfaceVisData) after the static-cull worker wait (surface-race probe)
 
 #if defined(__EMSCRIPTEN__)
 // Called every 500ms from the DOM-thread heartbeat (linux_main.cpp). Reads the render
@@ -49,14 +67,15 @@ const char   *g_kbWorkerCmdName = "-"; // name of the job-queue batch whose Code
 // fprintf here on the DOM thread can deadlock against a worker that holds the line-buffered
 // stderr lock while blocked on its own proxied write — which itself was freezing the page.
 extern "C" EMSCRIPTEN_KEEPALIVE const char *kb_heartbeat_dump() {
-    static char buf[320];
+    static char buf[384];
     extern int g_AcquisitionCount; extern unsigned long long g_DXDeviceThread;
     snprintf(buf, sizeof(buf),
-             "[hb] com=%lu sv=%lu draws=%lu pres=%lu event=%lu blits=%lu rb=%lu | spin=%lu own=%u acq=%d bstage=%d fstage=%d wc=%s",
+             "[hb] com=%lu sv=%lu draws=%lu pres=%lu event=%lu blits=%lu rb=%lu | spin=%lu own=%u acq=%d bstage=%d fstage=%d wc=%s ww=%s dbcf=%d fc=%d fxs=%d gl=%d viscells=%lu",
              g_kbComFrames, g_kbSvFrames, g_kbDraws, g_kbPresentEnter,
              g_kbEventWaits, g_kbBlits, g_kbReadbacks,
              g_kbDevSpin, (unsigned)(g_DXDeviceThread & 0xffffu), g_AcquisitionCount, g_kbBackStage, g_kbFrontStage,
-             g_kbWorkerCmdName ? g_kbWorkerCmdName : "?");
+             g_kbWorkerCmdName ? g_kbWorkerCmdName : "?", g_kbWaitName ? g_kbWaitName : "?", g_kbDbcf, g_kbFc, g_kbFxStage, g_kbGlassLock, g_kbVisCells);
+    { size_t L = strlen(buf); snprintf(buf+L, sizeof(buf)-L, " camcell=%d vissurf=%lu", g_kbCameraCell, g_kbVisSurfs); }
     return buf;
 }
 #endif
@@ -78,8 +97,9 @@ HRESULT WINAPI GLQuery::GetDevice(IDirect3DDevice9 **ppDevice) {
 }
 
 HRESULT WINAPI GLQuery::Issue(DWORD dwIssueFlags) {
+    KB_FlushBatchedDraws();
     if (type_ == D3DQUERYTYPE_OCCLUSION) {
-        if (dwIssueFlags & D3DISSUE_BEGIN) glBeginQuery(KB_OCCLUSION_TARGET, glQuery_);
+        if (dwIssueFlags & D3DISSUE_BEGIN) { haveResult_ = false; glBeginQuery(KB_OCCLUSION_TARGET, glQuery_); }
         if (dwIssueFlags & D3DISSUE_END)   glEndQuery(KB_OCCLUSION_TARGET);
     } else if (type_ == D3DQUERYTYPE_EVENT) {
         if (dwIssueFlags & D3DISSUE_END) {
@@ -94,6 +114,14 @@ HRESULT WINAPI GLQuery::GetData(void *pData, DWORD /*dwSize*/, DWORD dwGetDataFl
     bool flush = (dwGetDataFlags & D3DGETDATA_FLUSH) != 0;
 
     if (type_ == D3DQUERYTYPE_OCCLUSION) {
+#if defined(__EMSCRIPTEN__)
+        // Result already read since the last Issue(BEGIN): answer from cache — zero GL
+        // calls (repeat polls were a returning round-trip each, ~0.12ms proxied).
+        if (haveResult_) {
+            if (pData) *static_cast<DWORD *>(pData) = lastResult_;
+            return S_OK;
+        }
+#endif
         ++g_kbOcclGetData;
         GLint available = 0;
         glGetQueryObjectiv(glQuery_, GL_QUERY_RESULT_AVAILABLE, &available);

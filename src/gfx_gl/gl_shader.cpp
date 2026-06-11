@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>   // EM_ASM (raw-JS context probe in compileGL)
+#endif
 
 namespace {
 
@@ -21,7 +24,7 @@ enum {  // opcodes (token & 0xFFFF) — D3DSIO_*
     OP_REP = 38, OP_ENDREP = 39, OP_IF = 40, OP_IFC = 41, OP_ELSE = 42, OP_ENDIF = 43,
     OP_BREAK = 44, OP_BREAKC = 45, OP_MOVA = 46, OP_DEFB = 47, OP_DEFI = 48,
     OP_TEXKILL = 65, OP_TEXLD = 66, OP_CMP = 88, OP_DP2ADD = 90, OP_SETP = 94,
-    OP_TEXLDD = 93, OP_TEXLDL = 95,
+    OP_DSX = 91, OP_DSY = 92, OP_TEXLDD = 93, OP_TEXLDL = 95,
     OP_DCL = 31, OP_DEF = 81, OP_COMMENT = 0xFFFE, OP_END = 0xFFFF,
 };
 enum {  // register types
@@ -76,13 +79,16 @@ struct Ctx {
     const char *fragColorName() const { return emitES ? "fragColor" : "gl_FragColor"; }
     // Texture sampler call: texture2D in 120, overloaded texture() in ES 3.00.
     const char *texFn() const { return emitES ? "texture" : "texture2D"; }
+    unsigned shadowMask = 0;   // samplers typed sampler2DShadow (depth-compare lookups)
     std::map<int, std::pair<int,int>> inputs;   // reg -> (usage, usageIndex)
     std::map<int, std::pair<int,int>> outputs;  // reg -> (usage, usageIndex)  (vertex)
     std::set<int> samplers;
+    std::map<int, int> samplerDim;   // sampler reg -> D3DSTT: 2=2D, 3=CUBE, 4=VOLUME
     std::map<int, float[4]> defs;
     std::map<int, int> idefs;                   // DEFI integer constant reg -> count (.x)
     std::set<int> usedTemps;
     bool usedConst = false;
+    int  maxConst  = -1;   // highest runtime-constant register referenced (sizes vsc[]/psc[])
 };
 
 // D3DDECLUSAGE -> a stable varying name shared between the vs and ps stages.
@@ -100,7 +106,8 @@ std::string regName(Ctx &c, const Operand &o, bool isDest) {
         case RT_TEMP:    c.usedTemps.insert(o.reg); { std::ostringstream s; s << "r" << o.reg; return s.str(); }
         case RT_CONST:
             if (c.defs.count(o.reg)) { std::ostringstream s; s << "c" << o.reg << "_def"; return s.str(); }
-            c.usedConst = true; { std::ostringstream s; s << c.cArr() << "[" << o.reg << "]"; return s.str(); }
+            c.usedConst = true; if (o.reg > c.maxConst) c.maxConst = o.reg;
+            { std::ostringstream s; s << c.cArr() << "[" << o.reg << "]"; return s.str(); }
         case RT_INPUT:
             if (c.isPixel) { auto it = c.inputs.find(o.reg);
                              return it != c.inputs.end() ? varyingName(it->second.first, it->second.second) : "vec4(0.0)"; }
@@ -150,7 +157,7 @@ std::string srcExpr(Ctx &c, const Operand &o) {
 
 // Emit one instruction as `dst<mask> = (<expr>)<mask>;`.
 void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
-               std::ostringstream &body, const std::string &ind) {
+               std::ostringstream &body, const std::string &ind, int ctrl = 0) {
     auto s = [&](int i) { return srcExpr(c, src[i]); };
     // TEXKILL discards the fragment when any of the tested register's xyz < 0; it has
     // no destination, so handle it before the dst<mask>= path below.
@@ -186,9 +193,75 @@ void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
         case OP_DP3:   expr = "vec4(dot((" + s(0) + ").xyz, (" + s(1) + ").xyz))"; break;
         case OP_DP4:   expr = "vec4(dot(" + s(0) + ", " + s(1) + "))"; break;
         case OP_DP2ADD:expr = "vec4(dot((" + s(0) + ").xy, (" + s(1) + ").xy) + (" + s(2) + ").x)"; break;
-        case OP_TEXLD:
-        case OP_TEXLDL:
-        case OP_TEXLDD:expr = std::string(c.texFn()) + "(" + regName(c, src[1], false) + ", (" + s(0) + ").xy)"; break;
+        // Screen-space partial derivatives. Dropping these (the dest stayed vec4(0)) broke
+        // every pixel shader that uses ddx/ddy — mip selection and distance detail — which
+        // is what made distant surfaces blow out to white/blue on mp_mountain. dFdx/dFdy are
+        // core in both GLSL ES 3.00 (WebGL2) and desktop 1.20.
+        case OP_DSX:   expr = "dFdx(" + s(0) + ")"; break;
+        case OP_DSY:   expr = "dFdy(" + s(0) + ")"; break;
+        case OP_TEXLD: {
+            // The instruction-token control bits select the texld FLAVOUR (ignored before
+            // -- which broke every projected lookup): 1 = texldp (projective divide; on a
+            // depth texture this is the D3D9 hardware-shadow compare), 2 = texldb (bias).
+            std::string samp = regName(c, src[1], false);
+            int sreg = src[1].reg;
+            bool shadow = (c.shadowMask >> sreg) & 1;
+            if (shadow) {
+                // sampler2DShadow: PCF depth-comparison result. KB_sc does the projective
+                // divide AND the render-target Y flip (see prologue note).
+                if (ctrl == 1)
+                    expr = c.emitES ? "vec4(texture(" + samp + ", KB_sc(" + s(0) + ")))"
+                                    : "vec4(shadow2D(" + samp + ", KB_sc(" + s(0) + ")).x)";
+                else
+                    expr = c.emitES ? "vec4(texture(" + samp + ", KB_sc(vec4((" + s(0) + ").xyz, 1.0))))"
+                                    : "vec4(shadow2D(" + samp + ", KB_sc(vec4((" + s(0) + ").xyz, 1.0))).x)";
+            } else if (ctrl == 1) {
+                expr = std::string(c.emitES ? "textureProj" : "texture2DProj") + "(" + samp + ", " + s(0) + ")";
+            } else {
+                // Coordinate arity follows the sampler's declared dimension: cube and
+                // volume lookups take .xyz (model lighting samples a 3D texture in the
+                // VERTEX shader; .xy there is a GLSL type error or wrong texel).
+                int dim = c.samplerDim.count(sreg) ? c.samplerDim.at(sreg) : 2;
+                const char *coords = (dim == 3 || dim == 4) ? ".xyz" : ".xy";
+                const char *fn = c.emitES ? "texture"
+                                  : dim == 4 ? "texture3D" : dim == 3 ? "textureCube" : "texture2D";
+                if (ctrl == 2)
+                    expr = std::string(fn) + "(" + samp + ", (" + s(0) + ")" + coords + ", (" + s(0) + ").w)";
+                else
+                    expr = std::string(fn) + "(" + samp + ", (" + s(0) + ")" + coords + ")";
+            }
+            break;
+        }
+        case OP_TEXLDL: {
+            // Explicit-LOD sample: the LOD rides in coord .w. DROPPING it sampled mip 0
+            // forever — every cubemap reflection razor-sharp = the "vaseline gloss"
+            // (CoD blurs reflections by gloss via this LOD).
+            int sreg2 = src[1].reg;
+            int dim = c.samplerDim.count(sreg2) ? c.samplerDim.at(sreg2) : 2;
+            const char *coords = (dim == 3 || dim == 4) ? ".xyz" : ".xy";
+            if (c.emitES)
+                expr = "textureLod(" + regName(c, src[1], false) + ", (" + s(0) + ")" + coords + ", (" + s(0) + ").w)";
+            else {
+                const char *fn = dim == 4 ? "texture3D" : dim == 3 ? "textureCube" : "texture2D";
+                expr = std::string(fn) + "(" + regName(c, src[1], false) + ", (" + s(0) + ")" + coords + ")";
+            }
+            break;
+        }
+        case OP_TEXLDD: {
+            // Explicit-gradient sample (ddx/ddy in src[2]/src[3]).
+            int sreg2 = src[1].reg;
+            int dim = c.samplerDim.count(sreg2) ? c.samplerDim.at(sreg2) : 2;
+            const char *coords = (dim == 3 || dim == 4) ? ".xyz" : ".xy";
+            if (c.emitES && nsrc >= 4)
+                expr = "textureGrad(" + regName(c, src[1], false) + ", (" + s(0) + ")" + coords +
+                       ", (" + srcExpr(c, src[2]) + ")" + coords + ", (" + srcExpr(c, src[3]) + ")" + coords + ")";
+            else {
+                const char *fn = c.emitES ? "texture"
+                                  : dim == 4 ? "texture3D" : dim == 3 ? "textureCube" : "texture2D";
+                expr = std::string(fn) + "(" + regName(c, src[1], false) + ", (" + s(0) + ")" + coords + ")";
+            }
+            break;
+        }
         default: (void)nsrc; return;
     }
     std::string dn = regName(c, dst, true);
@@ -248,7 +321,14 @@ void GLBindAttribLocations(unsigned program) {
     }
 }
 
-bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
+static bool KB_DumpEnvWanted() {
+    static int en = -1;
+    if (en < 0) en = getenv("KB_DUMPENV") ? 1 : 0;
+    return en == 1;
+}
+
+bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
+                         unsigned shadowSamplerMask, unsigned *outSamplerMask) {
     Ctx c;
     // Diagnostic/test override: KB_GLSL_ES=1 forces GLSL ES 3.00 emit (=0 forces
     // #version 120) on any build, so the ES output can be dumped + checked offline
@@ -256,6 +336,7 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
     if (const char *e = getenv("KB_GLSL_ES")) c.emitES = (e[0] != '0');
     DWORD ver = *tok++;
     c.isPixel = (ver >> 16) == 0xFFFF;
+    c.shadowMask = shadowSamplerMask;
     if (outIsPixel) *outIsPixel = c.isPixel;
 
     std::ostringstream body;
@@ -279,7 +360,15 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
             DWORD usageTok = *tok;
             Operand reg = decodeParam(tok[1]);
             tok += len;
-            if (reg.type == RT_SAMPLER) c.samplers.insert(reg.reg);
+            if (reg.type == RT_SAMPLER) {
+                c.samplers.insert(reg.reg);
+                // dcl_2d/dcl_cube/dcl_volume: texture type in usage token bits 27..30.
+                // Ignoring this typed EVERY sampler sampler2D; sampling the bound 3D
+                // model-lighting volume (or a cubemap) through a sampler2D is a
+                // sampler-type conflict that INVALIDATES the draw on WebGL2 — static
+                // models went black/vanished (cupboard/drapes/paintings).
+                c.samplerDim[reg.reg] = (int)((usageTok >> 27) & 0xF);
+            }
             else {
                 int usage = (int)(usageTok & 0x1F);
                 int index = (int)((usageTok >> 16) & 0xF);
@@ -316,12 +405,12 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
 
         // Arithmetic / sample: dst + (len-1) srcs (simple parsing, no relative addressing).
         Operand dst = decodeParam(tok[0]);
-        Operand src[3];
+        Operand src[4];                      // texldd carries 4 sources (coords, sampler, ddx, ddy)
         int nsrc = len - 1;
-        if (nsrc > 3) nsrc = 3; if (nsrc < 0) nsrc = 0;
+        if (nsrc > 4) nsrc = 4; if (nsrc < 0) nsrc = 0;
         for (int i = 0; i < nsrc; ++i) src[i] = decodeParam(tok[1 + i]);
         tok += len;
-        emitInstr(c, op, src, nsrc, dst, body, ind(indent));
+        emitInstr(c, op, src, nsrc, dst, body, ind(indent), ctrl);
     }
 
     // Assemble the GLSL translation unit. Two dialects, parameterized on c.emitES:
@@ -336,13 +425,31 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
         o << "#version 300 es\n";
         o << "precision highp float;\n";
         o << "precision highp int;\n";
+        // ES 3.00 has NO default precision for sampler3D (unlike sampler2D/Cube) —
+        // same trap as sampler2DShadow in B66. Declare it unconditionally.
+        o << "precision highp sampler3D;\n";
         if (c.isPixel) {
             for (auto &in : c.inputs)  o << "in vec4 " << varyingName(in.second.first, in.second.second) << ";\n";
-            for (int s : c.samplers)   o << "uniform sampler2D s" << s << ";\n";
+            // ES 3.00 defines NO default precision for sampler2DShadow — without this
+            // single line every shadow variant failed to compile (and the affected
+            // draws fell to the builtin, which used to fail too -> invisible geometry).
+            if (c.shadowMask) o << "precision highp sampler2DShadow;\n";
+            for (int sN : c.samplers)
+            {
+                int dim = c.samplerDim.count(sN) ? c.samplerDim.at(sN) : 2;
+                const char *ty = ((c.shadowMask >> sN) & 1) ? "sampler2DShadow"
+                                 : dim == 4 ? "sampler3D" : dim == 3 ? "samplerCube" : "sampler2D";
+                o << "uniform " << ty << " s" << sN << ";\n";
+            }
             o << "out vec4 " << c.fragColorName() << ";\n";
             // Alpha-test-via-discard uniforms (D3DCMP_* in uAlphaTestFunc; 0 = off).
             o << "uniform int uAlphaTestFunc;\n";
             o << "uniform float uAlphaRef;\n";
+            if (c.shadowMask)
+                // Shadow lookup coord: projective divide. No Y adjustment: FBO
+                // viewports keep D3D placement (gl_d3d9.cpp SetViewport), so the
+                // stored shadow atlas matches D3D-convention coords exactly.
+                o << "vec3 KB_sc(vec4 c) { return c.xyz / c.w; }\n";
         } else {
             for (auto &in : c.inputs)  o << "in vec4 " << GLAttribName(in.second.first, in.second.second) << ";\n";
             for (auto &ou : c.outputs)
@@ -353,7 +460,15 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
         o << "#version 120\n";
         if (c.isPixel) {
             for (auto &in : c.inputs)  o << "varying vec4 " << varyingName(in.second.first, in.second.second) << ";\n";
-            for (int s : c.samplers)   o << "uniform sampler2D s" << s << ";\n";
+            for (int sN : c.samplers)
+            {
+                int dim = c.samplerDim.count(sN) ? c.samplerDim.at(sN) : 2;
+                const char *ty = ((c.shadowMask >> sN) & 1) ? "sampler2DShadow"
+                                 : dim == 4 ? "sampler3D" : dim == 3 ? "samplerCube" : "sampler2D";
+                o << "uniform " << ty << " s" << sN << ";\n";
+            }
+            if (c.shadowMask)
+                o << "vec3 KB_sc(vec4 c) { return c.xyz / c.w; }\n";
         } else {
             for (auto &in : c.inputs)  o << "attribute vec4 " << GLAttribName(in.second.first, in.second.second) << ";\n";
             for (auto &ou : c.outputs)
@@ -361,13 +476,33 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
                     o << "varying vec4 " << varyingName(ou.second.first, ou.second.second) << ";\n";
         }
     }
-    if (c.usedConst) o << "uniform vec4 " << c.cArr() << "[256];\n";
+    // Size the constant array to the highest register the shader references (not a blanket
+    // 256), so the device uploads only that many vec4s per draw. The translator uses static
+    // const indices only, so maxConst is the true upper bound.
+    if (c.usedConst) o << "uniform vec4 " << c.cArr() << "[" << (c.maxConst + 1) << "];\n";
     for (auto &d : c.defs)
         o << "const vec4 c" << d.first << "_def = vec4(" << d.second[0] << ", " << d.second[1]
           << ", " << d.second[2] << ", " << d.second[3] << ");\n";
+    // Depth-pre-pass invariance: COD draws world/model geometry in a depth PRE-PASS, then
+    // re-draws color with an equal/<= depth test — which requires the SAME vertex to produce
+    // the EXACT same gl_Position.z in both passes. D3D9 guarantees that ("position
+    // invariance"); GLSL does NOT unless gl_Position is declared invariant, so the prepass
+    // and color shaders' depths drift by a ULP and surfaces fail the depth test and drop out
+    // (the heavy world-geometry flicker on the web build). Declaring it invariant forces the
+    // compiler to compute it identically across shaders/passes.
+    if (!c.isPixel) o << "invariant gl_Position;\n";
     o << "void main() {\n";
     for (int r : c.usedTemps) o << "  vec4 r" << r << " = vec4(0.0);\n";
     o << body.str();
+    // D3D9 -> GL clip-space depth fixup. D3D9 vertex shaders emit clip-space z in [0,w]
+    // (post-divide NDC z in [0,1]); OpenGL/WebGL2 expects [-w,w] (NDC z in [-1,1]). On
+    // desktop GL this is normally handled with glClipControl(GL_ZERO_TO_ONE), but that
+    // entry point does NOT exist in WebGL2/GLES3, so we must remap in the shader. Without
+    // it, every depth value is compressed into the far half [0.5,1.0] of the depth buffer
+    // -> half the precision is wasted and distant coplanar surfaces z-fight (buildings
+    // flickering in and out). z' = 2z - w maps NDC [0,1] -> [-1,1] exactly.
+    if (!c.isPixel)
+        o << "  gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;\n";
     // ES alpha test: D3D's fixed-function cutout, done in-shader. D3DCMP_*:
     // 1=NEVER 2=LESS 3=EQUAL 4=LEQUAL 5=GREATER 6=NOTEQUAL 7=GEQUAL 8=ALWAYS.
     // Discard when the test FAILS. uAlphaTestFunc==0 disables it.
@@ -386,11 +521,51 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel) {
           << "  }\n";
     }
     o << "}\n";
+    if (outSamplerMask) {
+        unsigned m = 0;
+        for (int sN : c.samplers) if (sN >= 0 && sN < 32) m |= 1u << sN;
+        *outSamplerMask = m;
+    }
     out = o.str();
+    // ?dumpenv=1: print the first cube-sampling PIXEL shaders (the envmap/specular
+    // users) so the over-gloss math can be read from the real translated source.
+    if (KB_DumpEnvWanted() && c.isPixel) {
+        bool hasCube = false;
+        for (auto &kv : c.samplerDim) if (kv.second == 3) hasCube = true;
+        static int dumped = 0;
+        if (hasCube && dumped < 2) {
+            ++dumped;
+            fprintf(stderr, "[gl] ===== ENVMAP PS DUMP %d =====\n%s\n[gl] ===== END DUMP =====\n",
+                    dumped, out.c_str());
+        }
+    }
     return true;
 }
 
 // ---- GL shader objects ----------------------------------------------------
+#if defined(__EMSCRIPTEN__)
+// DIRECT GL getters: the engine's GL calls go through GLEW function pointers, which on
+// wasm are indirect calls wrapped by EMULATE_FUNCTION_POINTER_CASTS thunks — a layer
+// that has already mangled one call shape in this port (see the struct-by-value bug).
+// Status getters through that path read 0 with EMPTY info logs for shaders that a raw
+// JS context compiles fine. emscripten_gl* are ordinary exported functions (the same
+// ones GetProcAddress hands out) — calling them DIRECTLY bypasses GLEW + the thunks.
+extern "C" {
+    void emscripten_glGetShaderiv(unsigned shader, unsigned pname, int *params);
+    void emscripten_glGetShaderInfoLog(unsigned shader, int maxLength, int *length, char *infoLog);
+}
+extern int g_kbCtxIsLocal;   // 1 = direct calls legal; 0 = proxied, use GLEW dispatch
+static inline void KB_glGetShaderiv(unsigned sh, unsigned pn, int *p) {
+    if (g_kbCtxIsLocal) emscripten_glGetShaderiv(sh, pn, p); else glGetShaderiv(sh, pn, p);
+}
+static inline void KB_glGetShaderInfoLog(unsigned sh, int n, int *len, char *log) {
+    if (g_kbCtxIsLocal) emscripten_glGetShaderInfoLog(sh, n, len, log); else glGetShaderInfoLog(sh, n, len, log);
+}
+#else
+#define KB_glGetShaderiv      glGetShaderiv
+#define KB_glGetShaderInfoLog glGetShaderInfoLog
+#endif
+
 static unsigned compileGL(GLenum stage, const std::string &src, const char *label) {
     // Diagnostic: dump every translated shader to $KB_DUMP_GLSL/<n>.<vert|frag>.
     if (const char *dir = getenv("KB_DUMP_GLSL")) {
@@ -400,33 +575,137 @@ static unsigned compileGL(GLenum stage, const std::string &src, const char *labe
         if (FILE *f = fopen(path, "wb")) { fwrite(src.data(), 1, src.size(), f); fclose(f); }
     }
     unsigned s = glCreateShader(stage);
+    if (!s) {
+        // glCreateShader=0 = NO GL CONTEXT on this thread (or context lost) — never a
+        // GLSL problem. (Pre-B38 this happened for loader-thread creates; now deferred.)
+        fprintf(stderr, "[gl] %s: glCreateShader returned 0 (no context on this thread / context lost)\n", label);
+        return 0;
+    }
+    while (glGetError() != GL_NO_ERROR) {}  // drain stale errors so the report below is ours
     const char *p = src.c_str();
     glShaderSource(s, 1, &p, nullptr);
     glCompileShader(s);
     GLint ok = 0;
-    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    KB_glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+#if defined(__EMSCRIPTEN__)
+    // One-shot cross-check: does the GLEW/funcptr path agree with the direct call?
+    {
+        static bool checked = false;
+        if (!checked) {
+            checked = true;
+            GLint okGlew = 0;
+            glGetShaderiv(s, GL_COMPILE_STATUS, &okGlew);
+            if (okGlew != ok)
+                fprintf(stderr, "[gl] GETTER MISMATCH: glGetShaderiv direct=%d via-GLEW=%d "
+                                "(GLEW/fpcast path is mangling getter results)\n", ok, okGlew);
+        }
+    }
+#endif
     if (!ok) {
         char log[2048];
-        glGetShaderInfoLog(s, sizeof(log), nullptr, log);
-        fprintf(stderr, "[gl] %s translate/compile failed:\n%s\nGLSL:\n%s\n", label, log, src.c_str());
+        log[0] = 0;
+        KB_glGetShaderInfoLog(s, sizeof(log), nullptr, log);
+        if (!log[0]) {
+            // status=0 + EMPTY log = the compile is PENDING, not failed: with
+            // KHR_parallel_shader_compile (auto-enabled; present on real GPUs, absent on
+            // SwiftShader) WebGL's COMPILE_STATUS returns false WITHOUT blocking until the
+            // async compile finishes. The shader is fine — the link path resolves it.
+            // One-time deep probe: force completion with a BLOCKING query (any non-status
+            // getter must wait, via the sync GPU-process path — no event loop needed) and
+            // report what the shader REALLY is once forced.
+#if defined(__EMSCRIPTEN__)
+            // RAW-JS probe, bypassing every wasm/emscripten layer: ask the browser itself.
+            // GL_SHADER_TYPE reading 0 via the C path means the driver returned null for
+            // queries — on a LOST context every GL call silently no-ops exactly like this
+            // (and the webglcontextlost event can never fire here: event delivery needs
+            // this worker's event loop, which the render thread never pumps).
+            static int probes = 0;
+            if (probes < 3) {
+                ++probes;
+                EM_ASM({
+                    try {
+                        var sh = GL.shaders[$0];
+                        var lost = GLctx.isContextLost();
+                        var ty = GLctx.getShaderParameter(sh, 0x8B4F /*SHADER_TYPE*/);
+                        var err = GLctx.getError();
+                        var st = GLctx.getShaderParameter(sh, 0x8B81 /*COMPILE_STATUS*/);
+                        var lg = GLctx.getShaderInfoLog(sh);
+                        console.error('[gl] RAW probe shader=' + $0 + ': contextLost=' + lost +
+                                      ' obj=' + (sh ? sh.constructor.name : 'null') +
+                                      ' type=' + ty + ' err=0x' + (err ? err.toString(16) : '0') +
+                                      ' status=' + st + ' log="' + (lg || '') + '"');
+                    } catch (e) { console.error('[gl] RAW probe threw: ' + e.message); }
+                }, (int)s);
+            }
+#endif
+            return s;
+        }
+        fprintf(stderr, "[gl] %s translate/compile failed (shader=%u glErr=0x%x):\n%s\nGLSL:\n%s\n",
+                label, s, glGetError(), log, src.c_str());
         glDeleteShader(s);
         return 0;
     }
     return s;
 }
 
+// Constructors only TRANSLATE (pure CPU, any thread). The GL compile happens lazily
+// in glShader() on the thread that links/draws, which is the one with the GL context
+// current — see the note in gl_shader.h (loader threads have no context on the
+// de-proxied web build; glCreateShader there returns 0 with an empty info log).
 GLVertexShader::GLVertexShader(IDirect3DDevice9 *device, const DWORD *function) : device_(device) {
     bool isPixel = false;
-    if (TranslateD3D9Shader(function, glsl_, &isPixel) && !isPixel)
+    translatedOk_ = TranslateD3D9Shader(function, glsl_, &isPixel) && !isPixel;
+}
+unsigned GLVertexShader::glShader() {
+    if (!shader_ && translatedOk_ && !compileFailed_) {
         shader_ = compileGL(GL_VERTEX_SHADER, glsl_, "vertex shader");
+        if (!shader_) compileFailed_ = true;   // latch: print/compile once, not every draw
+    }
+    return shader_;
 }
 GLVertexShader::~GLVertexShader() { if (shader_) glDeleteShader(shader_); }
 HRESULT WINAPI GLVertexShader::GetDevice(IDirect3DDevice9 **pp) { if (!pp) return E_INVALIDARG; *pp = device_; if (device_) device_->AddRef(); return D3D_OK; }
 
+// Walk the token stream to its END marker (0x0000FFFF), skipping comment blocks, so the
+// bytecode can be copied for shadow-variant retranslation.
+static size_t shaderTokenLen(const DWORD *t) {
+    if (!t) return 0;
+    size_t n = 1;   // version token
+    while (t[n] != 0x0000FFFFu) {
+        if ((t[n] & 0xFFFFu) == 0xFFFEu) n += ((t[n] >> 16) & 0x7FFF) + 1;  // comment block
+        else ++n;
+        if (n > (1u << 20)) return 0;   // runaway guard: malformed stream
+    }
+    return n + 1;
+}
+
 GLPixelShader::GLPixelShader(IDirect3DDevice9 *device, const DWORD *function) : device_(device) {
     bool isPixel = false;
-    if (TranslateD3D9Shader(function, glsl_, &isPixel) && isPixel)
-        shader_ = compileGL(GL_FRAGMENT_SHADER, glsl_, "pixel shader");
+    translatedOk_ = TranslateD3D9Shader(function, glsl_, &isPixel, 0, &samplerMask_) && isPixel;
+    if (translatedOk_) {
+        size_t n = shaderTokenLen(function);
+        if (n) func_.assign(function, function + n);
+    }
+}
+unsigned GLPixelShader::glShader(unsigned shadowMask) {
+    shadowMask &= samplerMask_;          // only samplers this shader actually reads
+    if (shadowMask == 0 || func_.empty()) {
+        if (!shader_ && translatedOk_ && !compileFailed_) {
+            shader_ = compileGL(GL_FRAGMENT_SHADER, glsl_, "pixel shader");
+            if (!shader_) compileFailed_ = true;   // latch: print/compile once, not every draw
+        }
+        return shader_;
+    }
+    auto it = variants_.find(shadowMask);
+    if (it != variants_.end()) return it->second;
+    // Retranslate with the masked samplers typed sampler2DShadow (texldp becomes the
+    // depth-compared textureProj — D3D9 hardware-shadow semantics) and compile.
+    std::string glsl; bool isPix = false;
+    unsigned gl = 0;
+    if (TranslateD3D9Shader(func_.data(), glsl, &isPix, shadowMask) && isPix)
+        gl = compileGL(GL_FRAGMENT_SHADER, glsl, "pixel shader (shadow variant)");
+    variants_[shadowMask] = gl;          // 0 = failed; cached so we never retry per draw
+    return gl;
 }
 GLPixelShader::~GLPixelShader() { if (shader_) glDeleteShader(shader_); }
 HRESULT WINAPI GLPixelShader::GetDevice(IDirect3DDevice9 **pp) { if (!pp) return E_INVALIDARG; *pp = device_; if (device_) device_->AddRef(); return D3D_OK; }

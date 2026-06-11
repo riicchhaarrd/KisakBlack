@@ -37,6 +37,13 @@
 #include <emscripten.h>            // emscripten_get_now (proxy self-test)
 #include <emscripten/html5.h>
 #include <emscripten/html5_webgl.h>
+#include <pthread.h>               // g_kbGLThread (GL-thread detection, gl_resources.cpp)
+
+// Defined in gl_resources.cpp; set below when the WebGL2 context is created so the
+// resource classes can detect off-GL-thread calls and defer them. Declared at file
+// scope (the class below sits in an anonymous namespace, which would otherwise give
+// a block-scope extern internal linkage).
+extern pthread_t g_kbGLThread;
 
 // Defined in src/platform/sdl/sdl_events.cpp — tells the HTML5 input layer the engine
 // backbuffer size so it can scale mouse coordinates from CSS pixels.
@@ -46,6 +53,14 @@ extern "C" void WebInput_SetResolution(int w, int h);
 extern unsigned long g_kbOcclGetData, g_kbEventWaits, g_kbProgLinks;
 extern unsigned long g_kbTexUploads, g_kbTexBytes, g_kbBufBytes;
 extern unsigned long g_kbDraws, g_kbReadbacks, g_kbPresentEnter;
+extern unsigned long g_kbBatchedDraws, g_kbBatchFlushes;  // draw batcher (gl_d3d9_draw.cpp)
+extern unsigned long g_kbSkipPending, g_kbBuiltinFall;    // dropped/degraded draws (gl_program.cpp)
+extern unsigned long g_kbBlits;                           // StretchRect blits (gl_surface_ops.cpp)
+extern int g_kbRaceParity;                                // SMP parity of the frame being rendered
+extern int g_kbHasMultiDraw;                              // multi-draw ext availability
+extern int g_kbCtxIsLocal;                                // 1 = worker-local context
+extern int g_kbBatchEnable, g_kbCoalesceEnable;           // opt-in perf toggles (ENV)
+extern unsigned long g_kbGLCtxHandle;                     // context handle for thread-attach
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -53,7 +68,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B26 (worker-cmd name tracer) ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B91 (flicker FIXED — no-derived-planes walk; diagnostics stripped) ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -61,6 +76,7 @@ public:
         // scale from CSS pixels into this space.
         emscripten_set_canvas_element_size("#canvas", desc.width, desc.height);
         WebInput_SetResolution(desc.width, desc.height);
+        cw_ = desc.width; ch_ = desc.height;
 
         EmscriptenWebGLContextAttributes attrs;
         emscripten_webgl_init_context_attributes(&attrs);
@@ -76,14 +92,67 @@ public:
         attrs.renderViaOffscreenBackBuffer = true;
         attrs.proxyContextToMainThread  = EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK;
 
+        // Which mode will we get? If the transferred OffscreenCanvas reached this worker
+        // it's in GL.offscreenCanvases and the context below is LOCAL; otherwise the
+        // create falls back to PROXY. The transfer has proven flaky run-to-run — this
+        // line tells us which happened and what the worker actually received.
+        EM_ASM({
+            try {
+                var keys = (typeof GL === 'object' && GL.offscreenCanvases)
+                    ? Object.keys(GL.offscreenCanvases).filter(function (k) { return GL.offscreenCanvases[k]; }) : [];
+                var mc = Module['canvas'];
+                console.error('[gl] worker canvas probe: offscreenCanvases=[' + keys.join(',') + '] ' +
+                              'Module.canvas=' + (mc ? (typeof OffscreenCanvas !== 'undefined' && mc instanceof OffscreenCanvas ? 'OffscreenCanvas' : 'other') : 'null') +
+                              ' -> ' + (keys.length ? 'LOCAL context expected' : 'PROXY fallback expected'));
+            } catch (e) {}
+        });
         ctx_ = emscripten_webgl_create_context("#canvas", &attrs);
         if (ctx_ <= 0) {
             fprintf(stderr, "[gl] emscripten_webgl_create_context(#canvas) failed: %d\n", (int)ctx_);
+            // failed:0 with the canvas present = getContext('webgl2') returned null. After
+            // a prior WebGL crash Chrome BLOCKLISTS new contexts until a full browser
+            // restart — tell the user instead of silently retrying into the same wall.
+            fprintf(stderr, "[gl] If a previous run crashed/lost the GL context, Chrome blocks new WebGL "
+                            "contexts until the browser is FULLY restarted (check chrome://gpu).\n");
             return false;
         }
+        // Loud context-loss sentinel: a lost context makes every subsequent GL call a
+        // silent no-op (glCreateShader returns 0 with an empty info log -> "shader
+        // compile failed" + black world). Knowing WHEN it dies pins the trigger.
+        EM_ASM({
+            var c = Module['canvas'];
+            if (c && c.addEventListener) {
+                c.addEventListener('webglcontextlost', function (e) {
+                    console.error('[gl] *** WEBGL CONTEXT LOST *** (render worker canvas)', e && e.statusMessage || '');
+                });
+            }
+        });
         if (emscripten_webgl_make_context_current(ctx_) != EMSCRIPTEN_RESULT_SUCCESS) {
             fprintf(stderr, "[gl] emscripten_webgl_make_context_current failed\n");
             return false;
+        }
+        // Record the GL-owning thread: gl_resources.cpp defers resource creation/uploads
+        // issued from any OTHER thread (loader threads) to bind time on this one.
+        g_kbGLThread = pthread_self();
+        // Publish the handle so OTHER threads that issue GL (frontend-inline render
+        // work / r_smp_backend 0) can attach it to their TLS — see KB_EnsureCtxOnThread.
+        g_kbGLCtxHandle = (unsigned long)ctx_;
+        // Multi-draw batching support (gl_d3d9_draw.cpp): enable the extension that lets
+        // one call submit N draws with varying index ranges AND base vertices.
+        {
+            // Is this context LOCAL to the worker, or PROXIED to another thread? Direct
+            // emscripten_gl* calls (the trustworthy getters + the multi-draw entry point)
+            // execute against the worker's GLctx and are ONLY valid when local; on the
+            // proxied path everything must ride the proxy-aware dispatch instead.
+            g_kbCtxIsLocal = EM_ASM_INT({
+                return (typeof GL !== 'undefined' && GL.currentContextIsProxied) ? 0 : 1;
+            });
+            g_kbHasMultiDraw = (g_kbCtxIsLocal && emscripten_webgl_enable_extension(
+                ctx_, "WEBGL_multi_draw_instanced_base_vertex_base_instance")) ? 1 : 0;
+            g_kbBatchEnable    = getenv("KB_BATCH")    ? 1 : 0;
+            g_kbCoalesceEnable = getenv("KB_COALESCE") ? 1 : 0;
+            fprintf(stderr, "[gl] ctxLocal=%d multi_draw=%d batch=%d coalesce=%d\n",
+                    g_kbCtxIsLocal, g_kbHasMultiDraw, g_kbBatchEnable, g_kbCoalesceEnable);
         }
         // GLEW emulation still maps the entry points the engine calls onto the active
         // WebGL2 context; init it so glew* tables are populated on this worker.
@@ -97,15 +166,74 @@ public:
         double t0 = emscripten_get_now();
         for (int i = 0; i < 100; ++i) glGetError();
         double perGet = (emscripten_get_now() - t0) / 100.0;
-        fprintf(stderr, "[gl] WebGL2 ctx=%d; returning GL call = %.4f ms (proxied)\n",
+        fprintf(stderr, "[gl] WebGL2 ctx=%d; returning GL call = %.4f ms (~0.1=proxied, ~0.001=local)\n",
                 (int)ctx_, perGet);
+        // Which device/driver actually backs THIS context: on de-proxy builds Chrome can
+        // hand the worker's OffscreenCanvas a different backend than the page canvas
+        // (e.g. SwiftShader fallback while the page gets the real GPU) with a stricter
+        // GLSL compiler — the prime suspect when shaders compile proxied but fail local.
+        fprintf(stderr, "[gl] VENDOR='%s' RENDERER='%s' VERSION='%s'\n",
+                (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER),
+                (const char *)glGetString(GL_VERSION));
+        // Uniform-vector limits of THIS context. vs_3_0 shaders use up to 256 const regs
+        // (vsc[256]) + our injected uniforms; the GLES3 guaranteed minimum is exactly 256
+        // vertex / 224 fragment vectors, so a min-spec compiler rejects the big world
+        // shaders ("too many uniforms") while small menu shaders pass — the prime suspect
+        // for world-only compile failures on the de-proxied worker context.
+        {
+            GLint vu = 0, fu = 0;
+            glGetIntegerv(GL_MAX_VERTEX_UNIFORM_VECTORS, &vu);
+            glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_VECTORS, &fu);
+            fprintf(stderr, "[gl] MAX_VERTEX_UNIFORM_VECTORS=%d MAX_FRAGMENT_UNIFORM_VECTORS=%d\n",
+                    (int)vu, (int)fu);
+        }
         return true;
     }
     ~EmWebGLContext() override { if (ctx_ > 0) emscripten_webgl_destroy_context(ctx_); }
     void  MakeCurrent() override        { if (ctx_ > 0) emscripten_webgl_make_context_current(ctx_); }
     void  SwapBuffers() override {
         ++g_kbPresentEnter;            // reached present (before commit_frame) this frame
+        // Synchronous lost-context poll: the webglcontextlost EVENT can never fire on this
+        // worker (event delivery needs the event loop, which this thread never pumps), but
+        // isContextLost() is a plain synchronous query. Prints ONCE at the moment of death
+        // -- a lost context otherwise just silently no-ops every GL call (black screen,
+        // null getters, empty logs) while the engine keeps running.
+        EM_ASM({
+            if (typeof GLctx !== 'undefined' && GLctx && GLctx.isContextLost && GLctx.isContextLost()
+                && !Module.__kbLostPrinted) {
+                Module.__kbLostPrinted = 1;
+                console.error('[gl] *** CONTEXT IS LOST (synchronous poll, pres=' + $0 + ') ***');
+            }
+        }, (int)g_kbPresentEnter);
         emscripten_webgl_commit_frame();
+        // DE-PROXY present (KB_DEPROXY builds): when this worker owns the canvas as an
+        // OffscreenCanvas, browsers only display its frames implicitly when the worker
+        // yields its event loop -- which this render thread (a blocking loop) never does,
+        // so the page stays black despite correct rendering (commit_frame is a no-op for
+        // OffscreenCanvas; the spec removed commit()). Manually grab the committed frame
+        // and ship it zero-copy to the page, which draws it on the #display overlay (see
+        // index.html's KB worker patch). No-op on the stock proxied build (Module.canvas
+        // is not an OffscreenCanvas on this worker there).
+        //
+        // BACKPRESSURE (the empty-log shader failures + GPU crashes): each present
+        // allocates a full-res ImageBitmap (~8MB); unthrottled at 50fps that is ~400MB/s
+        // of GPU-memory churn, and when the page consumes slower than we produce (always,
+        // during map load) the pile-up OOMs the GPU process -- ANGLE then fails shader
+        // compiles with EMPTY info logs and sometimes kills the tab. Allow exactly ONE
+        // frame in flight: the page clears the ack flag (shared heap) after consuming;
+        // until then, DROP frames instead of allocating more bitmaps.
+        {
+            static int s_frameInFlight = 0;  // 1 = an ImageBitmap is in flight to the page
+            EM_ASM({
+                var c = Module['canvas'];
+                if (c && typeof OffscreenCanvas !== 'undefined' && c instanceof OffscreenCanvas) {
+                    if (Atomics.load(HEAP32, $0 >> 2)) return;   // previous frame unconsumed -> drop
+                    Atomics.store(HEAP32, $0 >> 2, 1);
+                    try { var b = c.transferToImageBitmap(); postMessage({ kbFrame: b, kbAck: $0 }, [b]); }
+                    catch (e) { Atomics.store(HEAP32, $0 >> 2, 0); }
+                }
+            }, &s_frameInFlight);
+        }
         // Per-second dump of frame time + the per-frame count of RETURNING GL calls
         // (occlusion polls + event-fence waits), the suspected proxy sync-stall source.
         // One compact [perf] line every 120 frames only — console writes are proxied to
@@ -119,10 +247,19 @@ public:
         if (dt >= 1000.0) {   // time-based: also a render-thread heartbeat (stops if RB stalls)
             // Per-FRAME draws/occlusion/readbacks: draws ~50k => culling off; readbk>0 =>
             // a per-frame GPU-sync readback (GetRenderTargetData) stalling every frame.
-            fprintf(stderr, "[perf/rb] %.1f fps | draws/f=%lu occl/f=%lu readbk/f=%lu bufKB/f=%lu\n",
+            static unsigned long bd0 = 0, bf0 = 0, sk0 = 0, bi0 = 0, pl0 = 0;
+            fprintf(stderr, "[perf/rb] %.1f fps | draws/f=%lu batched/f=%lu flushes/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
                     1000.0 * frames / dt,
-                    (g_kbDraws - dr0) / frames, (g_kbOcclGetData - occl0) / frames,
-                    (g_kbReadbacks - rb0) / frames, (g_kbBufBytes - buf0) / 1024 / frames);
+                    (g_kbDraws - dr0) / frames,
+                    (g_kbBatchedDraws - bd0) / frames, (g_kbBatchFlushes - bf0) / frames,
+                    (g_kbOcclGetData - occl0) / frames,
+                    (g_kbBufBytes - buf0) / 1024 / frames,
+                    (g_kbSkipPending - sk0) / frames,
+                    (g_kbBuiltinFall - bi0) / frames,
+                    g_kbProgLinks - pl0);
+
+            bd0 = g_kbBatchedDraws; bf0 = g_kbBatchFlushes;
+            sk0 = g_kbSkipPending; bi0 = g_kbBuiltinFall; pl0 = g_kbProgLinks;
             t0 = now; frames = 0; occl0 = g_kbOcclGetData; dr0 = g_kbDraws; rb0 = g_kbReadbacks; buf0 = g_kbBufBytes;
         }
     }
@@ -130,6 +267,7 @@ public:
     void *GetProcAddress(const char *n) override { return emscripten_webgl_get_proc_address(n); }
 private:
     EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx_ = 0;
+    int cw_ = 0, ch_ = 0;   // backbuffer size (pixel probe sampling point)
 };
 } // namespace
 

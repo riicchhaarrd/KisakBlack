@@ -31,21 +31,72 @@
 </style>
 </head>
 <body>
+  <!-- On-page error console: surfaces startup failures (e.g. an OffscreenCanvas/de-proxy
+       black-screen) as visible red text to screenshot, even when the dev console is closed. -->
+  <div id="kberr" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#600;color:#fff;font:12px/1.4 monospace;white-space:pre-wrap;max-height:45%;overflow:auto;padding:6px;display:none"></div>
+  <script>
+    (function(){
+      var box=document.getElementById('kberr');
+      window.__kbShowErr=function(m){ try{ box.style.display='block'; box.textContent+=String(m)+"\n"; }catch(e){} };
+      window.addEventListener('error',function(e){ window.__kbShowErr('[error] '+(e.message||e.error||e)+(e.filename?(' @'+e.filename+':'+e.lineno):'')); });
+      window.addEventListener('unhandledrejection',function(e){ window.__kbShowErr('[reject] '+((e.reason&&e.reason.message)||e.reason||e)); });
+    })();
+  </script>
   <div id="bar">
     <button id="pick">Pick Steam "Call of Duty Black Ops" folder</button>
     <label><input type="checkbox" id="fake" /> fake-file smoke test (no data)</label>
     <span id="status">waiting for a data folder…</span>
   </div>
-  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <div style="position:relative">
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <!-- DE-PROXY display overlay: when the render worker owns the canvas as an
+         OffscreenCanvas (KB_DEPROXY build), implicit frame propagation never happens
+         (the render thread never yields its event loop), so the worker posts each frame
+         as an ImageBitmap and we draw it here. pointer-events:none keeps mouse input
+         landing on #canvas. Idle/transparent on the stock proxied build. -->
+    <canvas id="display" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none"></canvas>
+  </div>
+
+  <!-- DE-PROXY frame interception: wrap Worker so we see every pthread worker the
+       runtime spawns and catch the render worker's {kbFrame: ImageBitmap} posts.
+       addEventListener at construction is ordered BEFORE Emscripten's later .onmessage
+       assignment, and stopImmediatePropagation() keeps kbFrame messages out of the
+       pthread message dispatcher. MUST run before blackops.js loads. -->
+  <script>
+    (function () {
+      var dctx = null, disp = null;
+      function kbPresent(bmp, ackPtr) {
+        try {
+          if (!dctx) { disp = document.getElementById('display'); dctx = disp.getContext('bitmaprenderer'); }
+          if (disp.width !== bmp.width || disp.height !== bmp.height) { disp.width = bmp.width; disp.height = bmp.height; }
+          dctx.transferFromImageBitmap(bmp);
+        } catch (e) { try { bmp.close(); } catch (_) {} }
+        // Backpressure ack: the worker drops frames (no new ImageBitmap) until this flag
+        // clears — unconsumed bitmaps piling up OOMed the GPU process (empty-log shader
+        // compile failures + tab crashes). HEAP32 is the shared wasm heap.
+        try { if (ackPtr && window.Module && Module.HEAP32) Atomics.store(Module.HEAP32, ackPtr >> 2, 0); } catch (e) {}
+      }
+      var RealWorker = window.Worker;
+      window.Worker = function (url, opts) {
+        var w = new RealWorker(url, opts);
+        w.addEventListener('message', function (e) {
+          if (e.data && e.data.kbFrame) { e.stopImmediatePropagation(); kbPresent(e.data.kbFrame, e.data.kbAck); }
+        });
+        return w;
+      };
+      window.Worker.prototype = RealWorker.prototype;
+    })();
+  </script>
 
   <!-- Emscripten Module config MUST exist before blackops.js loads. -->
   <script>
     window.Module = {
       canvas: (function () { return document.getElementById('canvas'); })(),
-      arguments: [],                 // engine cmdline (e.g. "+set r_fullscreen 0")
+      arguments: ['+devmap','mp_nuked'],   // engine cmdline; edit the map or add +set dvar value
       noInitialRun: true,            // we call run() ourselves after data is ready
       print:    (t) => console.log(t),
-      printErr: (t) => console.warn(t),
+      printErr: (t) => { console.warn(t); try { if (/error|abort|exception|fail|fatal|GL_INVALID|context/i.test(t)) window.__kbShowErr && window.__kbShowErr(t); } catch(e){} },
+      onAbort:  (w) => { try { window.__kbShowErr && window.__kbShowErr('[abort] ' + w); } catch(e){} },
       setStatus: (t) => { if (t) document.getElementById('status').textContent = t; },
       // NOTE: Emscripten's default $HOME is already '/home/web_user' (see getEnvStrings),
       // so getenv("HOME") is non-empty and SHGetFolderPathA() resolves the engine's
@@ -56,6 +107,18 @@
       // only back the engine's WRITES (console_mp.log, players/, config). FS is on the
       // EXPORTED_RUNTIME_METHODS list, so it's available here in preRun.
       preRun: [function () {
+        // Perf toggles: ?batch=1 / ?coalesce=1 on the page URL reach the GL layer via
+        // ENV (forwarded to pthreads). Defaults are OFF while a post-B45 crash is isolated.
+        try {
+          var q = new URLSearchParams(location.search);
+          if (q.get('batch') === '1')    ENV.KB_BATCH = '1';
+          if (q.get('coalesce') === '1') ENV.KB_COALESCE = '1';
+          if (q.get('shadows') === '1')  ENV.KB_SHADOWS = '1';
+          if (q.get('shadows') === '0')  ENV.KB_SHADOWS = '0';
+          if (q.get('noocc') === '1')    Module.arguments.push('+set', 'r_enableOccluders', '0');
+          if (q.get('dumpenv') === '1')  ENV.KB_DUMPENV = '1';
+          if (q.get('noportal') === '1') Module.arguments.push('+set', 'r_kbNoPortal', '1');
+        } catch (e) {}
         try {
           var mk = (p) => { try { FS.mkdirTree(p); } catch (e) {} };
           mk('/tmp');                       // (runtime already makes it; harmless)

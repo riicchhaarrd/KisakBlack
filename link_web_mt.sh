@@ -89,6 +89,41 @@ else
   LINKFLAGS="$LINKFLAGS -sERROR_ON_UNDEFINED_SYMBOLS=0"
 fi
 
+# DE-PROXY the render thread (KB_DEPROXY=1): transfer the page <canvas> to the BACKEND
+# worker so its WebGL2 context renders LOCALLY instead of marshaling every GL call to the
+# DOM thread (the ~8000-proxied-draws/frame bottleneck -> single-digit fps).
+#
+# Deliberately NO -sOFFSCREENCANVASES_TO_PTHREAD: transferring DOM->main-worker at startup
+# means the later canvas-carrying backend create can't be proxied (the canvas object lives
+# on the blocked main worker), so Emscripten spawns a NESTED worker whose startup handshake
+# queues on the main worker's never-pumped event loop -> boot hang at com=0. Without the
+# startup transfer, the backend pthread_create is proxied to the DOM thread, which still
+# owns the canvas and does transferControlToOffscreen() itself onto a pool worker.
+# The C side passes the raw id "canvas" (win_kernel.cpp), and SwapBuffers manually presents
+# via transferToImageBitmap (glcontext_sdl.cpp) because implicit OffscreenCanvas commit
+# requires an event-loop yield the render thread never makes.
+: "${KB_DEPROXY:=0}"
+if [ "${KB_DEPROXY}" = "1" ]; then
+  LINKFLAGS="$LINKFLAGS -sOFFSCREENCANVAS_SUPPORT=1"
+  echo "  [KB_DEPROXY] OffscreenCanvas de-proxy ENABLED (DOM-thread transfer -> backend worker)"
+fi
+# KB_SAFEHEAP=1: instrument heap accesses (-sSAFE_HEAP=2: OOB only, alignment checks OFF -- the decompiled packed structs trip =1 instantly on a benign dvar access) to catch the wild write
+# that nulls the runtime's main-thread global (the in-game normalize_thread abort) AT
+# THE WRITE SITE with a stack. 2-3x slower — diagnostic runs only.
+: "${KB_SAFEHEAP:=0}"
+if [ "${KB_SAFEHEAP}" = "1" ]; then
+  LINKFLAGS="$LINKFLAGS -sSAFE_HEAP=2"
+  echo "  [KB_SAFEHEAP] SAFE_HEAP instrumentation ENABLED (slow, diagnostic)"
+fi
+
+# KB_GLDEBUG=1: enable Emscripten's dbg() tracing in the GL + canvas-transfer paths
+# (library_html5_webgl / library_pthread). Diagnostic builds only — very chatty.
+: "${KB_GLDEBUG:=0}"
+if [ "${KB_GLDEBUG}" = "1" ]; then
+  LINKFLAGS="$LINKFLAGS -sGL_DEBUG=1"
+  echo "  [KB_GLDEBUG] GL/canvas-transfer dbg tracing ENABLED"
+fi
+
 set -o pipefail
 em++ $LINKFLAGS "$OBJDIR"/*.o -o "$OUTDIR/blackops.js" 2> "$OUTDIR/link.log"
 rc=$?

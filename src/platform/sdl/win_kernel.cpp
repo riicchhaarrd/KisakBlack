@@ -199,8 +199,14 @@ HANDLE CreateThread(void *, SIZE_T, LPTHREAD_START_ROUTINE start, void *param, D
     if (g_kbTransferCanvasToNextThread) {
         g_kbTransferCanvasToNextThread = false;
         pthread_attr_init(&attr);
-        int r = emscripten_pthread_attr_settransferredcanvases(&attr, "#canvas");
-        fprintf(stderr, "[kb] backend thread: transfer '#canvas' -> settransferredcanvases=%d "
+        // MUST be the raw DOM id "canvas", NOT the selector "#canvas": on a worker the
+        // '#canvas' token resolves via Module['canvas'].id, but Module['canvas'] here is an
+        // OffscreenCanvas (transferred at startup) which has no .id -> the lookup misses and
+        // pthread_create SILENTLY creates the thread without the canvas (no error, still
+        // proxied). The plain name hits GL.offscreenCanvases['canvas'] directly
+        // (library_pthread.js keys transferred canvases by DOM id).
+        int r = emscripten_pthread_attr_settransferredcanvases(&attr, "canvas");
+        fprintf(stderr, "[kb] backend thread: transfer 'canvas' -> settransferredcanvases=%d "
                         "(isPthread=%d)\n", r, emscripten_is_main_runtime_thread() ? 0 : 1);
         pattr = &attr;
     }

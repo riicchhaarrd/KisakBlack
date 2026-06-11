@@ -9,6 +9,8 @@
 #include "gl_format.h"
 
 #include <GL/glew.h>
+extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
+
 
 // --- Back buffer / swap chain ----------------------------------------------
 //
@@ -22,6 +24,18 @@ GLSurface *GLDevice::backBufferSurface() {
                                     D3DFMT_A8R8G8B8, GLBackbufferTag{});
     return backBuffer_;
 }
+
+// "Back buffer" source/destination enums: on Emscripten the default framebuffer is the
+// EMULATED offscreen-backbuffer FBO (renderViaOffscreenBackBuffer), where GL_BACK is an
+// INVALID enum — readBuffer/drawBuffer must name GL_COLOR_ATTACHMENT0 (this was the
+// per-frame "readBuffer: invalid read buffer" console spam). Native GL keeps GL_BACK.
+#if defined(__EMSCRIPTEN__)
+static const GLenum kBackbufferReadEnum = GL_COLOR_ATTACHMENT0;
+static const GLenum kBackbufferDrawEnum = GL_COLOR_ATTACHMENT0;
+#else
+static const GLenum kBackbufferReadEnum = GL_BACK;
+static const GLenum kBackbufferDrawEnum = GL_BACK;
+#endif
 
 HRESULT WINAPI GLDevice::GetBackBuffer(UINT, UINT, D3DBACKBUFFER_TYPE, IDirect3DSurface9 **pp) {
     if (!pp) return E_INVALIDARG;
@@ -51,7 +65,7 @@ HRESULT WINAPI GLSwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) 
     std::vector<unsigned char> &shadow = dst->shadow();
     if (shadow.size() < (size_t)w * h * 4) shadow.assign((size_t)w * h * 4, 0);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glReadBuffer(GL_BACK);
+    glReadBuffer(kBackbufferReadEnum);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     extern unsigned long g_kbReadbacks; ++g_kbReadbacks;
     glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_BGRA, GL_UNSIGNED_BYTE, shadow.data());
@@ -84,6 +98,7 @@ HRESULT WINAPI GLDevice::CreateDepthStencilSurface(UINT Width, UINT Height, D3DF
 // Read a render target back into a system-memory surface for CPU access.
 HRESULT WINAPI GLDevice::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
                                              IDirect3DSurface9 *pDestSurface) {
+    KB_FlushBatchedDraws();
     GLSurface *src = static_cast<GLSurface *>(pRenderTarget);
     GLSurface *dst = static_cast<GLSurface *>(pDestSurface);
     if (!src || !dst || !src->texName()) return E_FAIL;
@@ -105,7 +120,7 @@ HRESULT WINAPI GLDevice::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     extern unsigned long g_kbReadbacks; ++g_kbReadbacks;
     glReadPixels(0, 0, w, h, fmt, type, dst->shadow().data());
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, fboActive_ ? fbo_ : 0);   // restore the active RT
     glDeleteFramebuffers(1, &fbo);
     return D3D_OK;
 }
@@ -117,6 +132,7 @@ HRESULT WINAPI GLDevice::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget,
 HRESULT WINAPI GLDevice::StretchRect(IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect,
                                      IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
                                      D3DTEXTUREFILTERTYPE Filter) {
+    KB_FlushBatchedDraws();
     extern unsigned long g_kbBlits; ++g_kbBlits;
     GLSurface *src = static_cast<GLSurface *>(pSourceSurface);
     GLSurface *dst = static_cast<GLSurface *>(pDestSurface);
@@ -132,7 +148,7 @@ HRESULT WINAPI GLDevice::StretchRect(IDirect3DSurface9 *pSourceSurface, const RE
     GLuint fbos[2] = {0, 0};
     if (src->isBackbuffer()) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-        glReadBuffer(GL_BACK);
+        glReadBuffer(kBackbufferReadEnum);
     } else {
         glGenFramebuffers(1, &fbos[0]);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, fbos[0]);
@@ -141,7 +157,7 @@ HRESULT WINAPI GLDevice::StretchRect(IDirect3DSurface9 *pSourceSurface, const RE
     }
     if (dst->isBackbuffer()) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glDrawBuffer(GL_BACK);
+        glDrawBuffer(kBackbufferDrawEnum);
     } else {
         glGenFramebuffers(1, &fbos[1]);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbos[1]);
@@ -150,8 +166,11 @@ HRESULT WINAPI GLDevice::StretchRect(IDirect3DSurface9 *pSourceSurface, const RE
     }
     glBlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, GL_COLOR_BUFFER_BIT,
                       Filter == D3DTEXF_NONE ? GL_NEAREST : GL_LINEAR);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    // RESTORE the device's ACTIVE render target (binds both READ and DRAW): leaving the
+    // draw framebuffer at 0 sent every draw between a mid-pass resolve and the next
+    // SetRenderTarget to the WRONG framebuffer — invisible geometry for the rest of the
+    // pass, varying with FX/command timing (the world flicker candidate).
+    glBindFramebuffer(GL_FRAMEBUFFER, fboActive_ ? fbo_ : 0);
     if (fbos[0]) glDeleteFramebuffers(1, &fbos[0]);
     if (fbos[1]) glDeleteFramebuffers(1, &fbos[1]);
     return D3D_OK;
