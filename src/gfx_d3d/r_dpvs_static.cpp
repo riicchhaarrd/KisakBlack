@@ -1021,9 +1021,20 @@ bool __cdecl R_CalcSurfaceNoDynamicShadow(unsigned int bits, GfxSurface *localSu
                                                      + (float)(localSurfaces[indexLow].bounds[index2][2] * dpvsGlob.sunShadow.viewDir[2]))
                                      - dpvsGlob.sunShadow.viewDirDist) > dpvsGlob.sunShadow.sunShadowDrawDist) << 25)
                  | HIDWORD(surfaceMaterials->packed) & 0xFDFFFFFF;
-            //*(unsigned int *)&surfaceMaterials->fields = surfaceMaterials->fields;
-            surfaceMaterials->packed = surfaceMaterials->packed;
-            HIDWORD(surfaceMaterials->packed) = v3;
+            // RACE FIX (the SMP world flicker): this runs on a CULL WORKER while the
+            // backend renders the previous frame from the SAME shared surface array.
+            // The decompiled 64-bit self-assign (`packed = packed`) was an x86 artifact,
+            // but in C it is a real 64-bit load+store that clang merges with the flag
+            // write into ONE non-atomic 64-bit store of the WHOLE field — including the
+            // material bits in the low dword. A torn read on the backend = garbage
+            // material = the surface vanishes for that frame. The value only CHANGES in
+            // motion (it is a view-distance flag), which is why static scenes never
+            // showed it. Update ONLY the high dword, atomically, and only on change.
+            {
+                unsigned int *hi = (unsigned int *)&surfaceMaterials->packed + 1;
+                if (__atomic_load_n(hi, __ATOMIC_RELAXED) != (unsigned int)v3)
+                    __atomic_store_n(hi, (unsigned int)v3, __ATOMIC_RELAXED);
+            }
         }
         ++indexLow;
         bit >>= 1;

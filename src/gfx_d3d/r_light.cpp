@@ -734,6 +734,13 @@ int __cdecl R_AllocDrawSurf(
         primDrawSurfPos = _InterlockedExchangeAdd(&frontEndDataOut->primDrawSurfPos, 0x200u);
         if ( primDrawSurfPos >= 0x10000 )
         {
+#if defined(__EMSCRIPTEN__)
+            // SILENT GEOMETRY DROP: the 64K primDrawSurf buffer (128 x 512 chunks, the
+            // position is packed into 16 bits of the drawSurf key so it CANNOT grow) is
+            // full — every further surface this frame is simply not drawn. Which ones
+            // get eaten depends on worker allocation order = random near meshes popping.
+            { extern unsigned long g_kbPrimDrop; ++g_kbPrimDrop; }
+#endif
             delayedCmdBuf->primDrawSurfSize = 0;
             R_WarnOncePerFrame(R_WARN_PRIM_DRAW_SURF_BUFFER_SIZE);
             return 0;

@@ -1,4 +1,5 @@
 #include "r_world_lod.h"
+#include <math.h>
 #include <universal/q_shared.h>
 #include "r_init.h"
 #include <universal/com_memory.h>
@@ -225,91 +226,36 @@ void __cdecl R_WorldLod_FrameUpdate(float curTime, float *camPos, int localClien
 // local variable allocation has failed, the output may be wrong!
 void    UpdateChain(int index, const float *inputCamPos, float dt, int localClientNum)
 {
-    int v5; // [esp+Ch] [ebp-A8h]
-    bool v6; // [esp+13h] [ebp-A1h]
-    float lodInfos; // [esp+14h] [ebp-A0h]
-    int curLevel; // [esp+18h] [ebp-9Ch] BYREF
-    float v9; // [esp+1Ch] [ebp-98h] OVERLAPPED
-    float camDist; // [esp+20h] [ebp-94h]
-    float v11; // [esp+24h] [ebp-90h]
-    float v12; // [esp+28h] [ebp-8Ch]
-    float v13; // [esp+2Ch] [ebp-88h]
-    float v14; // [esp+30h] [ebp-84h]
-    float v15; // [esp+34h] [ebp-80h]
-    float v16; // [esp+38h] [ebp-7Ch]
-    float v17; // [esp+3Ch] [ebp-78h]
-    float v18; // [esp+40h] [ebp-74h]
-    math::Position3 lodPos; // [esp+44h] [ebp-70h]
-    int v20; // [esp+54h] [ebp-60h]
-    float v21; // [esp+5Ch] [ebp-58h]
-    float v22; // [esp+60h] [ebp-54h]
-    float v23; // [esp+64h] [ebp-50h]
-    float v24; // [esp+68h] [ebp-4Ch]
-    float v25; // [esp+6Ch] [ebp-48h]
-    float v26; // [esp+70h] [ebp-44h]
-    math::Position3 camPos; // [esp+74h] [ebp-40h]
-    int v28; // [esp+84h] [ebp-30h]
-    float v29; // [esp+94h] [ebp-20h]
-    float v30; // [esp+98h] [ebp-1Ch]
-    float v31; // [esp+9Ch] [ebp-18h]
-    GfxWorldLodChain *v32; // [esp+A0h] [ebp-14h]
-    LodChainState *v33; // [esp+A4h] [ebp-10h]
-    //int v34; // [esp+A8h] [ebp-Ch]
-    //const GfxWorldLodChain *lodChain; // [esp+ACh] [ebp-8h]
-    //const GfxWorldLodChain *retaddr; // [esp+B4h] [ebp+0h]
+    // REWRITTEN from the decompile (IDA: "local variable allocation has failed, the
+    // output may be wrong!"). The original stored the camera-to-chain delta into
+    // SEPARATE locals (one of them an int!) and read them back as a contiguous vec3
+    // through (math::Dir3 *)&curLevel — UB stack aliasing that Clang lays out however
+    // it likes, so math::Abs returned GARBAGE distance varying per frame -> the world
+    // LOD level flapped -> distant world geometry faded/popped in and out every frame
+    // (the long-standing mesh-pop flicker). Plain, well-defined distance math instead.
+    LodChainState *state = &s_lodState[localClientNum][index];
+    GfxWorldLodChain *chain = &rgp.world->worldLodChains[index];
 
-    //v34 = a1;
-    //lodChain = retaddr;
-    v33 = &s_lodState[localClientNum][index];
-    v32 = &rgp.world->worldLodChains[index];
-    v31 = *inputCamPos;
-    v30 = inputCamPos[1];
-    v29 = inputCamPos[2];
-    camPos.v.y = v31;
-    camPos.v.z = v30;
-    camPos.v.w = v29;
-    v28 = 0;
-    v24 = v31;
-    v25 = v30;
-    v26 = v29;
-    camPos.v.x = 0.0f;
-    v23 = v32->origin[0];
-    v22 = v32->origin[1];
-    v21 = v32->origin[2];
-    lodPos.v.y = v23;
-    lodPos.v.z = v22;
-    lodPos.v.w = v21;
-    v20 = 0;
-    v16 = v23;
-    v17 = v22;
-    v18 = v21;
-    lodPos.v.x = 0.0f;
-    v12 = v31 - v23;
-    v13 = v30 - v22;
-    v14 = v29 - v21;
-    v15 = 0.0 - 0.0;
-    *(float *)&curLevel = v31 - v23;
-    v9 = v30 - v22;
-    camDist = v29 - v21;
-    v11 = 0.0 - 0.0;
-    lodInfos = math::Abs((const math::Dir3 *)&curLevel);
-    v6 = !r_reflectionProbeGenerate->current.enabled && r_worldLod->current.enabled;
-    v5 = 0;
-    if ( v6 )
+    float dx = inputCamPos[0] - chain->origin[0];
+    float dy = inputCamPos[1] - chain->origin[1];
+    float dz = inputCamPos[2] - chain->origin[2];
+    float camDist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+    int level = 0;
+    if (!r_reflectionProbeGenerate->current.enabled && r_worldLod->current.enabled)
     {
-        while ( lodInfos > rgp.world->worldLodInfos[v32->firstLodInfo + v5].dist && v5 < v32->lodInfoCount )
-            ++v5;
-        if ( lodInfos > v32->lastDist )
-            ++v5;
+        while (level < chain->lodInfoCount
+               && camDist > rgp.world->worldLodInfos[chain->firstLodInfo + level].dist)
+            ++level;
+        if (camDist > chain->lastDist)
+            ++level;
     }
     else
     {
-        v5 = 1;
+        level = 1;
     }
-    v33->UpdateLevel(v5, localClientNum);
-    v33->UpdateFade(dt, localClientNum);
-    //LodChainState::UpdateLevel(v33, v5, localClientNum);
-    //LodChainState::UpdateFade(v33, dt, localClientNum);
+    state->UpdateLevel(level, localClientNum);
+    state->UpdateFade(dt, localClientNum);
 }
 
 double __cdecl math::Abs(const math::Dir3 *_v)

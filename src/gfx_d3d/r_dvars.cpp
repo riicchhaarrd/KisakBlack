@@ -116,6 +116,7 @@ const dvar_s *r_skipDrawTris;
 const dvar_s *r_drawWater;
 const dvar_s *r_lockPvs;
 const dvar_s *r_skipPvs;
+const dvar_s *r_kbNoPortal;
 const dvar_s *r_portalBevels;
 const dvar_s *r_portalBevelsOnly;
 const dvar_s *r_singleCell;
@@ -1203,6 +1204,12 @@ void __cdecl R_RegisterDvars()
                                 0,
                                 0x80u,
                                 "Skipt the determination of what is in the potentially visible set (disables most drawing)");
+    r_kbNoPortal = _Dvar_RegisterBool(
+                                "r_kbNoPortal",
+                                0,   // DEFAULT OFF: portal culling ON (the feature). Drawing all cells tanked perf to 2-4fps; the
+                                     // flicker is the lesser evil until the cull is fixed. Set 1 to bypass the portal walk.
+                                0,
+                                "Bypass the portal walk and draw every cell in the view frustum (avoids the BSP/PVS flicker; costs a lot of perf).");
     r_portalBevels = _Dvar_RegisterFloat(
                                          "r_portalBevels",
                                          0.69999999,

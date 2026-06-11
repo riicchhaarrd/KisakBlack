@@ -105,7 +105,16 @@ void __cdecl Sys_WaitWorkerCmdInternal(jqWorkerCmd *name)
     unsigned __int64 startTime; // [esp+8h] [ebp-8h]
 
     startTime = tlPcGetTick().QuadPart;
+#if defined(__EMSCRIPTEN__)
+    // Freeze diag: record which worker-cmd group is being flushed so a frozen heartbeat
+    // ww= names the exact wait that hangs.
+    extern const char *g_kbWaitName;
+    g_kbWaitName = (name && name->module && name->module->Name) ? name->module->Name : "?";
+#endif
     jqSafeFlush(&name->module->Group, 0);
+#if defined(__EMSCRIPTEN__)
+    g_kbWaitName = "-";
+#endif
     if ( Sys_IsMainThread() )
         gMainWaitWorker += tlPcGetTick().QuadPart - startTime;
 }
@@ -114,6 +123,10 @@ void __cdecl Sys_AssistAndWaitWorkerCmdInternal(jqWorkerCmd *name)
 {
     jqBatchGroup *GroupID; // [esp+4h] [ebp-4h]
 
+#if defined(__EMSCRIPTEN__)
+    extern const char *g_kbWaitName;
+    g_kbWaitName = (name && name->module && name->module->Name) ? name->module->Name : "assist?";
+#endif
     if ( name )
         GroupID = &name->module->Group;
     else

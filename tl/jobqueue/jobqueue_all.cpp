@@ -1931,9 +1931,23 @@ void __cdecl jqFlush(jqBatchGroup *GroupID, unsigned __int64 batchCount)
     int  i = 0;
     while (1)
     {
-        // Stop if nothing queued/executing
+        // Stop if nothing queued/executing.
+        // MEMORY ORDERING: workers decrement these counters with a seq_cst atomic
+        // (_InterlockedExchangeAdd) AFTER writing their results (e.g. surfaceVisData). On
+        // x86 (TSO) a plain load of the counter carries implicit acquire ordering, so once
+        // the main thread sees 0 the worker's prior writes are visible. wasm has a WEAK
+        // memory model where a plain load does NOT acquire, so the main thread could observe
+        // the count at 0 yet read a worker's results stale/half-written -> world surfaces
+        // drop out intermittently ("walls flicker/disappear randomly" on the web build).
+        // Use acquire loads here so observing completion synchronizes-with the workers.
+#if defined(__EMSCRIPTEN__)
+        if ((__atomic_load_n(&p_group->QueuedBatchCount, __ATOMIC_ACQUIRE)
+           + __atomic_load_n(&p_group->ExecutingBatchCount, __ATOMIC_ACQUIRE)) == 0)
+            break;
+#else
         if ((p_group->QueuedBatchCount + p_group->ExecutingBatchCount) == 0)
             break;
+#endif
 
         // Stop if a max `batchCount` was specified and we've hit that limit
         if (batchCount && *workerBatchCount == 0)

@@ -3664,7 +3664,21 @@ void __cdecl R_GenerateSortedDrawSurfs(
         PROF_SCOPED("wait for r_dpvs_static");
         Sys_WaitWorkerCmdInternal(&r_dpvs_staticWorkerCmd);
     }
-    
+#if defined(__EMSCRIPTEN__)
+    {
+        // Surface-cull probe: popcount surfaceVisData (written by the r_dpvs_static WORKER
+        // thread) right after the wait that should guarantee it's complete. If this
+        // oscillates while stationary — where cell visibility is stable — the worker
+        // handoff is racy on the web build (walls drop intermittently = the flicker).
+        extern unsigned long g_kbVisSurfs;
+        unsigned long ns = 0;
+        const unsigned char *svd = (const unsigned char *)rgp.world->dpvs.surfaceVisData[0];
+        int sc = rgp.world->models->surfaceCount;
+        for ( int s = 0; s < sc; ++s ) if ( svd[s] ) ++ns;
+        g_kbVisSurfs = ns;
+    }
+#endif
+
     R_AddSkyboxModel(viewParmsDraw->origin);
 
     {

@@ -2911,6 +2911,7 @@ void R_SetRenderTarget(GfxCmdBufContext context, GfxRenderTargetId newTargetId)
     if (pixelCostMode > GFX_PIXEL_COST_MODE_MEASURE_MSEC)
         newTargetId = RB_PixelCost_OverrideRenderTarget(newTargetId);
 
+
     if (newTargetId != context.state->renderTargetId)
     {
         if (r_logFile->current.integer)

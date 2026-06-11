@@ -2116,7 +2116,6 @@ void GlassRenderer::DoMaintenance()
     // Acquire renderer lock
     Sys_WaitInterlockedCompareExchange(&rendererLock.lock, 1, 0);
 
-
     if (!doMaintenance->current.enabled)
     {
         rendererLock.lock = 0;

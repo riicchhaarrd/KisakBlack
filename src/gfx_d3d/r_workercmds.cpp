@@ -417,6 +417,12 @@ int __cdecl fx_drawCallback(jqBatch *batch)
 {
     FxGenerateVertsCmd *data = (FxGenerateVertsCmd *)jqLockData(batch);
 
+#if defined(__EMSCRIPTEN__)
+    // Freeze diag: surface the dynamic-buffer pacing counters that gate this re-queue.
+    extern int g_kbDbcf, g_kbFc;
+    g_kbDbcf = *frontEndDataOut->dynamicBufferCurrentFrame;
+    g_kbFc   = frontEndDataOut->frameCount;
+#endif
     if ( *frontEndDataOut->dynamicBufferCurrentFrame
         && *frontEndDataOut->dynamicBufferCurrentFrame < frontEndDataOut->frameCount )
     {

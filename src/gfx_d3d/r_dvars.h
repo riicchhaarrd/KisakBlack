@@ -115,6 +115,7 @@ extern const dvar_s *r_skipDrawTris;
 extern const dvar_s *r_drawWater;
 extern const dvar_s *r_lockPvs;
 extern const dvar_s *r_skipPvs;
+extern const dvar_s *r_kbNoPortal;   // KB diag (non-cheat): bypass portal walk, draw all cells in frustum
 extern const dvar_s *r_portalBevels;
 extern const dvar_s *r_portalBevelsOnly;
 extern const dvar_s *r_singleCell;

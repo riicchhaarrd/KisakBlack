@@ -113,6 +113,23 @@ int __cdecl R_CellForPoint(const float *origin)
         if ( cellIndex - cellCount < 0 )
             break;
         v1 = &rgp.world->dpvsPlanes.planes[cellIndex - cellCount];
+#if defined(__EMSCRIPTEN__)
+        // THE camera-cell lookup that seeds the whole portal walk. The plane-side test
+        // here is ZERO-epsilon: with the camera near a BSP partition plane (constantly
+        // true while moving along walls / through doorways), wasm's 32-bit per-op rounding
+        // flips the side between frames where native x87 stays consistent -> the descent
+        // lands in the WRONG cell for a frame -> the portal walk culls from the wrong room
+        // -> whole chunks of the real view pop (the web-only motion flicker). Landing in
+        // solid (-1) instead falls into the draw-everything path (the fps spikes).
+        // Accumulate in double so the side decision is at least as accurate as native's.
+        {
+            double d = (double)origin[0] * v1->normal[0]
+                     + (double)origin[1] * v1->normal[1]
+                     + (double)origin[2] * v1->normal[2]
+                     - (double)v1->dist;
+            node = (mnode_t *)((char *)node + 2 * (d <= 0.0) * (node->rightChildOffset - 2) + 4);
+        }
+#else
         node = (mnode_t *)((char *)node
                                          + 2
                                          * ((float)((float)((float)((float)(*origin * v1->normal[0]) + (float)(origin[1] * v1->normal[1]))
@@ -120,6 +137,7 @@ int __cdecl R_CellForPoint(const float *origin)
                                                             - v1->dist) <= 0.0)
                                          * (node->rightChildOffset - 2)
                                          + 4);
+#endif
     }
     return cellIndex - 1;
 }
@@ -2999,6 +3017,23 @@ unsigned int __cdecl R_PortalClipPlanesNoFrustum(
     return planeCount;
 }
 
+#if defined(__EMSCRIPTEN__)
+// Double-precision cross+normalize for the portal side-plane normals below. Mirrors
+// com_math.cpp exactly: Vec3Cross = v0 x v1 (right-handed), Vec3Normalize leaves a
+// zero-length vector unscaled. A few-ULP error in a normal gets multiplied by the
+// |v|~16k winding coords in the plane-distance dot, so the normals must be built at
+// >= native's x87 accuracy too.
+static void KB_CrossNormalizeToFloat(const float *v0, const float *v1, float *out)
+{
+    double c0 = (double)v0[1] * v1[2] - (double)v0[2] * v1[1];
+    double c1 = (double)v0[2] * v1[0] - (double)v0[0] * v1[2];
+    double c2 = (double)v0[0] * v1[1] - (double)v0[1] * v1[0];
+    double len = sqrt(c0 * c0 + c1 * c1 + c2 * c2);
+    if (len > 0.0) { c0 /= len; c1 /= len; c2 /= len; }
+    out[0] = (float)c0; out[1] = (float)c1; out[2] = (float)c2;
+}
+#endif
+
 void __cdecl R_GetSidePlaneNormals(const float (*winding)[3], unsigned int vertexCount, float (*normals)[3])
 {
     float *v3; // [esp+24h] [ebp-620h]
@@ -3025,8 +3060,12 @@ void __cdecl R_GetSidePlaneNormals(const float (*winding)[3], unsigned int verte
             delta[0] = (float)(*winding)[3 * vertexIndexNext] - (float)(*winding)[3 * vertexIndex];
             delta[1] = (float)(*winding)[3 * vertexIndexNext + 1] - (float)(*winding)[3 * vertexIndex + 1];
             delta[2] = (float)(*winding)[3 * vertexIndexNext + 2] - (float)(*winding)[3 * vertexIndex + 2];
+#if defined(__EMSCRIPTEN__)
+            KB_CrossNormalizeToFloat(dpvsGlob.viewOrg, delta, &(*normals)[3 * vertexIndex]);
+#else
             Vec3Cross(dpvsGlob.viewOrg, delta, &(*normals)[3 * vertexIndex]);
             Vec3Normalize(&(*normals)[3 * vertexIndex]);
+#endif
             vertexIndex = vertexIndexNext;
         }
     }
@@ -3044,8 +3083,12 @@ void __cdecl R_GetSidePlaneNormals(const float (*winding)[3], unsigned int verte
         delta[3 * vertexCount + 2] = delta[2];
         for ( vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex )
         {
+#if defined(__EMSCRIPTEN__)
+            KB_CrossNormalizeToFloat(&delta[3 * vertexIndex + 3], &delta[3 * vertexIndex], &(*normals)[3 * vertexIndex]);
+#else
             Vec3Cross(&delta[3 * vertexIndex + 3], &delta[3 * vertexIndex], &(*normals)[3 * vertexIndex]);
             Vec3Normalize(&(*normals)[3 * vertexIndex]);
+#endif
         }
     }
 }
@@ -3312,10 +3355,22 @@ bool __cdecl R_ShouldSkipPortal(const GfxPortal *portal, const DpvsPlane *planes
 
 double __cdecl R_DpvsPlaneDistToEye(const DpvsPlane *plane)
 {
+#if defined(__EMSCRIPTEN__)
+    // R_ShouldSkipPortal compares this against 0.0 with NO epsilon: a portal is only
+    // entered while the eye is on its negative side. wasm's 32-bit accumulation makes the
+    // result wobble a few ULPs near zero (eye close to a portal plane, i.e. any doorway you
+    // walk through), flipping the portal between entered/skipped frame to frame -> the whole
+    // cell subtree behind it pops. Accumulate in double (>= native's 80-bit x87 accuracy).
+    return (double)plane->coeffs[0] * dpvsGlob.viewOrg[0]
+         + (double)plane->coeffs[1] * dpvsGlob.viewOrg[1]
+         + (double)plane->coeffs[2] * dpvsGlob.viewOrg[2]
+         + (double)plane->coeffs[3] * dpvsGlob.viewOrg[3];
+#else
     return (float)((float)((float)((float)(plane->coeffs[0] * dpvsGlob.viewOrg[0])
                                                              + (float)(plane->coeffs[1] * dpvsGlob.viewOrg[1]))
                                              + (float)(plane->coeffs[2] * dpvsGlob.viewOrg[2]))
                              + (float)(plane->coeffs[3] * dpvsGlob.viewOrg[3]));
+#endif
 }
 
 char __cdecl R_PortalBehindAnyPlane(const GfxPortal *portal, const DpvsPlane *planes, int planeCount)
@@ -3338,10 +3393,19 @@ char __cdecl R_PortalBehindPlane(const GfxPortal *portal, const DpvsPlane *plane
     v = (float *)portal->vertices;
     for ( c = portal->vertexCount; c; --c )
     {
+#if defined(__EMSCRIPTEN__)
+        // Zero-epsilon reject: the portal survives only if SOME vertex is strictly in
+        // front of the plane. For an edge-on portal every vertex dot hovers at 0 and wasm's
+        // 32-bit rounding flips the verdict per frame (-> subtree pops). Double-accumulate.
+        if ( (double)plane->coeffs[0] * v[0] + (double)plane->coeffs[1] * v[1]
+           + (double)plane->coeffs[2] * v[2] + (double)plane->coeffs[3] > 0.0 )
+            return 0;
+#else
         if ( (float)((float)((float)((float)(plane->coeffs[0] * *v) + (float)(plane->coeffs[1] * v[1]))
                                              + (float)(plane->coeffs[2] * v[2]))
                              + plane->coeffs[3]) > 0.0 )
             return 0;
+#endif
         v += 3;
     }
     return 1;
@@ -3406,12 +3470,25 @@ void __cdecl R_AddVertToPortalHullPoints(GfxPortal *portal, const float *v)
         portal->writable.hullPoints = (float (*)[2])R_AllocHullPoints();
         portal->writable.hullPointCount = 0;
     }
+#if defined(__EMSCRIPTEN__)
+    // Double-accumulate the 2D hull projection: these points feed Com_ConvexHull and the
+    // child clip planes of the next recursion level (same precision story as the chop).
+    portal->writable.hullPoints[portal->writable.hullPointCount][0] =
+        (float)((double)v[0] * portal->hullAxis[0][0]
+              + (double)v[1] * portal->hullAxis[0][1]
+              + (double)v[2] * portal->hullAxis[0][2]);
+    portal->writable.hullPoints[portal->writable.hullPointCount++][1] =
+        (float)((double)v[0] * portal->hullAxis[1][0]
+              + (double)v[1] * portal->hullAxis[1][1]
+              + (double)v[2] * portal->hullAxis[1][2]);
+#else
     portal->writable.hullPoints[portal->writable.hullPointCount][0] = (float)((float)(*v * portal->hullAxis[0][0])
                                                                                                                                                     + (float)(v[1] * portal->hullAxis[0][1]))
                                                                                                                                     + (float)(v[2] * portal->hullAxis[0][2]);
     portal->writable.hullPoints[portal->writable.hullPointCount++][1] = (float)((float)(*v * portal->hullAxis[1][0])
                                                                                                                                                         + (float)(v[1] * portal->hullAxis[1][1]))
                                                                                                                                         + (float)(v[2] * portal->hullAxis[1][2]);
+#endif
 }
 
 GfxHullPointsPool *__cdecl R_AllocHullPoints()
@@ -3496,7 +3573,16 @@ const float (*__cdecl R_ChopPortalWinding(
     float lerpFactor; // [esp+A8h] [ebp-224h]
     int backCount; // [esp+ACh] [ebp-220h]
     int vertexIndex; // [esp+B0h] [ebp-21Ch]
+#if defined(__EMSCRIPTEN__)
+    // Plane distances in DOUBLE on web: the front/back/on classification below uses a
+    // 0.001 epsilon, but a float32 ULP at the |v|~16k world coords of these maps is ~0.002
+    // (bigger than the epsilon). Native keeps 80-bit x87 intermediates so its epsilon holds;
+    // wasm's strict 32-bit IEEE puts the test in the noise -> borderline portals flip as the
+    // camera moves -> cells/walls flicker (web-only). Double restores native-like precision.
+    double distForVert[131]; // [esp+B4h] [ebp-218h]
+#else
     float distForVert[131]; // [esp+B4h] [ebp-218h]
+#endif
     int newVertCount; // [esp+2C0h] [ebp-Ch]
     int frontCount; // [esp+2C4h] [ebp-8h]
     const float *v; // [esp+2C8h] [ebp-4h]
@@ -3505,12 +3591,27 @@ const float (*__cdecl R_ChopPortalWinding(
     backCount = 0;
     for ( vertexIndex = 0; vertexIndex < *vertexCount; ++vertexIndex )
     {
+#if defined(__EMSCRIPTEN__)
+        // Double-precision dot product (see distForVert decl above): no intermediate float
+        // rounding, so the classification epsilon stays meaningful at large world coords.
+        distForVert[vertexIndex] = ((double)plane->coeffs[0] * (double)(*vertsIn)[3 * vertexIndex]
+                                  + (double)plane->coeffs[1] * (double)(*vertsIn)[3 * vertexIndex + 1]
+                                  + (double)plane->coeffs[2] * (double)(*vertsIn)[3 * vertexIndex + 2]
+                                  + (double)plane->coeffs[3])
+                                  - 0.001;
+#else
         distForVert[vertexIndex] = (float)((float)((float)((float)(plane->coeffs[0] * (float)(*vertsIn)[3 * vertexIndex])
                                                                                                          + (float)(plane->coeffs[1] * (float)(*vertsIn)[3 * vertexIndex + 1]))
                                                                                          + (float)(plane->coeffs[2] * (float)(*vertsIn)[3 * vertexIndex + 2]))
                                                                          + plane->coeffs[3])
                                                          - 0.001;
+#endif
         sideForVert[vertexIndex] = 2;
+        // (B82's wide on-plane band REVERTED: keeping verts up to 1 unit behind the
+        // NEAR plane left vertices almost at the eye; the side planes derived from
+        // eye->vert rays went degenerate and stably culled everything behind a portal
+        // in a whole distance band — the "doorframe dead zone". B85's stable-planes
+        // dispatch is the real flicker fix; the band was unnecessary AND harmful.)
         if ( distForVert[vertexIndex] >= -0.001 )
         {
             if ( distForVert[vertexIndex] > 0.001 )
@@ -3556,6 +3657,20 @@ const float (*__cdecl R_ChopPortalWinding(
                     }
                     if ( sideForVert[vertexIndex + 1] != 2 && sideForVert[vertexIndex + 1] != sideForVert[vertexIndex] )
                     {
+#if defined(__EMSCRIPTEN__)
+                        // Compute the plane-edge intersection in double: these output verts
+                        // become the hull points -> child clip planes of the NEXT recursion
+                        // level, so per-op float rounding here compounds level by level.
+                        // (distForVert is double on web; see decl above.)
+                        double lf = distForVert[vertexIndex] / (distForVert[vertexIndex] - distForVert[vertexIndex + 1]);
+                        v = &(*vertsIn)[3 * ((vertexIndex + 1) % *vertexCount)];
+                        (*vertsOut)[3 * newVertCount] = (float)(((double)v[0] - (double)(*vertsIn)[3 * vertexIndex]) * lf
+                                                                                    + (double)(*vertsIn)[3 * vertexIndex]);
+                        (*vertsOut)[3 * newVertCount + 1] = (float)(((double)v[1] - (double)(*vertsIn)[3 * vertexIndex + 1]) * lf
+                                                                                            + (double)(*vertsIn)[3 * vertexIndex + 1]);
+                        (*vertsOut)[3 * newVertCount++ + 2] = (float)(((double)v[2] - (double)(*vertsIn)[3 * vertexIndex + 2]) * lf
+                                                                                                + (double)(*vertsIn)[3 * vertexIndex + 2]);
+#else
                         lerpFactor = distForVert[vertexIndex] / (float)(distForVert[vertexIndex] - distForVert[vertexIndex + 1]);
                         v = &(*vertsIn)[3 * ((vertexIndex + 1) % *vertexCount)];
                         (*vertsOut)[3 * newVertCount] = (float)((float)(*v - (float)(*vertsIn)[3 * vertexIndex]) * lerpFactor)
@@ -3566,6 +3681,7 @@ const float (*__cdecl R_ChopPortalWinding(
                         (*vertsOut)[3 * newVertCount++ + 2] = (float)((float)(v[2] - (float)(*vertsIn)[3 * vertexIndex + 2])
                                                                                                                 * lerpFactor)
                                                                                                 + (float)(*vertsIn)[3 * vertexIndex + 2];
+#endif
                     }
                 }
             }
@@ -4618,6 +4734,39 @@ void __cdecl R_SetupWorldSurfacesDpvs(const GfxViewParms *viewParms, unsigned in
             }
         }
     }
+#if defined(__EMSCRIPTEN__)
+    // Validate the produced occluder planes (decompiled pointer-heavy builder): a
+    // non-finite or non-unit plane wrongly occludes NEAR geometry (models vanish a
+    // frame at a time). Drop any occluder with a bad plane and say so.
+    {
+        int dropped = 0;
+        for (int oi = 0; oi < dpvsGlob.numOccluders; ) {
+            bool bad = false;
+            for (int pi = 0; pi < 5 && !bad; ++pi) {
+                const float *pl = dpvsGlob.occluderPlanes[5 * oi + pi];
+                float len2 = pl[0]*pl[0] + pl[1]*pl[1] + pl[2]*pl[2];
+                if (!(len2 > 0.81f && len2 < 1.21f) ||
+                    !(pl[3] == pl[3]) || pl[3] > 1e9f || pl[3] < -1e9f)
+                    bad = true;
+            }
+            if (bad) {
+                ++dropped;
+                int last = dpvsGlob.numOccluders - 1;
+                if (oi != last)
+                    memcpy(dpvsGlob.occluderPlanes[5 * oi], dpvsGlob.occluderPlanes[5 * last],
+                           5 * 4 * sizeof(float));
+                --dpvsGlob.numOccluders;
+            } else {
+                ++oi;
+            }
+        }
+        if (dropped) {
+            static unsigned n;
+            if (((n++) & 63) == 0)
+                fprintf(stderr, "[kbocc] dropped %d INVALID occluder(s) this frame (decompile-damaged planes)\n", dropped);
+        }
+    }
+#endif
 }
 
 void __cdecl R_EnableOccluder(const char *name, bool enable)
@@ -4725,6 +4874,26 @@ void __cdecl R_AddWorldSurfacesDpvs(const GfxViewParms *viewParms, int cameraCel
         R_ShowLightVisCachePoints(viewParms->origin, dpvsView->frustumPlanes, dpvsView->frustumPlaneCount);
 }
 
+#if defined(__EMSCRIPTEN__)
+static unsigned int prevWalkBits[64];   // last frame's PURE walk output (up to 2048 cells)
+// Dispatch-plane ring pool: worker cmds hold the PLANES POINTER and consume it
+// asynchronously, so each cell needs its own persistent slot (a single static buffer
+// would be clobbered by the next dispatch before workers read it). 256 slots >> max
+// cells dispatched per frame; workers are drained every frame, so wrap is safe.
+static DpvsPlane g_kbDispatchPool[256][18];
+static unsigned  g_kbDispatchIdx;
+static DpvsPlane *KB_BuildDispatchPlanes(const DpvsPlane *parentPlane, int *outCount) {
+    DpvsPlane *slot = g_kbDispatchPool[g_kbDispatchIdx++ & 255];
+    int n = g_dpvsView->frustumPlaneCount;
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; ++i) slot[i] = g_dpvsView->frustumPlanes[i];
+    if (parentPlane && parentPlane != &dpvsGlob.nearPlane)
+        slot[n++] = *parentPlane;
+    *outCount = n;
+    return slot;
+}
+#endif
+
 void __cdecl R_AddWorldSurfacesPortalWalk(int cameraCellIndex)
 {
     GfxCell *v1; // [esp+8h] [ebp-10A8h]
@@ -4753,13 +4922,56 @@ void __cdecl R_AddWorldSurfacesPortalWalk(int cameraCellIndex)
         __debugbreak();
     }
     memset((unsigned __int8 *)dpvsGlob.cellVisibleBits, 0, 4 * ((rgp.world->dpvsPlanes.cellCount + 31) >> 5));
+#if defined(__EMSCRIPTEN__)
+    // TRANSIENT-SOLID FALLBACK (the boundary-crossing pop): stepping across a cell
+    // boundary can put the camera exactly ON the partition plane for a frame ->
+    // R_CellForPoint returns -1. The original panic path (draw ALL cells) was visually
+    // correct but a frame spike; B86's reuse-the-old-cell was WRONG visually (the old
+    // cell's portals can't see the area just entered -> one-frame blink). Correct
+    // answer: replay LAST FRAME'S visible set — looks identical to the previous frame
+    // (no pop), costs the same as a normal frame. Persistent -1 (genuinely out of the
+    // world) still gets the panic path after 15 frames.
+    {
+        static int badStreak = 0;
+        if ( cameraCellIndex >= 0 )
+        {
+            badStreak = 0;
+        }
+        else if ( ++badStreak <= 15 && !r_skipPvs->current.enabled && !r_kbNoPortal->current.enabled )
+        {
+            DpvsView *dv = dpvsGlob.views[scene.dpvs.localClientNum];
+            int dw = (rgp.world->dpvsPlanes.cellCount + 31) >> 5;
+            if (dw > 64) dw = 64;
+            for (int d = 0; d < dw; ++d) {
+                unsigned int keep = prevWalkBits[d];
+                while (keep) {
+                    int b = __builtin_ctz(keep);
+                    keep &= keep - 1;
+                    unsigned int ci = ((unsigned int)d << 5) + (unsigned int)b;
+                    if (ci < rgp.world->dpvsPlanes.cellCount) {
+                        const GfxCell *kc = &rgp.world->cells[ci];
+                        if (!R_CellIsForcedInvisible(kc)) {
+                            R_AddCellSurfacesAndCullGroupsInFrustumDelayed(
+                                kc, dv->frustumPlanes, dv->frustumPlaneCount, dv->frustumPlaneCount);
+                            R_SetCellVisible(kc);
+                        }
+                    }
+                }
+            }
+            return;   // replayed last frame's set; skip the panic path entirely
+        }
+    }
+#endif
     if ( !r_skipPvs->current.enabled )
     {
         dpvsView = dpvsGlob.views[scene.dpvs.localClientNum];
 
         iassert(dpvsView == g_dpvsView);
-        
-        if ( cameraCellIndex < 0 )
+
+        // KB diag toggle: r_kbNoPortal forces the "all cells in the view frustum" path,
+        // bypassing the portal walk / PVS cull entirely. If the in-game flicker stops with
+        // this on, the BSP/PVS cull is the cause; if it persists, the cull is innocent.
+        if ( cameraCellIndex < 0 || r_kbNoPortal->current.enabled )
         {
             for ( i = 0; i < rgp.world->dpvsPlanes.cellCount; ++i )
             {
@@ -4827,8 +5039,64 @@ void __cdecl R_AddWorldSurfacesPortalWalk(int cameraCellIndex)
             else
             {
                 R_VisitPortals(cell, &dpvsGlob.nearPlane, dpvsView->frustumPlanes, dpvsView->frustumPlaneCount);
+#if defined(__EMSCRIPTEN__)
+                // CELL HYSTERESIS — the in-motion flicker fix. ?noportal=1 (walk bypass)
+                // PROVED the portal walk is the flapper: wasm float rounding flips
+                // marginal portal decisions per frame and whole rooms pop while moving.
+                // Precision fixes (8-site double sweep, B82 margins) reduced but never
+                // killed it: the noise compounds through the recursive winding->plane
+                // derivation. So make single-frame flaps IMPOSSIBLE instead: any cell
+                // visible last frame but missing from this frame's walk gets ONE extra
+                // frame, dispatched with plain frustum planes (a superset of any portal
+                // clip -> never culls too much). Cells legitimately leaving view fade one
+                // frame late (imperceptible); decay is automatic because prevBits stores
+                // the PURE walk output, not the kept-alive set.
+                {
+                    unsigned int walkBits[64];
+                    int dw = (rgp.world->dpvsPlanes.cellCount + 31) >> 5;
+                    if (dw > 64) dw = 64;
+                    for (int d = 0; d < dw; ++d) walkBits[d] = dpvsGlob.cellVisibleBits[d];
+                    for (int d = 0; d < dw; ++d) {
+                        unsigned int keep = prevWalkBits[d] & ~walkBits[d];
+                        while (keep) {
+                            int b = __builtin_ctz(keep);
+                            keep &= keep - 1;
+                            unsigned int ci = ((unsigned int)d << 5) + (unsigned int)b;
+                            if (ci < rgp.world->dpvsPlanes.cellCount) {
+                                const GfxCell *kc = &rgp.world->cells[ci];
+                                if (!R_CellIsForcedInvisible(kc)) {
+                                    R_AddCellSurfacesAndCullGroupsInFrustumDelayed(
+                                        kc, dpvsView->frustumPlanes,
+                                        dpvsView->frustumPlaneCount, dpvsView->frustumPlaneCount);
+                                    R_SetCellVisible(kc);
+                                }
+                            }
+                        }
+                    }
+                    for (int d = 0; d < dw; ++d) prevWalkBits[d] = walkBits[d];
+                }
+#endif
             }
         }
+    }
+    {
+        // Flicker probe: popcount the just-computed cell visibility set. Comparing this
+        // between the web (wasm/IEEE) and native (-m32/x87) builds at the SAME camera
+        // position tells us whether the portal walk over-culls on web (fewer cells ->
+        // walls dropped). On web it feeds the heartbeat; on native it prints throttled.
+        unsigned long n = 0;
+        int dwCount = (rgp.world->dpvsPlanes.cellCount + 31) >> 5;
+        for ( int w = 0; w < dwCount; ++w )
+            n += __builtin_popcount(dpvsGlob.cellVisibleBits[w]);
+#if defined(__EMSCRIPTEN__)
+        extern unsigned long g_kbVisCells; extern int g_kbCameraCell;
+        g_kbVisCells = n; g_kbCameraCell = cameraCellIndex;
+#else
+        static int kbCullFrame = 0;
+        if ( (kbCullFrame++ % 60) == 0 )
+            Com_Printf(0, "[kbcull] viscells=%lu / %d   cameraCell=%d\n",
+                       n, rgp.world->dpvsPlanes.cellCount, cameraCellIndex);
+#endif
     }
 }
 
@@ -4891,7 +5159,19 @@ void __cdecl R_VisitPortals(const GfxCell *cell, const DpvsPlane *parentPlane, D
     dpvsGlob.nextFreeHullPoints = (GfxHullPointsPool *)hullPointsPoolArray;
     dpvsGlob.portalQueue = portalQueue;
     dpvsGlob.queuedCount = 0;
+#if defined(__EMSCRIPTEN__)
+    // NO-DERIVED-PLANES WALK: every flicker mechanism traced this session lived in the
+    // walk's DERIVED plane sets (recursive winding chops -> side-plane cross products),
+    // which wobble with tiny camera motion on wasm's strict 32-bit floats. DONT_CLIP
+    // mode makes the whole traversal use only the FIRST-LEVEL planes (frustum + near
+    // plane — stable inputs): R_VisitAllFurtherCells walks the portal graph chopping
+    // against those, collecting every reachable cell. Same stability as r_kbNoPortal
+    // (user-verified flicker-free) at a fraction of the cost — the portal-graph cut
+    // still rejects unreachable/behind cells; B89 trims contents per entry plane.
+    R_VisitPortalsForCell(cell, 0, parentPlane, planes, 0x10u, planeCount, planeCount, 0, DPVS_DONT_CLIP_CHILDREN);
+#else
     R_VisitPortalsForCell(cell, 0, parentPlane, planes, 0x10u, planeCount, planeCount, 0, DPVS_CLIP_CHILDREN);
+#endif
     iteration = 0;
     while ( dpvsGlob.queuedCount )
     {
@@ -5058,10 +5338,22 @@ unsigned int __cdecl R_PortalClipPlanes(
                 v9->coeffs[1] = v10[1];
                 v9->coeffs[2] = v10[2];
                 plane = &planes[planeCount];
+#if defined(__EMSCRIPTEN__)
+                // Double-accumulate the plane distance: stored coeffs[3] is float (fine — native
+                // uses float planes too), but native computes this dot in 80-bit x87 then rounds,
+                // so its stored distance is accurate to a float ULP. wasm's 32-bit accumulation is
+                // WORSE than a float ULP at |v|~16k, tilting the recursion's clip planes -> cells
+                // pop. Accumulate in double, then store float to match native's accuracy.
+                plane->coeffs[3] = (float)(0.001
+                                                 - ((double)plane->coeffs[0] * (double)(*winding)[3 * windingVertIndex]
+                                                  + (double)plane->coeffs[1] * (double)(*winding)[3 * windingVertIndex + 1]
+                                                  + (double)plane->coeffs[2] * (double)(*winding)[3 * windingVertIndex + 2]));
+#else
                 plane->coeffs[3] = 0.001
                                                  - (float)((float)((float)(plane->coeffs[0] * (float)(*winding)[3 * windingVertIndex])
                                                                                  + (float)(plane->coeffs[1] * (float)(*winding)[3 * windingVertIndex + 1]))
                                                                  + (float)(plane->coeffs[2] * (float)(*winding)[3 * windingVertIndex + 2]));
+#endif
                 R_SetDpvsPlaneSides(plane);
                 ++planeCount;
             }
@@ -5391,7 +5683,22 @@ void __cdecl R_VisitPortalsForCell(
 
     if ( !R_CellIsForcedInvisible(cell) )
     {
+#if defined(__EMSCRIPTEN__)
+        // STABLE-PLANES DISPATCH (the flicker fix; ?noportal=1 proved it): cull cell
+        // contents with STABLE planes only — the frustum set PLUS the stored plane of
+        // the portal this cell was entered through (world data, zero noise). The
+        // derived/noisy walk planes flapped surfaces inside visible cells; pure-frustum
+        // (first version) was stable but doubled draw volume (6300 draws/f, 3fps).
+        // frustum+entry-plane keeps the stability and restores most of the cut.
+        {
+            int kbN;
+            DpvsPlane *kbPlanes = KB_BuildDispatchPlanes(parentPlane, &kbN);
+            R_AddCellSurfacesAndCullGroupsInFrustumDelayed(
+                cell, kbPlanes, kbN, g_dpvsView->frustumPlaneCount);
+        }
+#else
         R_AddCellSurfacesAndCullGroupsInFrustumDelayed(cell, planes, planeCount, frustumPlaneCount);
+#endif
         R_SetCellVisible(cell);
     }
     R_SetAncestorListStatus(parentPortal, 1);
@@ -5560,7 +5867,17 @@ void __cdecl R_VisitAllFurtherCells(
     {
         if ( !R_CellIsForcedInvisible(list[i]) )
         {
+#if defined(__EMSCRIPTEN__)
+            // Stable-planes dispatch — see R_VisitPortalsForCell.
+            {
+                int kbN;
+                DpvsPlane *kbPlanes = KB_BuildDispatchPlanes(parentPlane, &kbN);
+                R_AddCellSurfacesAndCullGroupsInFrustumDelayed(
+                    list[i], kbPlanes, kbN, g_dpvsView->frustumPlaneCount);
+            }
+#else
             R_AddCellSurfacesAndCullGroupsInFrustumDelayed(list[i], planes, planeCount, frustumPlaneCount);
+#endif
             R_SetCellVisible(list[i]);
         }
     }

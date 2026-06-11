@@ -375,6 +375,9 @@ GfxDrawConsts g_drawConsts;
 r_backEndGlobals_t backEnd;
 materialCommands_t tess;
 GfxBackEndData *backEndData;
+#if defined(__EMSCRIPTEN__)
+extern "C" void KB_RaceCheckMid(int where);   // SMP race detector, defined above RB_EndFrame
+#endif
 
 int rb_execCmdsMS;
 int rb_swapMS;
@@ -1667,6 +1670,7 @@ void __cdecl R_DrawSurfs(GfxCmdBufContext context, GfxCmdBufState *prepassState,
         processedDrawSurfCount = R_RenderDrawSurfListMaterial(&listArgs, prepassContext);
         listArgs.firstDrawSurfIndex += processedDrawSurfCount;
         ++drawMatCount;
+
     }
 
     context.state->prim.viewStats->drawSurfCount += drawSurfCount;
@@ -4699,6 +4703,76 @@ const GfxBackEndData *RB_PatchStaticModelCache()
     return result;
 }
 
+#if defined(__EMSCRIPTEN__)
+extern unsigned int g_kbRaceSum[6];
+extern const void  *g_kbRaceData;
+extern int          g_kbRaceParity;
+extern "C" unsigned int KB_RaceSum(const void *p, unsigned int bytes);
+
+// Mid-frame leg of the SMP race detector: the EndFrame compare is blind to a
+// trample that REWRITES IDENTICAL BYTES by frame end (exactly what a wrong-parity
+// writer produces at rest) — but a check DURING the walk catches the transient.
+extern "C" void KB_RaceCheckMid(int where) {
+    static int prints = 0;
+    if (prints >= 20 || !backEndData || (const void *)backEndData != g_kbRaceData) return;
+    static bool armed = false;
+    if (!armed) { armed = true; fprintf(stderr, "[kbrace] mid-frame checks active\n"); }
+    unsigned int c0 = (backEndData->commands && backEndData->commands->cmds)
+        ? KB_RaceSum(backEndData->commands->cmds, backEndData->commands->usedTotal) : 0;
+    unsigned int c1 = KB_RaceSum(backEndData->drawSurfs, 8u * backEndData->drawSurfCount);
+    unsigned int c2 = KB_RaceSum(backEndData->surfsBuffer, (unsigned)backEndData->surfPos);
+    unsigned int c5 = KB_RaceSum(backEndData->viewInfo,
+                                 (unsigned)(sizeof(GfxViewInfo) * backEndData->viewInfoCount));
+    if (c0 != g_kbRaceSum[0] || c1 != g_kbRaceSum[1] || c2 != g_kbRaceSum[2] || c5 != g_kbRaceSum[5]) {
+        ++prints;
+        fprintf(stderr, "[kbrace] MID-FRAME trample (at %d): cmds=%d drawSurfs=%d surfsBuffer=%d viewInfo=%d\n",
+                where, c0 != g_kbRaceSum[0], c1 != g_kbRaceSum[1], c2 != g_kbRaceSum[2], c5 != g_kbRaceSum[5]);
+    }
+}
+#endif
+
+#if defined(__EMSCRIPTEN__)
+// SMP race detector verify leg, called at the point this frame's data consumption ends
+// (just before RB_RenderCommandFrame nulls backEndData — RB_EndFrame is too late, the
+// pointer is already gone there, which silently disarmed the B52-B54 detectors).
+extern "C" void KB_RaceCheckEnd(const GfxBackEndData *bed) {
+    if (!bed || (const void *)bed != g_kbRaceData) return;
+    unsigned int c0 = (bed->commands && bed->commands->cmds)
+        ? KB_RaceSum(bed->commands->cmds, bed->commands->usedTotal) : 0;
+    unsigned int c1 = KB_RaceSum(bed->drawSurfs, 8u * bed->drawSurfCount);
+    unsigned int c2 = KB_RaceSum(bed->surfsBuffer, (unsigned)bed->surfPos);
+    unsigned int c5 = KB_RaceSum(bed->viewInfo, (unsigned)(sizeof(GfxViewInfo) * bed->viewInfoCount));
+    static int prints = 0;
+    static bool armed = false;
+    if (!armed) {  // proves the verify leg runs, so silence later means "checked, clean"
+        armed = true;
+        fprintf(stderr, "[kbrace] armed — verifying handed-off frame data each frame\n");
+    }
+    if ((c0 != g_kbRaceSum[0] || c1 != g_kbRaceSum[1] || c2 != g_kbRaceSum[2] || c5 != g_kbRaceSum[5]) && prints < 20) {
+        ++prints;
+        fprintf(stderr, "[kbrace] frame data MODIFIED during render: cmds=%d drawSurfs=%d surfsBuffer=%d viewInfo=%d\n",
+                c0 != g_kbRaceSum[0], c1 != g_kbRaceSum[1], c2 != g_kbRaceSum[2], c5 != g_kbRaceSum[5]);
+    }
+    // Parity-asymmetry stats: if the flicker ALTERNATES with the SMP frame parity
+    // (content right from one s_backEndData buffer, wrong from the other), the two
+    // columns diverge — that means a parity-indexed structure is bad, not a race.
+    {
+        extern unsigned long g_kbDraws;
+        static unsigned long lastDraws, pdraws[2];
+        static unsigned int  psurfs[2], pframes[2];
+        int par = g_kbRaceParity & 1;
+        pdraws[par] += g_kbDraws - lastDraws; lastDraws = g_kbDraws;
+        psurfs[par] += bed->drawSurfCount; pframes[par]++;
+        if (pframes[0] + pframes[1] >= 512) {
+            fprintf(stderr, "[kbpar] p0: f=%u surfs/f=%u draws/f=%lu | p1: f=%u surfs/f=%u draws/f=%lu\n",
+                    pframes[0], pframes[0] ? psurfs[0]/pframes[0] : 0, pframes[0] ? pdraws[0]/pframes[0] : 0,
+                    pframes[1], pframes[1] ? psurfs[1]/pframes[1] : 0, pframes[1] ? pdraws[1]/pframes[1] : 0);
+            pdraws[0] = pdraws[1] = 0; psurfs[0] = psurfs[1] = 0; pframes[0] = pframes[1] = 0;
+        }
+    }
+}
+#endif
+
 void __cdecl RB_EndFrame(char drawType)
 {
     if ( (drawType & 2) != 0 )
@@ -4979,6 +5053,7 @@ void __cdecl RB_ExecuteRenderCommandsLoop(const void *cmds, int *ui3dTextureWind
                 PROF_SCOPED_RUNTIME_NAME(gfxRenderCommandNames[header->id]);
                 RB_RenderCommandTable[header->id](&execState);
             }
+
             
         }
         else
@@ -5236,6 +5311,22 @@ void __cdecl RB_UpdateDynamicBuffers(GfxBackEndData *backendData)
     }
     if ( backendData->preTessIb && backendData->preTessIb->used )
     {
+#if defined(__EMSCRIPTEN__)
+        // Detector: the preTess CPU index array is the one per-frame-varying input the
+        // other checksums never covered. If it changed between handoff and THIS upload,
+        // the GPU gets indices that no longer match the frame's drawSurf offsets.
+        if ((const void *)backendData == g_kbRaceData) {
+            unsigned int c3 = KB_RaceSum(backendData->preTessIb->indices,
+                                         2u * (unsigned)backendData->preTessIb->used);
+            unsigned int u4 = (unsigned)backendData->preTessIb->used;
+            static int prints = 0;
+            if ((c3 != g_kbRaceSum[3] || u4 != g_kbRaceSum[4]) && prints < 20) {
+                ++prints;
+                fprintf(stderr, "[kbrace] preTess CPU indices CHANGED handoff->upload (used %u->%u content=%d)\n",
+                        g_kbRaceSum[4], u4, c3 != g_kbRaceSum[3]);
+            }
+        }
+#endif
         if ( 2 * backendData->preTessIb->used >= (unsigned int)(2 * backendData->preTessIb->total) )
             v2 = 2 * backendData->preTessIb->total;
         else
@@ -5451,6 +5542,7 @@ void __cdecl RB_RenderCommandFrame(const GfxBackEndData *data)
         drawType = backEndData->drawType;
         KBSTAGE(23); RB_CallExecuteRenderCommands();
         rb_execCmdsMS = Sys_Milliseconds() - renderStartMS;
+
         backEndData = 0;
     }
 

@@ -27,6 +27,24 @@ GfxCmdArray g_frontEndCmds[2];
 GfxBackEndData s_backEndData[2];
 GfxCmdArray *s_cmdList;
 
+#if defined(__EMSCRIPTEN__)
+// SMP RACE DETECTOR: the frontend checksums the frame data it hands to the backend;
+// the backend re-checksums after rendering. A mismatch = something modified data the
+// backend was still consuming (the standing-still world flicker) — the print names
+// WHICH region, i.e. which double-buffer has a hole.
+unsigned int g_kbRaceSum[6];     // 0=cmd bytes, 1=drawSurfs, 2=surfsBuffer, 3=preTess idx, 4=preTess used, 5=viewInfo
+const void  *g_kbRaceData;       // the GfxBackEndData the sums describe
+int          g_kbRaceParity;     // s_smpFrame of the handed-off frame (parity-asymmetry stats)
+extern "C" unsigned int KB_RaceSum(const void *p, unsigned int bytes) {
+    if (!p || !bytes) return 0;
+    const unsigned int *w = (const unsigned int *)p;
+    unsigned int n = bytes >> 2, s = 2166136261u;
+    for (unsigned int i = 0; i < n; i += 4)   // sample every 4th dword (cheap)
+        s = (s ^ w[i]) * 16777619u;
+    return s;
+}
+#endif
+
 int g_currCodeMesh;
 GfxMeshData g_codeMesh[2];
 

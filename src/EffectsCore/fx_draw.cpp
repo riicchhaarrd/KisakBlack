@@ -2267,44 +2267,52 @@ void __cdecl FX_GenerateVerts(FxGenerateVertsCmd *cmd)
     ZoneTextF("(cl=%d)", cmd->localClientNum);
 
     localSystem = cmd->system;
-    R_BeginCodeMeshVerts();
+#if defined(__EMSCRIPTEN__)
+    extern int g_kbFxStage;   // freeze diag: FX_GenerateVerts sub-step
+#define KBFX(n) (g_kbFxStage = (n))
+#else
+#define KBFX(n) ((void)0)
+#endif
+    KBFX(1); R_BeginCodeMeshVerts();
     drawTime = localSystem->msecDraw;
     if ( drawTime >= 0 )
     {
         {
             PROF_SCOPED("FX_SpriteGenerateVerts");
-            FX_SpriteGenerateVerts(cmd);
+            KBFX(2); FX_SpriteGenerateVerts(cmd);
         }
-        
+
         {
             PROF_SCOPED("FX_Beam_GenerateVerts");
-            FX_Beam_GenerateVerts(cmd);
+            KBFX(3); FX_Beam_GenerateVerts(cmd);
         }
         {
             PROF_SCOPED("FX_PostLight_GenerateVerts");
-            FX_PostLight_GenerateVerts(cmd->postLightInfo, localSystem);
+            KBFX(4); FX_PostLight_GenerateVerts(cmd->postLightInfo, localSystem);
         }
         {
             PROF_SCOPED("Glass_GenerateVerts");
-            GlassCl_GenerateVerts(cmd->localClientNum, 0);
+            KBFX(5); GlassCl_GenerateVerts(cmd->localClientNum, 0);
         }
-        
-        FX_GetNullReflection(&reflect);
+
+        KBFX(6); FX_GetNullReflection(&reflect);
 
         {
             PROF_SCOPED("FX_DrawSpriteElems");
+            KBFX(7);
             if (fx_enable->current.enabled && fx_draw->current.enabled)
                 FX_DrawSpriteElems(localSystem, drawTime, &reflect, cmd->genVertsCameraType);
         }
-        
+
         {
             PROF_SCOPED("FX_GetReflection");
-            FX_GetReflection(cmd->useReflection, cmd->reflectionHeight, &reflect);
+            KBFX(8); FX_GetReflection(cmd->useReflection, cmd->reflectionHeight, &reflect);
             if (reflect.enabled && fx_enable->current.enabled && fx_draw->current.enabled)
-                FX_DrawSpriteElems(localSystem, drawTime, &reflect, cmd->genVertsCameraType);
+                { KBFX(9); FX_DrawSpriteElems(localSystem, drawTime, &reflect, cmd->genVertsCameraType); }
         }
-        
-        R_EndCodeMeshVerts();
+
+        KBFX(10); R_EndCodeMeshVerts();
+#undef KBFX
 
         {
             PROF_SCOPED("FX_ToggleVisBlockerFrame");
