@@ -5339,6 +5339,9 @@ void __cdecl RB_UpdateDynamicBuffers(GfxBackEndData *backendData)
 }
 
 const void *data;
+#if defined(__EMSCRIPTEN__)
+extern "C" void KB_RenderThreadYield();   // render-thread event-loop yield (glcontext_sdl.cpp)
+#endif
 void     RB_RenderThread(unsigned int threadContext)
 {
     void *Value; // eax
@@ -5385,6 +5388,13 @@ void     RB_RenderThread(unsigned int threadContext)
 #endif
     while ( 1 )
     {
+#if defined(__EMSCRIPTEN__)
+        // De-proxy WebGL needs the render thread to briefly return to its worker event
+        // loop so Chrome delivers pending shader/link completions (KB_RenderThreadYield).
+        // This shallow between-frames point keeps ASYNCIFY scoped to the render-thread
+        // entry chain, off the per-draw hot path. No-op on the proxied build.
+        KB_RenderThreadYield();
+#endif
         {
             PROF_SCOPED("R_StreamUpdate_ProcessFileCallbacks"); // LWSS ADD
             KBSTAGE(1); R_StreamAlloc_Lock();

@@ -70,7 +70,19 @@ LINKFLAGS="\
   -sASSERTIONS=1 \
   -sEMULATE_FUNCTION_POINTER_CASTS=1 \
   -sINVOKE_RUN=0 \
+  -sASYNCIFY=1 \
+  -sASYNCIFY_IGNORE_INDIRECT=1 \
+  -sASYNCIFY_ADD=@asyncify_funcs.txt \
   -O2 --profiling-funcs"
+# ASYNCIFY: lets the render thread briefly return to its Web Worker event loop
+# (KB_RenderThreadYield -> emscripten_sleep, once per frame between frames) so Chrome
+# DELIVERS WebGL shader/link completions on the DE-PROXY build — the only fix for the
+# nondeterministic in-game black (the blocking render thread otherwise never lets Chrome's
+# client update its link-status cache, so useProgram stays rejected). IGNORE_INDIRECT +
+# a tight ADD list (asyncify_funcs.txt: only the render-thread entry chain, all matching
+# signatures so no fpcast wrappers) keeps instrumentation OFF the per-draw hot path —
+# negligible overhead. On the proxied build emscripten_sleep is never reached (g_kbCtxIsLocal
+# is 0), so this is correctness-only there. ASSERTIONS=1 names any missing stack function.
 # WHY these:
 #   PROXY_TO_PTHREAD: main() (the game loop) runs on a worker so it can block on the
 #     DX-device-ownership lock / Win32 events that RB_RenderThread (another worker)

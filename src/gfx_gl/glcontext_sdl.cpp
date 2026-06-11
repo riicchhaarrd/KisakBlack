@@ -65,6 +65,19 @@ extern int g_kbCtxIsLocal;                                // 1 = worker-local co
 extern int g_kbBatchEnable, g_kbCoalesceEnable;           // opt-in perf toggles (ENV)
 extern unsigned long g_kbGLCtxHandle;                     // context handle for thread-attach
 unsigned long g_kbPresPosted = 0, g_kbPresDropped = 0;   // de-proxy present delivery
+unsigned long g_kbYields = 0;                            // render-thread event-loop yields
+
+// THE DE-PROXY DELIVERY FIX: the render thread is a blocking loop that never returns to
+// its Web Worker's event loop, so Chrome can never deliver WebGL shader/link COMPLETION
+// (useProgram stays rejected forever -> nondeterministic in-game black). emscripten_sleep
+// (ASYNCIFY) unwinds this thread back to the worker event loop, lets Chrome dispatch the
+// pending completions, then resumes — once per frame, between frames (shallow stack, so
+// ASYNCIFY only instruments the render-thread entry chain, not the per-draw path). Only
+// when the context is LOCAL (de-proxy); on the proxied build the DOM thread already has an
+// event loop so emscripten_sleep is never reached (zero overhead, no behavior change).
+extern "C" void KB_RenderThreadYield() {
+    if (g_kbCtxIsLocal) { ++g_kbYields; emscripten_sleep(0); }
+}
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -72,7 +85,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: B126 (use-time RT completeness guarantee: never-black scene; PROXIED build is reliable)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: B127 (ASYNCIFY render-thread yield: deliver shader completions on de-proxy)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -398,9 +411,10 @@ public:
             // entry (before the transfer-clear). Colored while the page is black ->
             // present/display path; black -> the engine rendered black.
             unsigned kbPx = kbCtrPx_;
-            static unsigned long pp0 = 0, pd0 = 0;
-            fprintf(stderr, "[perf/rb] %.1f fps loc=%d jsMB=%d wasmMB=%d ctrPx=%06x post/f=%lu drop/f=%lu | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
+            static unsigned long pp0 = 0, pd0 = 0, yl0 = 0;
+            fprintf(stderr, "[perf/rb] %.1f fps loc=%d jsMB=%d wasmMB=%d ctrPx=%06x yld/f=%lu post/f=%lu drop/f=%lu | draws/f=%lu batched/f=%lu flushes/f=%lu mrg/f=%lu occl/f=%lu bufKB/f=%lu skip/f=%lu bfall/f=%lu links=%lu\n",
                     1000.0 * frames / dt, g_kbCtxIsLocal, kbMemMB, kbWasmMB, kbPx,
+                    (g_kbYields - yl0) / frames,
                     (g_kbPresPosted - pp0) / frames, (g_kbPresDropped - pd0) / frames,
                     (g_kbDraws - dr0) / frames,
                     (g_kbBatchedDraws - bd0) / frames, (g_kbBatchFlushes - bf0) / frames,
@@ -433,7 +447,7 @@ public:
                 g_kbMsDraw = 0.0; kbMsPresent = 0.0;
             }
 
-            pp0 = g_kbPresPosted; pd0 = g_kbPresDropped;
+            pp0 = g_kbPresPosted; pd0 = g_kbPresDropped; yl0 = g_kbYields;
             bd0 = g_kbBatchedDraws; bf0 = g_kbBatchFlushes;
             sk0 = g_kbSkipPending; bi0 = g_kbBuiltinFall; pl0 = g_kbProgLinks;
             t0 = now; frames = 0; occl0 = g_kbOcclGetData; dr0 = g_kbDraws; rb0 = g_kbReadbacks; buf0 = g_kbBufBytes;
@@ -455,6 +469,9 @@ GLContext *GLContext::Create(const GLContextDesc &desc) {
 }
 
 #else // !__EMSCRIPTEN_PTHREADS__  — SDL2 path (desktop + single-thread/fiber web)
+
+// No worker event loop to yield to off the pthreads build — render thread runs normally.
+extern "C" void KB_RenderThreadYield() {}
 
 namespace {
 
