@@ -35,16 +35,31 @@ HRESULT WINAPI GLDevice::SetPixelShader(IDirect3DPixelShader9 *pShader) {
 }
 
 HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) {
-    KB_FlushBatchedDraws();
-    if (pData && StartRegister + Vec4Count <= 256)
-        std::memcpy(vsConst_ + StartRegister * 4, pData, Vec4Count * 4 * sizeof(float));
+    // No-change fast path: the engine re-sets identical constants around most draws.
+    // Flushing+bumping only on REAL changes keeps draw batches alive (flushes/f used
+    // to equal draws/f) and lets useDrawProgram skip the per-draw uniform uploads.
+    if (pData && StartRegister + Vec4Count <= 256) {
+        float *dst = vsConst_ + StartRegister * 4;
+        size_t bytes = Vec4Count * 4 * sizeof(float);
+        if (std::memcmp(dst, pData, bytes) != 0) {
+            KB_FlushBatchedDraws();   // pending draws read the OLD values
+            std::memcpy(dst, pData, bytes);
+            ++vsVer_;
+        }
+    }
     return D3D_OK;
 }
 
 HRESULT WINAPI GLDevice::SetPixelShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) {
-    KB_FlushBatchedDraws();
-    if (pData && StartRegister + Vec4Count <= 256)
-        std::memcpy(psConst_ + StartRegister * 4, pData, Vec4Count * 4 * sizeof(float));
+    if (pData && StartRegister + Vec4Count <= 256) {
+        float *dst = psConst_ + StartRegister * 4;
+        size_t bytes = Vec4Count * 4 * sizeof(float);
+        if (std::memcmp(dst, pData, bytes) != 0) {
+            KB_FlushBatchedDraws();
+            std::memcpy(dst, pData, bytes);
+            ++psVer_;
+        }
+    }
     return D3D_OK;
 }
 
@@ -214,8 +229,14 @@ bool GLDevice::useDrawProgram() {
     }
 
     if (curProgram_ != lp.prog) { glUseProgram(lp.prog); curProgram_ = lp.prog; }
-    if (lp.vscLoc >= 0 && lp.vscCount > 0) glUniform4fv(lp.vscLoc, lp.vscCount, vsConst_);
-    if (lp.pscLoc >= 0 && lp.pscCount > 0) glUniform4fv(lp.pscLoc, lp.pscCount, psConst_);
+    if (lp.vscLoc >= 0 && lp.vscCount > 0 && lp.upVsVer != vsVer_) {
+        glUniform4fv(lp.vscLoc, lp.vscCount, vsConst_);
+        lp.upVsVer = vsVer_;
+    }
+    if (lp.pscLoc >= 0 && lp.pscCount > 0 && lp.upPsVer != psVer_) {
+        glUniform4fv(lp.pscLoc, lp.pscCount, psConst_);
+        lp.upPsVer = psVer_;
+    }
 
 #ifdef __EMSCRIPTEN__
     // Feed the in-shader alpha test. uAlphaTestFunc carries the D3DCMP_* value
@@ -233,9 +254,14 @@ bool GLDevice::useDrawProgram() {
         if (loc < 0) continue;
         // (sampler->unit binding now done once at link, see finalizeProgram)
         if (boundTexName_[i]) {
-            glActiveTexture(GL_TEXTURE0 + i);
-            glBindTexture(boundTexTarget_[i], boundTexName_[i]);
-            applyStageSampler(i, boundTexTarget_[i]);
+            // Per-unit cache: rebinding the same texture (the common case inside a
+            // material batch) costs two proxied calls per stage per draw for nothing.
+            if (unitTex_[i] != boundTexName_[i]) {
+                glActiveTexture(GL_TEXTURE0 + i);
+                glBindTexture(boundTexTarget_[i], boundTexName_[i]);
+                unitTex_[i] = boundTexName_[i];
+                applyStageSampler(i, boundTexTarget_[i]);
+            }
         }
     }
     return true;

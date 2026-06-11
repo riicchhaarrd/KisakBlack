@@ -218,12 +218,21 @@ private:
     GLPixelShader  *ps_ = nullptr;
     float           vsConst_[256 * 4] = {};
     float           psConst_[256 * 4] = {};
+    unsigned        vsVer_ = 1, psVer_ = 1;   // bumped when constants actually change
+    unsigned        unitTex_[kMaxStages] = {};        // per-GL-unit bound texture cache
+    struct { unsigned tex = 0; unsigned char minF = 255, magF = 255, wS = 255, wT = 255; }
+                    stageSamplerCache_[kMaxStages];   // last sampler params applied per stage
     struct LinkedProgram { unsigned prog = 0; int vscLoc = -1; int pscLoc = -1;
                            // Number of vec4s the shader's vsc[]/psc[] constant array
                            // actually declares. Uploading only these per draw (instead of
                            // a blanket 256+256) is the main web draw-call cost reduction.
                            int vscCount = 0; int pscCount = 0;
                            int alphaFuncLoc = -1; int alphaRefLoc = -1;
+                           // Versions of the constant arrays last uploaded to this
+                           // program — constants change per material/pass, not per
+                           // draw, so most of the per-draw glUniform4fv pairs (the
+                           // dominant proxied-GL cost at ~13k draws/frame) skip.
+                           unsigned upVsVer = 0; unsigned upPsVer = 0;
                            // Sampler uniform locations ("s0".."s15"), queried ONCE at
                            // link. Per-draw glGetUniformLocation is a sync round-trip on
                            // the proxied web context — caching it removes 16 stalls/draw.

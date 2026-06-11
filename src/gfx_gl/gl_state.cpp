@@ -153,16 +153,20 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
 }
 
 HRESULT WINAPI GLDevice::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
-    KB_FlushBatchedDraws();
     if (Sampler >= (DWORD)kMaxStages) return D3D_OK;
     GLSamplerState &s = samplers_[Sampler];
+    DWORD *slot = nullptr;
     switch (Type) {
-        case D3DSAMP_MINFILTER: s.minFilter = Value; break;
-        case D3DSAMP_MAGFILTER: s.magFilter = Value; break;
-        case D3DSAMP_ADDRESSU:  s.addressU  = Value; break;
-        case D3DSAMP_ADDRESSV:  s.addressV  = Value; break;
-        default: break;
+        case D3DSAMP_MINFILTER: slot = &s.minFilter; break;
+        case D3DSAMP_MAGFILTER: slot = &s.magFilter; break;
+        case D3DSAMP_ADDRESSU:  slot = &s.addressU;  break;
+        case D3DSAMP_ADDRESSV:  slot = &s.addressV;  break;
+        default: return D3D_OK;
     }
+    if (*slot == Value) return D3D_OK;   // no-change fast path: keep batches alive
+    KB_FlushBatchedDraws();
+    *slot = Value;
+    unitTex_[Sampler] = 0;   // force rebind+sampler reapply at next draw on this stage
     return D3D_OK;
 }
 
