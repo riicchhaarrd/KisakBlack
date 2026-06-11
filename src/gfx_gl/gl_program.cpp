@@ -189,6 +189,32 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
                     } catch (e) { console.error('[gl] LINKDUMP threw: ' + e.message); }
                 }, (int)lp.prog);
             }
+            // VERIFY USABILITY before trusting: bind it once and ask for the error.
+            // Chrome's client rejects useProgram on programs it considers failed
+            // ('program not valid' — INVALID_OPERATION); those draws then run with
+            // the previous program = garbage/black. The failures are TRANSIENT
+            // windows (the same trivial source fails one moment and compiles fine
+            // the next), so an unusable program goes back through the bounded
+            // delete+retry and succeeds on a later frame.
+            while (glGetError() != GL_NO_ERROR) {}
+            glUseProgram(lp.prog);
+            GLenum kbUseErr = glGetError();
+            if (kbUseErr != GL_NO_ERROR) {
+                extern unsigned long g_kbPresentEnter;
+                static int rejPrints = 0;
+                if (++rejPrints <= 8)
+                    fprintf(stderr, "[gl] program unusable (err=0x%x, try %d) — will retry\n",
+                            (unsigned)kbUseErr, lp.linkTries + 1);
+                glUseProgram(0);
+                curProgram_ = 0;
+                glDeleteProgram(lp.prog);
+                lp.prog = 0;
+                lp.pendPolls = 0;
+                ++lp.linkTries;
+                lp.lastFailPres = g_kbPresentEnter;
+                return false;
+            }
+            curProgram_ = lp.prog;   // verified AND now bound
             ok = 1;   // fall through to uniform setup + ready=true
         }
     }
@@ -373,7 +399,7 @@ bool GLDevice::useDrawProgram() {
         // A failed link was deleted for retry. Cooldown + bounded attempts: a real
         // (deterministic) link error stops after 8 tries; a transient GPU-process
         // failure heals on a later frame instead of leaving materials black forever.
-        if (lp.linkTries >= 8 || g_kbPresentEnter - lp.lastFailPres < 30 || !linkBudgetOk()) {
+        if (lp.linkTries >= 16 || g_kbPresentEnter - lp.lastFailPres < 10 || !linkBudgetOk()) {
             extern unsigned long g_kbSkipPending; ++g_kbSkipPending;
             return false;
         }
