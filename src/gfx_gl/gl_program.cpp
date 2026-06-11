@@ -127,6 +127,13 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
             // synchronous GPU-process path, no event loop needed.
             if (++lp.pendPolls < 60)
                 return false;               // still compiling -> caller skips the draw
+            // Spread forced finishes across frames: 160 blocking links in one frame
+            // slammed the GPU process into the empty-log compile-failure state.
+            extern unsigned long g_kbPresentEnter;
+            static unsigned long s_blockPres = ~0ul; static int s_blocksThisPres = 0;
+            if (s_blockPres != g_kbPresentEnter) { s_blockPres = g_kbPresentEnter; s_blocksThisPres = 0; }
+            if (s_blocksThisPres >= 4) return false;   // finish the rest next frame
+            ++s_blocksThisPres;
             GLint attached = 0;
             KB_glGetProgramiv(lp.prog, GL_ATTACHED_SHADERS, &attached);  // BLOCKS until linked
         }
@@ -138,9 +145,19 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
         char log[1024];
         log[0] = 0;
         KB_glGetProgramInfoLog(lp.prog, sizeof(log), nullptr, log);
-        // Empty log + status 0 = unreadable status, not a proven failure (see compileGL).
-        if (log[0])
-            fprintf(stderr, "[gl] program link failed: %s\n", log);
+        static int linkFailPrints = 0;
+        if (++linkFailPrints <= 16)
+            fprintf(stderr, "[gl] program link failed (try %d): %s\n", lp.linkTries + 1, log[0] ? log : "(empty log)");
+        // Self-heal: marking this "ready" made its materials permanently black
+        // (useProgram on an invalid program — the 256x 'program not valid' spam).
+        // Delete and re-link on a later frame instead; the caller skips the draw.
+        extern unsigned long g_kbPresentEnter;
+        glDeleteProgram(lp.prog);
+        lp.prog = 0;
+        lp.pendPolls = 0;
+        ++lp.linkTries;
+        lp.lastFailPres = g_kbPresentEnter;
+        return false;
     }
     lp.vscLoc = KB_glGetUniformLocation(lp.prog, "vsc");
     lp.pscLoc = KB_glGetUniformLocation(lp.prog, "psc");
@@ -234,6 +251,23 @@ bool GLDevice::useDrawProgram() {
     }
 
     LinkedProgram &lp = it->second;
+    if (!lp.prog) {
+        // A failed link was deleted for retry. Cooldown + bounded attempts: a real
+        // (deterministic) link error stops after 8 tries; a transient GPU-process
+        // failure heals on a later frame instead of leaving materials black forever.
+        extern unsigned long g_kbPresentEnter;
+        if (lp.linkTries >= 8 || g_kbPresentEnter - lp.lastFailPres < 30) {
+            extern unsigned long g_kbSkipPending; ++g_kbSkipPending;
+            return false;
+        }
+        unsigned prog = glCreateProgram();
+        glAttachShader(prog, vsN);
+        glAttachShader(prog, psN);
+        GLBindAttribLocations(prog);
+        glLinkProgram(prog);
+        lp.prog = prog; lp.ready = false; lp.pendPolls = 0;
+        extern unsigned long g_kbProgLinks; ++g_kbProgLinks;
+    }
     if (!lp.ready && !finalizeProgram(lp)) {
         extern unsigned long g_kbSkipPending; ++g_kbSkipPending;
         return false;                        // still compiling this frame -> skip the draw

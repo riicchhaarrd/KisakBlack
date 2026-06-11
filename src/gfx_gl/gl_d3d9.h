@@ -263,6 +263,10 @@ private:
                            // false until the async link completes and locs are cached;
                            // draws using it are skipped until then (no DOM-thread stall).
                            bool ready = false;
+                           // Link-failure self-heal: a transiently-distressed GPU process
+                           // fails links with empty logs; the program is deleted and
+                           // re-linked later (bounded) instead of staying invalid forever.
+                           int linkTries = 0; unsigned long lastFailPres = 0;
                            // KHR_parallel_shader_compile completion polls so far. The
                            // async completion signal may need the worker's event loop
                            // (never pumped) — after a bounded number of polls the link is

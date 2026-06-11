@@ -689,10 +689,23 @@ GLVertexShader::GLVertexShader(IDirect3DDevice9 *device, const DWORD *function) 
     bool isPixel = false;
     translatedOk_ = TranslateD3D9Shader(function, glsl_, &isPixel) && !isPixel;
 }
+// Failed compiles RETRY with a cooldown instead of latching: a transiently-distressed
+// GPU process (the de-proxy map-load storm) fails compiles with empty logs; latching
+// turned a bad moment into permanently-black materials. Bounded: 8 tries, 30 presents
+// apart — a real GLSL error just prints a few times and stops.
+extern unsigned long g_kbPresentEnter;
+static bool kbCompileGate(unsigned shader, int &tries, unsigned long &lastPres) {
+    if (shader) return false;
+    if (tries == 0) return true;
+    if (tries >= 8) return false;
+    return g_kbPresentEnter - lastPres >= 30;
+}
+
 unsigned GLVertexShader::glShader() {
-    if (!shader_ && translatedOk_ && !compileFailed_) {
+    if (translatedOk_ && kbCompileGate(shader_, tries_, lastTryPres_)) {
+        lastTryPres_ = g_kbPresentEnter;
         shader_ = compileGL(GL_VERTEX_SHADER, glsl_, "vertex shader");
-        if (!shader_) compileFailed_ = true;   // latch: print/compile once, not every draw
+        tries_ = shader_ ? 0 : tries_ + 1;
     }
     return shader_;
 }
@@ -723,22 +736,24 @@ GLPixelShader::GLPixelShader(IDirect3DDevice9 *device, const DWORD *function) : 
 unsigned GLPixelShader::glShader(unsigned shadowMask) {
     shadowMask &= samplerMask_;          // only samplers this shader actually reads
     if (shadowMask == 0 || func_.empty()) {
-        if (!shader_ && translatedOk_ && !compileFailed_) {
+        if (translatedOk_ && kbCompileGate(shader_, tries_, lastTryPres_)) {
+            lastTryPres_ = g_kbPresentEnter;
             shader_ = compileGL(GL_FRAGMENT_SHADER, glsl_, "pixel shader");
-            if (!shader_) compileFailed_ = true;   // latch: print/compile once, not every draw
+            tries_ = shader_ ? 0 : tries_ + 1;
         }
         return shader_;
     }
-    auto it = variants_.find(shadowMask);
-    if (it != variants_.end()) return it->second;
-    // Retranslate with the masked samplers typed sampler2DShadow (texldp becomes the
-    // depth-compared textureProj — D3D9 hardware-shadow semantics) and compile.
-    std::string glsl; bool isPix = false;
-    unsigned gl = 0;
-    if (TranslateD3D9Shader(func_.data(), glsl, &isPix, shadowMask) && isPix)
-        gl = compileGL(GL_FRAGMENT_SHADER, glsl, "pixel shader (shadow variant)");
-    variants_[shadowMask] = gl;          // 0 = failed; cached so we never retry per draw
-    return gl;
+    Variant &v = variants_[shadowMask];
+    if (kbCompileGate(v.gl, v.tries, v.lastPres)) {
+        v.lastPres = g_kbPresentEnter;
+        // Retranslate with the masked samplers typed sampler2DShadow (texldp becomes the
+        // depth-compared textureProj — D3D9 hardware-shadow semantics) and compile.
+        std::string glsl; bool isPix = false;
+        if (TranslateD3D9Shader(func_.data(), glsl, &isPix, shadowMask) && isPix)
+            v.gl = compileGL(GL_FRAGMENT_SHADER, glsl, "pixel shader (shadow variant)");
+        v.tries = v.gl ? 0 : v.tries + 1;
+    }
+    return v.gl;
 }
 GLPixelShader::~GLPixelShader() { if (shader_) glDeleteShader(shader_); }
 HRESULT WINAPI GLPixelShader::GetDevice(IDirect3DDevice9 **pp) { if (!pp) return E_INVALIDARG; *pp = device_; if (device_) device_->AddRef(); return D3D_OK; }

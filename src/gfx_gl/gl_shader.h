@@ -60,8 +60,9 @@ public:
 private:
     IDirect3DDevice9 *device_;
     unsigned          shader_ = 0;
+    int               tries_ = 0;            // failed compile attempts (retry with cooldown)
+    unsigned long     lastTryPres_ = 0;      // present # of the last attempt
     bool              translatedOk_ = false;
-    bool              compileFailed_ = false;  // latch: don't recompile/reprint every draw
     std::string       glsl_;
 };
 
@@ -81,12 +82,16 @@ public:
 private:
     IDirect3DDevice9 *device_;
     unsigned          shader_ = 0;
+    int               tries_ = 0;            // failed compile attempts (retry with cooldown)
+    unsigned long     lastTryPres_ = 0;      // present # of the last attempt
     bool              translatedOk_ = false;
-    bool              compileFailed_ = false;  // latch: don't recompile/reprint every draw
     unsigned          samplerMask_ = 0;        // sampler registers this shader reads
     std::string       glsl_;
     std::vector<DWORD> func_;                  // bytecode copy for variant retranslation
-    std::map<unsigned, unsigned> variants_;    // shadowMask -> GL shader (0 = failed)
+    // shadowMask -> compiled variant. A transiently-distressed GPU process fails
+    // compiles with empty logs; retry with cooldown instead of caching failure forever.
+    struct Variant { unsigned gl = 0; int tries = 0; unsigned long lastPres = 0; };
+    std::map<unsigned, Variant> variants_;
 };
 
 #endif // KISAK_GL_SHADER_H
