@@ -126,10 +126,11 @@ void __cdecl R_DrawStaticModelSurf(
 // per-instance loop when the base-vertex ext / attribute room is missing, so this
 // path only ever ADDS a faster submission. ?nosminst = kill switch.
 extern "C" void KB_DrawXSurfInstancedC(void *dev, unsigned matBase, int matCount,
-                                       const float *mats, int n,
+                                       float *mats, int n, unsigned gapMask,
                                        unsigned baseIndex, unsigned triCount);
 static bool KB_TryDrawSmodelInstanced(GfxStaticModelDrawStream *drawStream,
-                                      GfxCmdBufContext context, const GfxDrawPrimArgs *args)
+                                      GfxCmdBufContext context, const GfxDrawPrimArgs *args,
+                                      bool lighting)
 {
     unsigned int smodelCount = drawStream->smodelCount;
     if ( smodelCount < 2 )
@@ -137,27 +138,49 @@ static bool KB_TryDrawSmodelInstanced(GfxStaticModelDrawStream *drawStream,
     const MaterialPass *pass = context.state->pass;
     if ( !pass || !pass->perPrimArgCount )
         return false;
-    // Per-prim args must all be matrix-family code consts (index >= first-code-matrix,
-    // 0xC5) whose dest rows exactly tile ONE contiguous span of <= 8 registers.
-    unsigned int base = ~0u, end = 0, rows = 0;
+    // Per-prim args must all be code consts (matrix-family OR plain — the lit path's
+    // model-lighting coords are a plain code const) whose dest rows fall in ONE span of
+    // <= 8 registers. Uncovered rows in the span (gapMask) are NOT per-prim: the GL side
+    // replicates their current values per instance.
+    unsigned int base = ~0u, end = 0;
     const MaterialShaderArgument *a = pass->localArgs;
     for ( unsigned int k = 0; k < pass->perPrimArgCount; ++k, ++a )
     {
-        if ( a->type != 3 || a->u.codeConst.index < 0xC5u )
+        if ( a->type != 3 )
             return false;
         if ( a->dest < base ) base = a->dest;
         if ( a->dest + a->u.codeConst.rowCount > end ) end = a->dest + a->u.codeConst.rowCount;
-        rows += a->u.codeConst.rowCount;
     }
     unsigned int matCount = end - base;
-    if ( matCount > 8 || rows != matCount )   // gaps/overlap -> per-instance values unknown
+    if ( matCount > 8 )
         return false;
+    unsigned int cover = 0;
+    a = pass->localArgs;
+    for ( unsigned int k = 0; k < pass->perPrimArgCount; ++k, ++a )
+        for ( unsigned int r = 0; r < a->u.codeConst.rowCount; ++r )
+        {
+            unsigned int bit = a->dest - base + r;
+            if ( cover & (1u << bit) )
+                return false;                 // overlapping dests: bail
+            cover |= 1u << bit;
+        }
+    unsigned int gapMask = ~cover & ((1u << matCount) - 1);
     const unsigned __int16 *list = drawStream->smodelList;
     unsigned int mapDyn = drawStream->dynSModelState->maxDynSModelIndexInMap;
     for ( unsigned int i = 0; i < smodelCount; ++i )
         if ( list[i] < mapDyn )
             return false;                     // foliage constants vary per instance
     GfxStaticModelDrawInst *insts = rgp.world->dpvs.smodelDrawInsts;
+    if ( lighting )
+    {
+        // The reflection probe is part of the drawsurf key, so a group shares it —
+        // verify and bind it ONCE instead of per instance (it's a sampler bind).
+        unsigned int probe = insts[list[0]].reflectionProbeIndex;
+        for ( unsigned int i = 1; i < smodelCount; ++i )
+            if ( insts[list[i]].reflectionProbeIndex != probe )
+                return false;
+        R_SetReflectionProbe(context, probe);
+    }
     static float *kbMats = 0; static unsigned int kbMatsCap = 0;
     if ( smodelCount * matCount * 4 > kbMatsCap )
     {
@@ -166,21 +189,31 @@ static bool KB_TryDrawSmodelInstanced(GfxStaticModelDrawStream *drawStream,
     }
     for ( unsigned int i = 0; i < smodelCount; ++i )
     {
-        // Exactly the stock per-instance sequence: placement writes the active world
-        // matrix + bumps its version, so R_GetCodeMatrix recomputes any derived matrix.
+        // Exactly the stock per-instance sequence: placement (and the lit path's
+        // lighting coords) write source state + bump versions, so the getters below
+        // return precisely what R_SetVertexShaderConstantFromCode would upload.
         R_DrawStaticModelDrawSurfPlacement(&insts[list[i]], context.source);
+        if ( lighting )
+            R_SetModelLightingCoordsForSource(insts[list[i]].lightingHandle, context.source);
         float *dst = kbMats + (size_t)i * matCount * 4;
         a = pass->localArgs;
         for ( unsigned int k = 0; k < pass->perPrimArgCount; ++k, ++a )
         {
-            const float *src = R_GetCodeMatrix(context.source, a->u.codeConst.index,
-                                               a->u.codeConst.firstRow);
+            const float *src = (a->u.codeConst.index < 0xC5u)
+                ? R_GetCodeConstant(context, a->u.codeConst.index)
+                : R_GetCodeMatrix(context.source, a->u.codeConst.index, a->u.codeConst.firstRow);
             memcpy(dst + (a->dest - base) * 4, src, a->u.codeConst.rowCount * 4 * sizeof(float));
         }
     }
     KB_DrawXSurfInstancedC(context.state->prim.device, base, (int)matCount, kbMats,
-                           (int)smodelCount, args->baseIndex, args->triCount);
+                           (int)smodelCount, gapMask, args->baseIndex, args->triCount);
     return true;
+}
+static int KB_SmodelInstOff()
+{
+    static int off = -1;
+    if ( off < 0 ) { const char *e = getenv("KB_NOSMINST"); off = (e && *e == '1') ? 1 : 0; }
+    return off;
 }
 #endif
 
@@ -199,12 +232,8 @@ void __cdecl R_DrawStaticModelDrawSurfNonOptimized(GfxStaticModelDrawStream *dra
     R_SetStaticModelIndexBuffer(&context.state->prim, xsurf);
     R_SetStaticModelVertexBuffer(&context.state->prim, xsurf);
 #if defined(__EMSCRIPTEN__)
-    {
-        static int kbNoSmi = -1;
-        if ( kbNoSmi < 0 ) { const char *e = getenv("KB_NOSMINST"); kbNoSmi = (e && *e == '1') ? 1 : 0; }
-        if ( !kbNoSmi && KB_TryDrawSmodelInstanced(drawStream, context, &args) )
-            return;
-    }
+    if ( !KB_SmodelInstOff() && KB_TryDrawSmodelInstanced(drawStream, context, &args, false) )
+        return;
 #endif
     smodelCount = drawStream->smodelCount;
     smodelDrawInsts = rgp.world->dpvs.smodelDrawInsts;
@@ -336,6 +365,10 @@ void __cdecl R_DrawStaticModelDrawSurfLightingNonOptimized(
     R_SetStaticModelPrimArgs(xsurf, &args);
     R_SetStaticModelIndexBuffer(&context.state->prim, xsurf);
     R_SetStaticModelVertexBuffer(&context.state->prim, xsurf);
+#if defined(__EMSCRIPTEN__)
+    if ( !KB_SmodelInstOff() && KB_TryDrawSmodelInstanced(drawStream, context, &args, true) )
+        return;
+#endif
     smodelCount = drawStream->smodelCount;
     smodelDrawInsts = rgp.world->dpvs.smodelDrawInsts;
     list = drawStream->smodelList;

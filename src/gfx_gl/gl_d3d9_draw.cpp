@@ -819,10 +819,21 @@ void GLDevice::flushInstanceRun() {
 // instance's vec4 rows for vs regs [matBase, matBase+matCount). Reuses the ?inst
 // machinery (instanced shader variant, instance-attribute matrix, free-location pick).
 // The per-instance loop fallback keeps this strictly an additive fast path.
-void GLDevice::KB_DrawXSurfInstanced(unsigned matBase, int matCount, const float *mats,
-                                     int n, unsigned baseIndex, unsigned triCount) {
+void GLDevice::KB_DrawXSurfInstanced(unsigned matBase, int matCount, float *mats,
+                                     int n, unsigned gapMask, unsigned baseIndex, unsigned triCount) {
     if (!ib_ || n <= 0 || matCount <= 0 || matCount > 8) return;
     KB_EnsureCtxOnThread();
+    // Gap rows (span rows with no per-prim arg) are instance-invariant: replicate their
+    // CURRENT constant values into every instance's rows. Must happen before the
+    // last-instance mirror below reads mats (gap rows arrive uninitialized).
+    if (gapMask) {
+        for (int r = 0; r < matCount; ++r) {
+            if (!(gapMask & (1u << r))) continue;
+            const float *cur = vsConst_ + (matBase + r) * 4;
+            for (int i = 0; i < n; ++i)
+                std::memcpy(mats + ((size_t)i * matCount + r) * 4, cur, 4 * sizeof(float));
+        }
+    }
     // Route the LAST instance's rows through the normal constant path first: keeps
     // vsConst_/dirty/version bookkeeping truthful for whatever draws next (the
     // instanced variant ignores those uniform regs), and its flush-tag closes any
@@ -896,10 +907,10 @@ void GLDevice::KB_DrawXSurfInstanced(unsigned matBase, int matCount, const float
 }
 
 extern "C" void KB_DrawXSurfInstancedC(void *dev, unsigned matBase, int matCount,
-                                       const float *mats, int n,
+                                       float *mats, int n, unsigned gapMask,
                                        unsigned baseIndex, unsigned triCount) {
     static_cast<GLDevice *>(reinterpret_cast<IDirect3DDevice9 *>(dev))
-        ->KB_DrawXSurfInstanced(matBase, matCount, mats, n, baseIndex, triCount);
+        ->KB_DrawXSurfInstanced(matBase, matCount, mats, n, gapMask, baseIndex, triCount);
 }
 #endif
 

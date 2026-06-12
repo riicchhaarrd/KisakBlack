@@ -158,10 +158,12 @@ public:
     // Engine smodel instanced fast path (r_draw_staticmodel.cpp): draw N instances of the
     // currently-bound geometry in ONE instanced call; mats = n × matCount vec4s of
     // per-instance data destined for vs regs [matBase, matBase+matCount) — delivered as
-    // instanced vertex attributes via the ?inst shader variant. Falls back to a
-    // per-instance constant-upload loop when the instanced path can't apply.
-    void KB_DrawXSurfInstanced(unsigned matBase, int matCount, const float *mats, int n,
-                               unsigned baseIndex, unsigned triCount);
+    // instanced vertex attributes via the ?inst shader variant. gapMask bits mark span
+    // rows NOT written by the engine (not per-prim): filled here from the current
+    // constants and replicated per instance. Falls back to a per-instance
+    // constant-upload loop when the instanced path can't apply.
+    void KB_DrawXSurfInstanced(unsigned matBase, int matCount, float *mats, int n,
+                               unsigned gapMask, unsigned baseIndex, unsigned triCount);
     // ?lmarray: build a GL_TEXTURE_2D_ARRAY from the world's per-page lightmap textures (passed as
     // their IDirect3DBaseTexture9* basemaps), and set the current per-draw layer. KB_DrawWorldMulti's
     // sibling for lit world: dissolves the per-surface lightmap BIND into the uLmLayer uniform so lit
