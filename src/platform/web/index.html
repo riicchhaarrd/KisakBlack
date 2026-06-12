@@ -250,7 +250,8 @@
           if (q.has('manualpresent'))    ENV.KB_MANUALPRESENT = '1'; // legacy transferToImageBitmap present
           if (q.get('rscale'))           ENV.KB_RSCALE = q.get('rscale'); // scene render-scale N (0<N<1)
           if (q.has('worldmerge'))       ENV.KB_WORLDMERGE = '1';    // merge world draws per firstVertex-run (B, opt-in)
-          if (q.has('worldmerge2'))      ENV.KB_WORLDMERGE2 = '1';   // DEEP merge: one multi-draw across firstVertex (B escalation)
+          if (q.has('worldmerge2'))      ENV.KB_WORLDMERGE2 = '1';   // DEEP merge: one multi-draw across firstVertex (now DEFAULT)
+          if (q.has('noworldmerge'))     ENV.KB_NOWORLDMERGE = '1';  // disable the default world multi-draw merge (escape hatch)
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
           if (q.get('novao') === '1')    ENV.KB_NOVAO = '1';     // bypass VAO cache (bisect)

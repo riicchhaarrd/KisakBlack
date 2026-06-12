@@ -678,7 +678,10 @@ static void R_DrawTrianglesMerged(GfxTrianglesDrawStream *drawStream, GfxCmdBufP
 int g_kbWorldMerge2 = -1;
 static bool R_WorldMerge2Enabled()
 {
-    if ( g_kbWorldMerge2 < 0 ) { const char *e = getenv("KB_WORLDMERGE2"); g_kbWorldMerge2 = (e && *e == '1') ? 1 : 0; }
+    // DEFAULT ON (validated: world renders correctly + higher fps). ?noworldmerge disables it and
+    // falls back to the per-surface path (which itself can be forced to the simple merge via
+    // ?worldmerge). Disable is the escape hatch if a map ever shows wrong geometry.
+    if ( g_kbWorldMerge2 < 0 ) { const char *e = getenv("KB_NOWORLDMERGE"); g_kbWorldMerge2 = (e && *e == '1') ? 0 : 1; }
     return g_kbWorldMerge2 != 0;
 }
 static void R_DrawTrianglesMergedMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *state)
