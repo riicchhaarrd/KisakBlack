@@ -70,11 +70,11 @@ static inline void kbDrawElementsBV(GLenum mode, GLsizei count, GLenum type,
     }
     glDrawElementsBaseVertex(mode, count, type, const_cast<void *>(offset), bv);
 }
-// Engine-side gate (r_draw_bsp.cpp lit-world merge): non-zero baseVertex draws are only correct
-// when the multi-draw or base-vertex extension is live — the core glDrawElementsBaseVertex link
-// stub silently DROPS the base. Returns 0 until the context-init probes resolve.
+// Engine-side gate (r_draw_bsp.cpp world merges): KB_DrawWorldMulti handles every capability
+// tier — multi-draw ext, base-vertex ext, or CPU index-merge from the IB shadow (no exts,
+// headless Chromium) — so the merges are valid as soon as the context-init probes resolve.
 extern "C" int KB_WorldBaseVertexOK() {
-    return g_kbHasMultiDraw == 1 || g_kbHasBaseVertexExt == 1;
+    return g_kbHasMultiDraw != -1 && g_kbHasBaseVertexExt != -1;
 }
 // 1 = worker-LOCAL WebGL context (direct emscripten_gl* calls legal), 0 = PROXIED
 // (calls must go through the proxy-aware GLEW pointers or they hit a stub GLctx).
@@ -310,9 +310,38 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
         if ((int)inst.size() < n) { inst.assign(n, 1); binst.assign(n, 0); }
         glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(
             GL_TRIANGLES, counts, idxType, offsets, inst.data(), baseVerts, binst.data(), n);
-    } else {
+    } else if (g_kbHasBaseVertexExt == 1) {
         for (int i = 0; i < n; ++i)
             kbDrawElementsBV(GL_TRIANGLES, counts[i], idxType, offsets[i], baseVerts[i]);
+    } else {
+        // NEITHER extension (headless Chromium): the core glDrawElementsBaseVertex stub drops
+        // the base, so rebase on CPU from the IB shadow into ONE u32 draw from a scratch IB —
+        // the batch flush's merge trick. Validation-grade speed; never taken where an ext
+        // exists. ?vbarena gates on the base-vertex ext, so offsets/baseVerts here are
+        // buffer-relative (kbIbBias=kbVBias=0) and match the shadow's addressing.
+        static std::vector<unsigned> merged;
+        merged.clear();
+        size_t total = 0; for (int i = 0; i < n; ++i) total += (size_t)counts[i];
+        merged.reserve(total);
+        const unsigned char *src = ib_->shadowData();
+        for (int i = 0; i < n; ++i) {
+            size_t off = (size_t)offsets[i];
+            GLint bv = baseVerts[i];
+            GLsizei cnt = counts[i];
+            if (idxType == GL_UNSIGNED_SHORT) {
+                const unsigned short *p = (const unsigned short *)(src + off);
+                for (GLsizei k = 0; k < cnt; ++k) merged.push_back((unsigned)(p[k] + bv));
+            } else {
+                const unsigned *p = (const unsigned *)(src + off);
+                for (GLsizei k = 0; k < cnt; ++k) merged.push_back(p[k] + (unsigned)bv);
+            }
+        }
+        static GLuint scratch = 0;
+        if (!scratch) glGenBuffers(1, &scratch);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, scratch);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, merged.size() * sizeof(unsigned), merged.data(), GL_STREAM_DRAW);
+        glDrawElements(GL_TRIANGLES, (GLsizei)merged.size(), GL_UNSIGNED_INT, nullptr);
+        if (curVaoEnt_) curVaoEnt_->elem = scratch;   // scratch bind landed in the current VAO
     }
 #else
     (void)counts; (void)offsets; (void)baseVerts;   // native path unused (engine gates ?worldmerge2 to web)

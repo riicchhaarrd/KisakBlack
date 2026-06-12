@@ -113,7 +113,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: H13 (H12 + layered decls join the lit-world fold; bail-cause split)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: H14 (H13 + no-ext CPU index-merge tier in KB_DrawWorldMulti — world merges run headless)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
