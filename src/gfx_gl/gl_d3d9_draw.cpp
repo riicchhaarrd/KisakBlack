@@ -71,6 +71,7 @@ unsigned long g_kbMergeSubmits = 0;   // flushes that went through the CPU index
 // draw when enabled (a few ms/frame at 10k draws) — diagnostic runs only.
 int    g_kbTimeDraws = 0;
 double g_kbMsDraw    = 0.0;   // ms spent inside DrawIndexedPrimitive/DrawPrimitive
+double g_kbMsBuffers = 0.0;   // ?perfms=1: ms in RB_UpdateDynamicBuffers (dynamic VB/IB uploads)
 namespace {
 struct KbDrawTimer {
     double t0;
@@ -121,7 +122,7 @@ void kbMergeAppend(int i) {
 int g_kbInstEnable = -1;          // 0=off 1=detect+per-instance-normal(validate) 2=instanced draw
 unsigned g_kbVscChangedMin = 256, g_kbVscChangedMax = 0;   // vs-const range changed since last draw
 int      g_kbVscCalls = 0, g_kbNonMatrixDirty = 0;
-int      g_kbInstActive = 0, g_kbInstMatCount = 0, g_kbInstLocs[4] = {0,0,0,0};
+int      g_kbInstActive = 0, g_kbInstMatCount = 0, g_kbInstLocs[8] = {0};  // up to 8 instanced vsc regs
 unsigned g_kbInstMatBase = 0;
 GLDevice *g_kbInstDev = nullptr;
 unsigned long g_kbInstRuns = 0, g_kbInstSaved = 0;
@@ -132,6 +133,11 @@ unsigned long g_kbInstRuns = 0, g_kbInstSaved = 0;
 // need to be that big to capture matrix+lighting?).
 int g_kbLastDirtyCause = 0;
 unsigned long g_kbBrk[3] = {0}, g_kbBrkCause[12] = {0}; int g_kbBrkMaxRange = 0;
+// Diagnostic: among instanceable (matOnly) draws that DON'T continue an identical-geometry run,
+// how many share the previous draw's vertex/index BUFFER (different index range only = a
+// multiDraw+baseInstance target) vs a different buffer (irreducible separate draw)? Decides
+// whether the multiDraw per-object-matrix path is worth building.
+unsigned long g_kbMdrawSameBuf = 0, g_kbMdrawDiffBuf = 0;
 namespace {
 struct InstGeom {
     uintptr_t decl, vb, ib; unsigned start, prim, baseVert, off, stride;
@@ -146,9 +152,24 @@ unsigned s_iMatBase = 0; int s_iMatCount = 0;
 GLenum   s_iMode = GL_TRIANGLES; GLsizei s_iVerts = 0; GLenum s_iIdxType = GL_UNSIGNED_SHORT;
 const void *s_iOffset = nullptr;
 std::vector<float> s_iMatrices;
+// Loose-geometry multiDraw: draws that share the run head's BUFFER but use a different index
+// range extend the run anyway; per-draw geometry is recorded and the run flushes as ONE
+// glMultiDrawElementsInstancedBaseVertexBaseInstance with instanceCount=1 + baseInstance=i, so
+// each sub-draw reads matrix[i] from the same instanced-attribute buffer (no UBO, no extra
+// shader variant — reuses glShaderInstanced). Lets the per-object matrix stop breaking batches
+// for objects packed in a shared vertex buffer.
+std::vector<GLsizei>       s_iVertsArr;     // per-draw index count
+std::vector<const GLvoid*> s_iOffsArr;      // per-draw index offset
+std::vector<GLint>         s_iBaseVertArr;  // per-draw base vertex
+bool s_iVarying = false;                    // geometry differs across the run -> multiDraw path
 bool s_haveLast = false; InstGeom s_lastGeom; unsigned s_lastMatBase = 0; int s_lastMatCount = 0;
 unsigned s_instVbo = 0;
 } // namespace
+int g_kbMdraw = -1;   // loose-geometry multiDraw matrix path: 1=on (default), 0=?nomdraw
+// Same vertex/index BUFFER + format as the run head (different index range allowed).
+static inline bool kbLooseGeom(const InstGeom &a, const InstGeom &b) {
+    return a.decl == b.decl && a.vb == b.vb && a.ib == b.ib && a.off == b.off && a.stride == b.stride;
+}
 static inline void kbInstResetTrack() {
     g_kbVscChangedMin = 256; g_kbVscChangedMax = 0; g_kbVscCalls = 0; g_kbNonMatrixDirty = 0;
 }
@@ -210,6 +231,49 @@ extern "C" void KB_FlushTagged(int cause) {
 #else
 extern "C" void KB_FlushBatchedDraws() {}   // native: draws are immediate, nothing to flush
 extern "C" void KB_FlushTagged(int) {}
+#endif
+
+// ?worldmerge2: one multi-draw for N single-stream world surfaces from the bound (static) IB, each
+// with its own baseVertex (= firstVertex). The engine has bound stream0 = worldVb at offset 0 and the
+// static world IB; all N surfaces share that state, so one call replaces N R_DrawIndexedPrimitive
+// calls (the kbprof "draw submit" cost). Reuses the same WEBGL multi-draw extension the batch flush
+// uses; per-draw baseVertex avoids any uint16 index rebasing.
+void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, const int *baseVerts, int n) {
+    if (!ib_ || n <= 0) return;
+#if defined(__EMSCRIPTEN__)
+    KB_FlushBatchedDraws();          // close any open batch before our own multi-draw
+    KB_EnsureCtxOnThread();
+    extern unsigned long g_kbDraws; g_kbDraws += (unsigned long)n;
+    if (!useDrawProgram()) return;   // shader still linking -> skip (re-drawn next frame)
+    applyVertexState();
+    unsigned elem = ib_->glName();
+    if (!curVaoEnt_ || curVaoEnt_->elem != elem) {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elem);
+        if (curVaoEnt_) curVaoEnt_->elem = elem;
+    }
+    GLenum idxType = (ib_->format() == D3DFMT_INDEX16) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+    if (g_kbHasMultiDraw == 1) {
+        static std::vector<GLsizei> inst; static std::vector<GLuint> binst;
+        if ((int)inst.size() < n) { inst.assign(n, 1); binst.assign(n, 0); }
+        glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(
+            GL_TRIANGLES, counts, idxType, offsets, inst.data(), baseVerts, binst.data(), n);
+    } else {
+        for (int i = 0; i < n; ++i)
+            glDrawElementsBaseVertex(GL_TRIANGLES, counts[i], idxType,
+                                     const_cast<void *>(offsets[i]), baseVerts[i]);
+    }
+#else
+    (void)counts; (void)offsets; (void)baseVerts;   // native path unused (engine gates ?worldmerge2 to web)
+#endif
+}
+
+#if defined(__EMSCRIPTEN__)
+// Engine bridge: the renderer holds an IDirect3DDevice9* (always a GLDevice on this backend).
+extern "C" void KB_DrawWorldMultiC(void *dev, const int *counts, const void *const *offsets,
+                                   const int *baseVerts, int n) {
+    static_cast<GLDevice *>(reinterpret_cast<IDirect3DDevice9 *>(dev))
+        ->KB_DrawWorldMulti(counts, offsets, baseVerts, n);
+}
 #endif
 
 namespace {
@@ -548,6 +612,13 @@ void GLDevice::flushInstanceRun() {
     if (n < 1) return;
     const int mc = s_iMatCount;
     const float *mats = s_iMatrices.data();
+    // The run's vertex stream offset was folded into baseVertex (s_iGeom.off==0 for normalized
+    // runs), so applyVertexState below must set up the VAO at THIS offset, not the live stream
+    // offset (which is the last appended draw's real offset). Override for the duration of the
+    // flush; the guard restores it so the breaking draw that follows still sees its real offset.
+    unsigned kbSavedOff = streams_[0].offset;
+    streams_[0].offset = s_iGeom.off;
+    struct KbOffGuard { GLDevice *d; unsigned o; ~KbOffGuard() { d->streams_[0].offset = o; } } kbOffGuard{ this, kbSavedOff };
     auto bindElem = [&]() {
         unsigned elem = ib_ ? ib_->glName() : 0;
         if (!curVaoEnt_ || curVaoEnt_->elem != elem) {
@@ -566,8 +637,10 @@ void GLDevice::flushInstanceRun() {
             ++vsVer_;
             if (!useDrawProgram()) continue;
             applyVertexState(); bindElem();
-            glDrawElementsBaseVertex(s_iMode, s_iVerts, s_iIdxType,
-                                     const_cast<void *>(s_iOffset), (int)s_iGeom.baseVert);
+            GLsizei v = s_iVarying ? s_iVertsArr[i]    : s_iVerts;
+            const void *o = s_iVarying ? s_iOffsArr[i] : s_iOffset;
+            GLint bv = s_iVarying ? s_iBaseVertArr[i]  : (GLint)s_iGeom.baseVert;
+            glDrawElementsBaseVertex(s_iMode, v, s_iIdxType, const_cast<void *>(o), bv);
         }
     };
 
@@ -581,9 +654,9 @@ void GLDevice::flushInstanceRun() {
     if (decl_) for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
         int l = GLAttribLocation(e.Usage, e.UsageIndex); if (l >= 0 && l < 16) used[l] = true;
     }
-    int locs[4], got = 0;
+    int locs[8], got = 0;
     for (int l = 15; l >= 0 && got < mc; --l) if (!used[l]) locs[got++] = l;
-    if (got < mc) { emitNormal(); return; }       // no room -> safe fallback
+    if (got < mc) { emitNormal(); return; }       // no room (16-attrib budget) -> safe fallback
 
     g_kbInstActive = 1; g_kbInstMatBase = s_iMatBase; g_kbInstMatCount = mc;
     for (int i = 0; i < mc; ++i) g_kbInstLocs[i] = locs[i];
@@ -600,8 +673,19 @@ void GLDevice::flushInstanceRun() {
         glVertexAttribDivisor(locs[i], 1);
     }
     bindElem();
-    glDrawElementsInstancedBaseVertexBaseInstanceWEBGL(s_iMode, s_iVerts, s_iIdxType,
-        const_cast<void *>(s_iOffset), n, (int)s_iGeom.baseVert, 0);
+    if (s_iVarying) {
+        // Each sub-draw: instanceCount=1, baseInstance=i -> reads matrix[i] from the instanced
+        // attribute. Different index ranges in the SAME buffer collapse into one GL call.
+        static std::vector<GLsizei> icounts; static std::vector<GLuint> binsts;
+        icounts.assign(n, 1); binsts.resize(n);
+        for (int i = 0; i < n; ++i) binsts[i] = (GLuint)i;
+        glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(
+            s_iMode, s_iVertsArr.data(), s_iIdxType, s_iOffsArr.data(),
+            icounts.data(), s_iBaseVertArr.data(), binsts.data(), n);
+    } else {
+        glDrawElementsInstancedBaseVertexBaseInstanceWEBGL(s_iMode, s_iVerts, s_iIdxType,
+            const_cast<void *>(s_iOffset), n, (int)s_iGeom.baseVert, 0);
+    }
     // Restore the cached VAO: disable the instance attribs (free locations, divisor back to 0).
     for (int i = 0; i < mc; ++i) { glDisableVertexAttribArray(locs[i]); glVertexAttribDivisor(locs[i], 0); }
     g_kbInstActive = 0;
@@ -639,12 +723,31 @@ void GLDevice::applyVertexState() {
     bool dynamic = false;
     for (int i = 0; i < 4; ++i) if (streams_[i].vb && streams_[i].vb->isDynamic()) { dynamic = true; break; }
     if (noVao || dynamic) {
-        if (!vao_) glGenVertexArrays(1, &vao_);
+        // Shared re-spec VAO. The old code disabled all 16 attribs + re-enabled + re-bound the
+        // buffer PER ELEMENT every draw (~35 GL calls/dynamic-draw = a top web-tax source). But a
+        // dynamic stream almost always reuses the SAME decl draw-to-draw — only the per-draw OFFSET
+        // changes. So when the decl is unchanged we skip the disables/enables entirely (the shared
+        // VAO's enabled set + formats persist) and only re-point; and we bind each buffer once, not
+        // per element. Same-decl dynamic draws drop from ~35 calls to ~(1 bind + N point).
+        static const void *s_dynLastDecl = nullptr;
+        static unsigned    s_dynEnabledMask = 0;
+        bool freshVao = !vao_;
+        if (freshVao) { glGenVertexArrays(1, &vao_); s_dynLastDecl = nullptr; s_dynEnabledMask = 0; }
         if (curVao_ != vao_) glBindVertexArray(vao_);
         curVao_ = vao_; curVaoEnt_ = nullptr;   // element-bind gate disabled (no entry)
-        for (int i = 0; i < 16; ++i) glDisableVertexAttribArray(i);
-        glVertexAttrib4f(GLAttribLocation(D3DDECLUSAGE_COLOR, 0), 1.0f, 1.0f, 1.0f, 1.0f);
         if (!decl_) return;
+        bool sameDecl = !noVao && s_dynLastDecl == (const void *)decl_;
+        unsigned newMask = 0;
+        for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
+            int loc = GLAttribLocation(e.Usage, e.UsageIndex);
+            if (loc >= 0 && loc < 16 && e.Stream < 4 && streams_[e.Stream].vb) newMask |= (1u << loc);
+        }
+        if (!sameDecl) {
+            unsigned dis = s_dynEnabledMask & ~newMask;            // were on, no longer needed
+            for (int i = 0; i < 16; ++i) if (dis & (1u << i)) glDisableVertexAttribArray(i);
+            glVertexAttrib4f(GLAttribLocation(D3DDECLUSAGE_COLOR, 0), 1.0f, 1.0f, 1.0f, 1.0f);
+        }
+        unsigned boundBuf = ~0u;
         for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
             int loc = GLAttribLocation(e.Usage, e.UsageIndex);
             if (loc < 0 || e.Stream >= 4) continue;
@@ -652,11 +755,13 @@ void GLDevice::applyVertexState() {
             if (!s.vb) continue;
             GLint size; GLenum type; GLboolean norm;
             declType(e.Type, &size, &type, &norm);
-            glBindBuffer(GL_ARRAY_BUFFER, s.vb->glName());
-            glEnableVertexAttribArray(loc);
+            unsigned bn = s.vb->glName();
+            if (bn != boundBuf) { glBindBuffer(GL_ARRAY_BUFFER, bn); boundBuf = bn; }   // once per buffer
+            if (!sameDecl || !(s_dynEnabledMask & (1u << loc))) glEnableVertexAttribArray(loc);
             glVertexAttribPointer(loc, size, type, norm, s.stride,
                                   reinterpret_cast<const void *>(size_t(s.offset + e.Offset)));
         }
+        s_dynEnabledMask = newMask; s_dynLastDecl = decl_;
         return;
     }
 
@@ -797,19 +902,37 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     // ---- INSTANCING detection (?inst) -------------------------------------------------
     if (g_kbInstEnable < 0) { const char *e = getenv("KB_INST"); g_kbInstEnable = e ? (*e - '0') : 0;
                               if (g_kbInstEnable < 0 || g_kbInstEnable > 2) g_kbInstEnable = 0; }
+    if (g_kbMdraw < 0) { const char *e = getenv("KB_NOMDRAW"); g_kbMdraw = (e && *e == '1') ? 0 : 1; }  // ENV from index.html (worker can't read location.search)
     if (g_kbInstEnable) {
         g_kbInstDev = this;
-        // Since the last draw, was the ONLY change a single contiguous vs-const block <=4 regs?
-        // That block is the per-object matrix; everything else identical => instanceable.
-        bool matOnly = !g_kbNonMatrixDirty && g_kbVscCalls == 1
+        // Since the last draw, was the only per-object change a CONTIGUOUS-span vs-const block
+        // (<=8 regs so it fits the 16-attribute budget alongside geometry)? That span is the
+        // per-object matrix + any adjacent per-object regs (lighting/colour). Previously this
+        // required a SINGLE SetVertexShaderConstantF call of <=4 regs (matrix only) — which broke
+        // ~78% of instanceable draws whose per-object data is set across MULTIPLE VSC calls
+        // (multiCall). Now we accept the union span; flushInstanceRun still falls back safely when
+        // there aren't enough free attribute locations. (Gap regs in the span are replicated per
+        // instance — harmless: unchanged values, same for every instance.)
+        bool matOnly = !g_kbNonMatrixDirty
                     && g_kbVscChangedMin <= g_kbVscChangedMax
-                    && (g_kbVscChangedMax - g_kbVscChangedMin + 1) <= 4;
+                    && (g_kbVscChangedMax - g_kbVscChangedMin + 1) <= 8;
         unsigned mBase = g_kbVscChangedMin;
         int      mCount = (g_kbVscChangedMin <= g_kbVscChangedMax)
                         ? (int)(g_kbVscChangedMax - g_kbVscChangedMin + 1) : 0;
+        // Fold a stride-aligned SINGLE-stream vertex OFFSET into baseVertex so the GL stream offset
+        // becomes 0. Skinned/static models all share ONE cache VB but each draws at a different
+        // offset (skinnedCachedOffset) — without this they look like different geometry (off
+        // differs) and never collapse; folding the offset to baseVertex makes them share one VAO
+        // (off 0) so the multiDraw path packs them into a single call. (multiDraw supplies per-draw
+        // baseVertex for free.) Default-on; ?nomdraw disables the whole loose-geometry path.
+        unsigned normOff = streams_[0].offset, normBaseVert = (unsigned)BaseVertexIndex;
+        if (g_kbMdraw == 1 && streams_[0].stride && (streams_[0].offset % streams_[0].stride) == 0
+            && !streams_[1].vb && !streams_[2].vb && !streams_[3].vb) {
+            normBaseVert += streams_[0].offset / streams_[0].stride;
+            normOff = 0;
+        }
         InstGeom g{ (uintptr_t)decl_, (uintptr_t)streams_[0].vb, (uintptr_t)ib_,
-                    startIndex, primCount, (unsigned)BaseVertexIndex,
-                    streams_[0].offset, streams_[0].stride };
+                    startIndex, primCount, normBaseVert, normOff, streams_[0].stride };
         // Diagnostic: a same-geometry draw that CAN'T extend a run — why?
         if (!matOnly && ((s_iN > 0 && g == s_iGeom) || (s_haveLast && g == s_lastGeom))) {
             int rng = (g_kbVscChangedMin <= g_kbVscChangedMax)
@@ -819,17 +942,36 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
             else { ++g_kbBrk[2]; if (rng > g_kbBrkMaxRange) g_kbBrkMaxRange = rng; }
         }
         if (s_iN > 0) {
-            if (matOnly && g == s_iGeom && mBase == s_iMatBase && mCount == s_iMatCount) {
+            bool same  = (g == s_iGeom);
+            bool loose = (g_kbMdraw == 1) && !same && kbLooseGeom(g, s_iGeom);   // shared buffer, diff range
+            if (matOnly && (same || loose) && mBase == s_iMatBase && mCount == s_iMatCount) {
                 const float *src = vsConst_ + mBase * 4;          // append this instance's matrix
                 s_iMatrices.insert(s_iMatrices.end(), src, src + mCount * 4);
+                if (g_kbMdraw == 1) {                             // record per-draw geometry (multiDraw)
+                    s_iVertsArr.push_back(verts); s_iOffsArr.push_back(offset);
+                    s_iBaseVertArr.push_back((GLint)g.baseVert);   // offset already folded into baseVert
+                    if (loose) s_iVarying = true;
+                }
                 ++s_iN; kbInstResetTrack(); return D3D_OK;        // deferred
             }
             flushInstanceRun();                                   // pattern broke -> emit run
         }
-        if (matOnly && s_haveLast && g == s_lastGeom && mBase == s_lastMatBase && mCount == s_lastMatCount) {
+        // DIAGNOSTIC: classify matOnly draws that aren't continuing an identical-geometry run.
+        if (matOnly && s_haveLast && !(g == s_lastGeom)) {
+            bool sameBuf = g.decl == s_lastGeom.decl && g.vb == s_lastGeom.vb && g.ib == s_lastGeom.ib
+                        && g.off == s_lastGeom.off && g.stride == s_lastGeom.stride;
+            if (sameBuf) ++g_kbMdrawSameBuf; else ++g_kbMdrawDiffBuf;
+        }
+        bool startSame  = (g == s_lastGeom);
+        bool startLoose = (g_kbMdraw == 1) && !startSame && kbLooseGeom(g, s_lastGeom);
+        if (matOnly && s_haveLast && (startSame || startLoose) && mBase == s_lastMatBase && mCount == s_lastMatCount) {
             s_iN = 1; s_iGeom = g; s_iMatBase = mBase; s_iMatCount = mCount;
             s_iMode = mode; s_iVerts = verts; s_iIdxType = idxType; s_iOffset = offset;
             s_iMatrices.assign(vsConst_ + mBase * 4, vsConst_ + mBase * 4 + mCount * 4);
+            if (g_kbMdraw == 1) {                                 // init per-draw geometry with the head
+                s_iVertsArr.assign(1, verts); s_iOffsArr.assign(1, offset);
+                s_iBaseVertArr.assign(1, (GLint)g.baseVert); s_iVarying = false;   // offset folded in
+            }
             s_haveLast = false; kbInstResetTrack(); return D3D_OK;
         }
         // Drawn normally below; remember as the potential run head (its matrix range is known).

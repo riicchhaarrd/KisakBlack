@@ -149,6 +149,12 @@ private:
     void applyVertexState();      // set up VAO attribs from decl_ + streams_
 public:
     void flushInstanceRun();      // emit the accumulated instance run (?inst); called by KB_FlushTagged (free fn)
+    // Engine world-merge (?worldmerge2): draw N single-stream world surfaces from the currently-bound
+    // (static) index buffer as ONE multi-draw, with a per-surface baseVertex (= the surface's
+    // firstVertex). counts = per-surface index counts, offsets = per-surface BYTE offsets into the IB,
+    // baseVerts = per-surface base vertex. Collapses many engine R_DrawIndexedPrimitive calls into one.
+    // GL types aren't visible in this D3D-shim header (see gl_d3d9.h note) -> plain int/void.
+    void KB_DrawWorldMulti(const int *counts, const void *const *offsets, const int *baseVerts, int n);
 private:
     bool applyTextures();         // bind stage-0 texture + sampler state; returns true if sampling
     void applyStageSampler(unsigned stage, unsigned target); // apply stage's filter/wrap to bound tex
@@ -240,6 +246,20 @@ private:
     // Blend factors are set by two separate render states but applied together.
     DWORD blendSrc_  = D3DBLEND_ONE;
     DWORD blendDest_ = D3DBLEND_ZERO;
+    // Lazy blend state: SRCBLEND/DESTBLEND/BLENDOP/ALPHABLENDENABLE only stage the shadow
+    // values + set blendDirty_; commitBlendState() (called once per draw from useDrawProgram)
+    // resolves them into at most one glEnable/glBlendFunc/glBlendEquation each, skipping any
+    // whose already-applied value is unchanged. Kills the SRC-then-DEST double glBlendFunc and
+    // the redundant blend toggles WebGL2/ANGLE pays dearly for. appliedBlend* mirror the GL
+    // state actually emitted (so commit is idempotent across batched draws).
+    bool   blendEnabled_       = false;          // D3DRS_ALPHABLENDENABLE shadow
+    DWORD  blendOp_            = D3DBLENDOP_ADD;  // D3DRS_BLENDOP shadow
+    bool   blendDirty_         = true;           // a blend render-state changed since last commit
+    int      appliedBlendEnabled_ = -1;          // -1 = unknown (force first emit)
+    unsigned appliedBlendSrc_   = 0xFFFFFFFFu;   // GLenum; sentinel != any GL factor (GL_ZERO is 0!)
+    unsigned appliedBlendDest_  = 0xFFFFFFFFu;
+    unsigned appliedBlendOp_    = 0xFFFFFFFFu;
+    void   commitBlendState();
 
     // Alpha test (func + ref are set separately but applied together via glAlphaFunc).
     DWORD alphaFunc_ = D3DCMP_ALWAYS;

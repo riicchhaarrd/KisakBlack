@@ -729,7 +729,7 @@ unsigned GLVertexShader::glShader() {
 // from instanced vertex attributes (kbInstRow0..N at locations locs[], divisor 1 set by the
 // draw path). Pure text transform of the already-validated GLSL — no bytecode re-decode.
 unsigned GLVertexShader::glShaderInstanced(unsigned matBase, int matCount, const int *locs) {
-    if (!translatedOk_ || matCount < 1 || matCount > 4) return 0;
+    if (!translatedOk_ || matCount < 1 || matCount > 8) return 0;   // up to 8 instanced vsc regs
     unsigned long long key = ((unsigned long long)matBase << 32) | ((unsigned long long)matCount << 24)
                            | ((unsigned)locs[0] & 0xff);
     auto it = instVariants_.find(key);
