@@ -1690,6 +1690,12 @@ void __cdecl R_DrawSurfs(GfxCmdBufContext context, GfxCmdBufState *prepassState,
     context.state->origMaterial = 0;
 }
 
+#if defined(__EMSCRIPTEN__)
+// [perf/tr] adjacent-batch transition counters — see the classifier inside
+// R_RenderDrawSurfListMaterial and the printer in gfx_gl/glcontext_sdl.cpp.
+unsigned long g_kbTrBatches = 0, g_kbTrSameMatDiffLight = 0, g_kbTrSameMatDiffTech = 0, g_kbTrDiffMat = 0;
+#endif
+
 unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *listArgs, GfxCmdBufContext prepassContext)
 {
     PROF_SCOPED("RenderMatBatch");
@@ -1720,6 +1726,35 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
 
     if ( R_SetTechnique(listArgs->context, &prepassContext, listArgs->info, drawSurf) )
     {
+#if defined(__EMSCRIPTEN__)
+        // [perf/tr] adjacent-batch transition classes (cross-light merge sizing): same
+        // material under a different primary light with the SAME technique = a merge
+        // candidate (only light constants differ between the batches); a technique
+        // change = a different shader (not cheaply mergeable); else a real material
+        // boundary. Printed per frame next to [perf/fc] (glcontext_sdl.cpp).
+        {
+            extern unsigned long g_kbTrBatches, g_kbTrSameMatDiffLight, g_kbTrSameMatDiffTech, g_kbTrDiffMat;
+            static unsigned int kbPrevMat = ~0u, kbPrevLight = ~0u;
+            static const void *kbPrevTech = 0;
+            unsigned int kbMat = (unsigned int)((drawSurf.packed >> 31) & 0xFFF);
+            unsigned int kbLight = (unsigned int)((drawSurf.packed >> 43) & 0xFF);
+            const void *kbTech = listArgs->context.state->technique;
+            ++g_kbTrBatches;
+            if ( kbMat == kbPrevMat )
+            {
+                if ( kbLight != kbPrevLight )
+                {
+                    if ( kbTech == kbPrevTech ) ++g_kbTrSameMatDiffLight;
+                    else                        ++g_kbTrSameMatDiffTech;
+                }
+            }
+            else
+            {
+                ++g_kbTrDiffMat;
+            }
+            kbPrevMat = kbMat; kbPrevLight = kbLight; kbPrevTech = kbTech;
+        }
+#endif
         R_SetPixPrimarySortKey(listArgs->context.state, (drawSurf.packed >> 58) & 0x3F);
         R_BeginPixMaterial(listArgs->context.state);
         if ( prepassContext.state )

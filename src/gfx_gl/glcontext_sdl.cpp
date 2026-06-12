@@ -66,6 +66,8 @@ extern unsigned long g_kbBlits;                           // StretchRect blits (
 extern int g_kbRaceParity;                                // SMP parity of the frame being rendered
 extern int g_kbHasMultiDraw;                              // multi-draw ext availability
 extern int g_kbHasBaseVertexExt;                          // single-draw base-vertex ext (kbDrawElementsBV / ?vbarena gate)
+// [perf/tr] adjacent-batch transition counters (rb_backend.cpp R_RenderDrawSurfListMaterial)
+extern unsigned long g_kbTrBatches, g_kbTrSameMatDiffLight, g_kbTrSameMatDiffTech, g_kbTrDiffMat;
 extern int g_kbCtxIsLocal;                                // 1 = worker-local context
 extern int g_kbBatchEnable, g_kbCoalesceEnable;           // opt-in perf toggles (ENV)
 extern unsigned long g_kbGLCtxHandle;                     // context handle for thread-attach
@@ -106,7 +108,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: H10 (smodel fast path extended to LIT groups — lighting coords as instance data, gap-fill, hoisted probe bind)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: H11 (H10 + [perf/tr] batch-transition classifier for the cross-light merge design)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -505,6 +507,18 @@ public:
                     g_kbBrk[0], g_kbBrkCause[4], g_kbBrkCause[5]+g_kbBrkCause[6], g_kbBrkCause[7],
                     g_kbBrkCause[9], g_kbBrkCause[11], g_kbBrk[1], g_kbBrk[2], g_kbBrkMaxRange,
                     g_kbMdrawSameBuf, g_kbMdrawDiffBuf);
+            // [perf/tr] per-frame batch-transition classes: how many adjacent material
+            // batches could MERGE across a light boundary (same material+technique,
+            // only light constants differ) vs need a shader change vs are real
+            // material boundaries — sizes the cross-light batch-merge lever.
+            {
+                static unsigned long tb0 = 0, tl0 = 0, tt0 = 0, tm0 = 0;
+                fprintf(stderr, "[perf/tr] batches=%lu mergeable(sameMat+light)=%lu techChange=%lu matChange=%lu\n",
+                        (g_kbTrBatches - tb0) / frames, (g_kbTrSameMatDiffLight - tl0) / frames,
+                        (g_kbTrSameMatDiffTech - tt0) / frames, (g_kbTrDiffMat - tm0) / frames);
+                tb0 = g_kbTrBatches; tl0 = g_kbTrSameMatDiffLight;
+                tt0 = g_kbTrSameMatDiffTech; tm0 = g_kbTrDiffMat;
+            }
             // ?perfms=1: wall-time split. draw = inside DrawIndexedPrimitive (program
             // setup + GL submission), pres = inside SwapBuffers (commit + bitmap ship),
             // other = engine CPU (drawsurf generation, state-setter work, waits).
