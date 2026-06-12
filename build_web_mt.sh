@@ -53,6 +53,16 @@ CXXFLAGS="-std=c++20 -c -w -fpermissive -Wno-narrowing \
   -msimd128 -msse -msse2 \
   -include src/platform/compat/msvc_compat.h -DKISAK_MP -DKISAK_WEB"
 
+# KB_DEPROXY=1: compile the de-proxy variant. Only glcontext_sdl.cpp's KB_RenderThreadYield reads
+# KB_DEPROXY_BUILD (to call emscripten_sleep); link with KB_DEPROXY=1 to add -sASYNCIFY. Build the
+# de-proxy variant into a SEPARATE output via KB_OUTDIR (the obj dir is shared — recompile
+# glcontext_sdl.cpp for whichever variant you link last).
+: "${KB_DEPROXY:=0}"
+if [ "${KB_DEPROXY}" = "1" ]; then
+  CXXFLAGS="$CXXFLAGS -DKB_DEPROXY_BUILD"
+  echo "  [KB_DEPROXY] compiling with -DKB_DEPROXY_BUILD (render-thread yield active)"
+fi
+
 # Emscripten settings that affect *compilation* (SDL2 + GLES3 headers + pthreads).
 EMFLAGS="-pthread -sUSE_SDL=2 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
   -sALLOW_MEMORY_GROWTH=1 -O2"
@@ -122,6 +132,20 @@ if [ "$#" -eq 0 ]; then
     fi
   done
 fi
+
+# --- standalone WMAv2 (xWMA) decoder: Rockbox-derived libwma. Always compiled (7 small TUs)
+# so incremental al_audio rebuilds still relink against fresh decoder objects. Explicit list
+# excludes codeclib.c (Rockbox internals) and _wma_selftest.c (has its own main()). ---
+echo "sweeping libwma (WMAv2 decoder) C..."
+for f in wmadeci wmafixed mdct mdct_lookup fft-ffmpeg ffmpeg_bitstream wma_decode; do
+  src="src/audio_openal/libwma/${f}.c"; tag="$(echo "$src" | tr / _)"
+  if emcc $CFLAGS $EMFLAGS -Isrc/audio_openal/libwma "$src" -o "build_web_mt/obj/${tag}.o" 2> "build_web_mt/logs/${tag}.log"; then
+    echo "$src" >> build_web_mt/pass.txt; printf 'PASS %s\n' "$src"
+  else
+    printf '%s\t%s\n' "$src" "$(grep -m1 -E 'error:|fatal error:' build_web_mt/logs/${tag}.log)" >> build_web_mt/fail.txt
+    printf 'FAIL %s\n' "$src"
+  fi
+done
 
 # --- summary ---
 P=$(wc -l < build_web_mt/pass.txt); F=$(wc -l < build_web_mt/fail.txt)

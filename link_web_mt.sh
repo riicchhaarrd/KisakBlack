@@ -124,8 +124,16 @@ fi
 # requires an event-loop yield the render thread never makes.
 : "${KB_DEPROXY:=0}"
 if [ "${KB_DEPROXY}" = "1" ]; then
-  LINKFLAGS="$LINKFLAGS -sOFFSCREENCANVAS_SUPPORT=1"
-  echo "  [KB_DEPROXY] OffscreenCanvas de-proxy ENABLED (DOM-thread transfer -> backend worker)"
+  # OffscreenCanvas transfer + ASYNCIFY render-thread yield (B127/B129). ASYNCIFY lets the
+  # blocking render thread briefly return to its Web Worker event loop (KB_RenderThreadYield ->
+  # emscripten_sleep, compiled in only under -DKB_DEPROXY_BUILD) so Chrome delivers WebGL
+  # shader/link completions — the fix for the nondeterministic in-game black. IGNORE_INDIRECT +
+  # the tight asyncify_funcs.txt ADD list keep the per-draw hot path uninstrumented. The PROXIED
+  # build links WITHOUT these (DOM thread has its own event loop; lean wasm).
+  LINKFLAGS="$LINKFLAGS -sOFFSCREENCANVAS_SUPPORT=1 \
+    -sASYNCIFY=1 -sASYNCIFY_IGNORE_INDIRECT=1 -sASYNCIFY_ADD=@asyncify_funcs.txt \
+    -sASYNCIFY_IMPORTS=invoke_v,invoke_vi,invoke_ii,invoke_iii,invoke_vii"
+  echo "  [KB_DEPROXY] OffscreenCanvas de-proxy + ASYNCIFY yield ENABLED (-> backend worker)"
 fi
 # KB_SAFEHEAP=1: instrument heap accesses (-sSAFE_HEAP=2: OOB only, alignment checks OFF -- the decompiled packed structs trip =1 instantly on a benign dvar access) to catch the wild write
 # that nulls the runtime's main-thread global (the in-game normalize_thread abort) AT
