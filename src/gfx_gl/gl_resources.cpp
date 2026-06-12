@@ -123,8 +123,13 @@ KbArena g_kbVbArena{GL_ARRAY_BUFFER,      48u << 20};
 KbArena g_kbIbArena{GL_COPY_WRITE_BUFFER, 16u << 20};
 } // namespace
 extern "C" int KB_VbArenaEnabled() {
+    // Default ON (user-validated H6); ?novbarena (or ?vbarena=0) = escape hatch.
     static int envOn = -1;
-    if (envOn < 0) { const char *v = getenv("KB_VBARENA"); envOn = (v && *v == '1') ? 1 : 0; }
+    if (envOn < 0) {
+        const char *no = getenv("KB_NOVBARENA");
+        const char *v  = getenv("KB_VBARENA");
+        envOn = ((no && *no == '1') || (v && *v == '0')) ? 0 : 1;
+    }
     // The arena's baseVertex folds need a REAL base-vertex draw path. WebGL2 core has
     // none (the plain glDrawElementsBaseVertex stub DROPS basevertex — the H5 world/gun
     // corruption); kbDrawElementsBV needs WEBGL_draw_instanced_base_vertex_base_instance.
