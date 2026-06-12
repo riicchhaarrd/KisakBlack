@@ -45,6 +45,16 @@ private:
     ALenum  format_ = 0;
     ALsizei rate_ = 48000;
     UINT32  channels_ = 1;
+    bool    isAdpcm_ = false;      // MS-ADPCM (WAVE_FORMAT_ADPCM) -> decode to PCM16 before queuing
+    bool    isWma_ = false;        // WMAv2 (WAVE_FORMAT_WMAUDIO2, tag 0x161) -> decode to PCM16
+    int     blockAlign_ = 0;       // ADPCM/WMA block (packet) size in bytes
+    int     avgBytesPerSec_ = 0;   // WMA nAvgBytesPerSec (decoder bitrate hint)
+    unsigned origTag_ = 0;         // original wFormatTag
+    void   *wma_ = nullptr;        // persistent WmaDecoder* (kept across streaming-window submits)
+    int     cachedQueued_ = 0;     // local mirror of AL_BUFFERS_QUEUED (++ on submit, -- on recycle)
+    unsigned svcTick_ = 0;         // throttles Service()'s per-frame sync query (staggered per voice)
+    float   lastGain_ = -1.0f;     // cache: skip per-frame alSourcef(AL_GAIN) when unchanged
+    float   lastPitch_ = -1.0f;    // cache: skip per-frame alSourcef(AL_PITCH) when unchanged
     IXAudio2VoiceCallback *cb_ = nullptr;
     UINT64  samplesPlayed_ = 0;
     void   *lastContext_ = nullptr;

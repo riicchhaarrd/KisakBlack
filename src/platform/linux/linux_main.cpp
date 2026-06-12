@@ -12,6 +12,8 @@
 #include <win32/win_workercmds.h>
 #include <win32/win_tasks.h>
 #include <win32/win_stream.h>
+#include <sound/snd_stream.h>   // Snd_StreamUpdate() — driven by KB_StreamPump below
+#include <unistd.h>             // usleep
 #include <demo/demo_common.h>
 #include <physics/phys_broad_phase.h>
 
@@ -56,7 +58,43 @@ bool   GPad_IsStickReleased(int, GamePadStick, GamePadStickDir) { return false; 
 // ---- Streaming / task manager (worker threads now in linux_workercmds.cpp) ---
 // R_InitWorkerThreads, IW_task_manager_*, and the nuge_physics job module are the
 // real job-queue bring-up, ported to src/platform/linux/linux_workercmds.cpp.
-char Stream_Init() { return 1; }
+
+// Stream loader thread. The win32 Stream_Thread (which drives Snd_StreamUpdate) lived in the
+// excluded win32/ tree, so this was stubbed `return 1` and streamed audio was NEVER driven ->
+// menu music / streamed ambience starve (Snd_StreamAcquireWindow always returns STARVING).
+//
+// NOTE: we deliberately do NOT use Sys_SpawnStreamThread here. That helper calls Sys_CreateEvent
+// to build the shared `streamEvent`, which texture streaming (r_stream.cpp Sys_WakeStream) signals
+// VERY frequently during movement. With the event created, each of those producer-side
+// Sys_WakeStream calls becomes a real mutex+cond_signal on the RENDER thread (instead of a no-op
+// on a null event) -> render FPS tank. So we spawn the thread directly via the engine's proven
+// Sys_CreateThread (the STREAM pool slot) but skip the events entirely, and POLL Snd_StreamUpdate
+// instead of event-waiting. Snd_StreamUpdate returns instantly when idle and a stream only needs a
+// new 536KB window every ~44s, so a 30ms poll is plentiful. Sys_WakeStream stays a cheap no-op
+// (streamEvent never created) -> texture streaming is exactly as fast as before this change.
+static void KB_StreamPump(unsigned int /*threadContext*/)
+{
+    for (;;)
+    {
+        Snd_StreamUpdate();   // load any pending stream windows (instant return when no work)
+        // Poll SLOWLY: each Snd_StreamUpdate locks the per-stream mutexes that the audio mixer
+        // (running on the proxied main thread) spin-locks, so frequent polling steals main-thread
+        // time -> render stutter. A stream only needs a new 536KB window every ~44s, so 250ms is
+        // ~180x the required rate and keeps mutex collisions with the mixer near zero.
+        usleep(250 * 1000);   // 250 ms
+    }
+}
+char Stream_Init()
+{
+    static bool started = false;
+    if (!started)
+    {
+        started = true;
+        Sys_CreateThread(KB_StreamPump, THREAD_CONTEXT_STREAM);
+        Sys_ResumeThread(THREAD_CONTEXT_STREAM);
+    }
+    return 1;
+}
 bool PC_StartWithNoSounds() { return false; }
 char TaskManager_AnyTaskInProgress(overlappedTask *) { return 0; }
 void TaskManager_ClearOverlappedTasks(overlappedTask *) {}

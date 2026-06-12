@@ -6,6 +6,7 @@
 #include <Windows.h>
 #include <qcommon/common.h>
 #include <universal/com_files.h>
+#include <unistd.h>   // usleep — chunked stream read yields between pieces (see Snd_FileRead)
 
 char *g_snd_stream_buffer;
 snd_stream *g_snd_streams;
@@ -1590,13 +1591,27 @@ char __cdecl Snd_FileOpen(const char *filename, snd_stream_file *file)
 
 char __cdecl Snd_FileRead(snd_stream_file *file, unsigned int offset, unsigned int size, unsigned __int8 *data)
 {
-    DWORD LastError; // eax
-
     FS_Seek(file->handle, offset + LODWORD(file->base_offset), 2);
-    if (FS_Read(data, size, file->handle) == size)
-        return 1;
-    LastError = GetLastError();
-    Com_PrintError(9, "### could not read file %s, error: %08.8X\n", file->filename, LastError);
-    return 0;
+    // Read the (up to 536KB) stream window in 64KB chunks with a yield between. A single large
+    // FS_Read monopolises the web build's shared sync-I/O path long enough to cause a periodic
+    // render hitch whenever a music/ambience window loads; chunking releases it between pieces so
+    // the main thread's I/O can interleave. Successive FS_Reads continue from the seek position.
+    // (Harmless on native: ~one extra-syscall-per-64KB plus a few ms of sleep, every ~44s.)
+    const unsigned int CHUNK = 64u * 1024u;
+    for (unsigned int done = 0; done < size; )
+    {
+        unsigned int n = size - done;
+        if (n > CHUNK) n = CHUNK;
+        if (FS_Read(data + done, n, file->handle) != n)
+        {
+            DWORD LastError = GetLastError();
+            Com_PrintError(9, "### could not read file %s, error: %08.8X\n", file->filename, LastError);
+            return 0;
+        }
+        done += n;
+        if (done < size)
+            usleep(1000);   // 1 ms — yield so other I/O / the main thread interleave between chunks
+    }
+    return 1;
 }
 
