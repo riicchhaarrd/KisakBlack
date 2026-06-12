@@ -65,6 +65,7 @@ extern unsigned long g_kbSkipPending, g_kbBuiltinFall;    // dropped/degraded dr
 extern unsigned long g_kbBlits;                           // StretchRect blits (gl_surface_ops.cpp)
 extern int g_kbRaceParity;                                // SMP parity of the frame being rendered
 extern int g_kbHasMultiDraw;                              // multi-draw ext availability
+extern int g_kbHasBaseVertexExt;                          // single-draw base-vertex ext (kbDrawElementsBV / ?vbarena gate)
 extern int g_kbCtxIsLocal;                                // 1 = worker-local context
 extern int g_kbBatchEnable, g_kbCoalesceEnable;           // opt-in perf toggles (ENV)
 extern unsigned long g_kbGLCtxHandle;                     // context handle for thread-attach
@@ -105,7 +106,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: G6 (blit-patch present fix + ctrPx canary readback OFF default; gpusync default on)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: H6 (vbarena baseVertex fix: route non-zero bases via WEBGL_draw_instanced_base_vertex_base_instance; arena gated on the ext)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -234,13 +235,19 @@ public:
             }
             g_kbHasMultiDraw = (g_kbCtxIsLocal && emscripten_webgl_enable_extension(
                 ctx_, "WEBGL_multi_draw_instanced_base_vertex_base_instance")) ? 1 : 0;
+            // Single-draw base-vertex ext: WebGL2 core has NO baseVertex — the plain
+            // glDrawElementsBaseVertex is a stub that DROPS basevertex (stubs_web.cpp).
+            // kbDrawElementsBV (gl_d3d9_draw.cpp) needs this ext for any non-zero base;
+            // ?vbarena is gated on it (its folds make every static draw base-vertex).
+            g_kbHasBaseVertexExt = (g_kbCtxIsLocal && emscripten_webgl_enable_extension(
+                ctx_, "WEBGL_draw_instanced_base_vertex_base_instance")) ? 1 : 0;
             // Default ON: the post-flicker perf push. The crash that originally
             // benched these was the thread-context-attach bug (fixed), not batching.
             { const char *v = getenv("KB_BATCH");    g_kbBatchEnable    = (v && *v == '0') ? 0 : 1; }
             { const char *v = getenv("KB_COALESCE"); g_kbCoalesceEnable = (v && *v == '0') ? 0 : 1; }
             { const char *v = getenv("KB_PERFMS");   g_kbTimeDraws      = (v && *v == '1') ? 1 : 0; }
-            fprintf(stderr, "[gl] ctxLocal=%d multi_draw=%d batch=%d coalesce=%d\n",
-                    g_kbCtxIsLocal, g_kbHasMultiDraw, g_kbBatchEnable, g_kbCoalesceEnable);
+            fprintf(stderr, "[gl] ctxLocal=%d multi_draw=%d basevtx=%d batch=%d coalesce=%d\n",
+                    g_kbCtxIsLocal, g_kbHasMultiDraw, g_kbHasBaseVertexExt, g_kbBatchEnable, g_kbCoalesceEnable);
         }
         // Canary program for GPU-channel death detection: client-side state (VERSION,
         // getError, isContextLost) stays "alive" when Chrome drops the GPU-process side

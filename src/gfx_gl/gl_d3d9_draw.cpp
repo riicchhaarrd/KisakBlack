@@ -56,6 +56,20 @@ extern "C" void KB_EnsureCtxOnThread() {}
 
 #if defined(__EMSCRIPTEN__)
 int g_kbHasMultiDraw = -1;        // set at context init: 1 = extension available
+// WEBGL_draw_instanced_base_vertex_base_instance (set at context init). WebGL2 core has
+// NO base-vertex draw: the link-level glDrawElementsBaseVertex is a STUB that silently
+// DROPS basevertex (stubs_web.cpp — fine while every base was 0). Any non-zero base
+// must ride this extension's instanced entry with instanceCount=1.
+int g_kbHasBaseVertexExt = -1;
+static inline void kbDrawElementsBV(GLenum mode, GLsizei count, GLenum type,
+                                    const void *offset, GLint bv) {
+    if (bv != 0 && g_kbHasBaseVertexExt == 1) {
+        glDrawElementsInstancedBaseVertexBaseInstanceWEBGL(mode, count, type,
+            const_cast<void *>(offset), 1, bv, 0);
+        return;
+    }
+    glDrawElementsBaseVertex(mode, count, type, const_cast<void *>(offset), bv);
+}
 // 1 = worker-LOCAL WebGL context (direct emscripten_gl* calls legal), 0 = PROXIED
 // (calls must go through the proxy-aware GLEW pointers or they hit a stub GLctx).
 int g_kbCtxIsLocal = 0;
@@ -104,7 +118,9 @@ int           s_bMergedN = 0;     // batch entries snapshotted into s_bMerged so
 
 void kbMergeAppend(int i) {
     const unsigned char *src = s_bIb->shadowData();
-    size_t off = (size_t)s_bOffsets[i];
+    // ?vbarena: per-draw offsets are GL offsets into the shared chunk; the CPU shadow
+    // starts at this buffer's placement, so strip the arena bias before reading.
+    size_t off = (size_t)s_bOffsets[i] - (s_bIb->inArena() ? s_bIb->arenaOff() : 0u);
     GLint base = s_bBaseVerts[i];
     GLsizei n = s_bCounts[i];
     if (s_bType == GL_UNSIGNED_SHORT) {
@@ -167,6 +183,16 @@ bool s_haveLast = false; InstGeom s_lastGeom; unsigned s_lastMatBase = 0; int s_
 unsigned s_instVbo = 0;
 } // namespace
 int g_kbMdraw = -1;   // loose-geometry multiDraw matrix path: 1=on (default), 0=?nomdraw
+// ?vbarena (gl_resources.cpp): arena-resident static buffers normalize their bind to
+// (chunk identity, folded offset) so switching between co-resident models changes no GL
+// vertex state — no batch flush, shared VAO, per-draw baseVertex carries the placement.
+// s_kbStream0Fold is the vertex-count fold for the CURRENT stream-0 bind, applied to
+// every draw's BaseVertexIndex. Valid only for single-stream draws (baseVertex shifts
+// EVERY stream's fetch); multi-stream draws un-fold at draw time (DrawIndexedPrimitive).
+static size_t   s_kbStreamIdent[4] = {0};
+static size_t   s_kbIbIdent = 0;
+static unsigned s_kbStream0Fold = 0;
+extern "C" int KB_VbArenaEnabled();   // gl_resources.cpp
 // Same vertex/index BUFFER + format as the run head (different index range allowed).
 static inline bool kbLooseGeom(const InstGeom &a, const InstGeom &b) {
     return a.decl == b.decl && a.vb == b.vb && a.ib == b.ib && a.off == b.off && a.stride == b.stride;
@@ -180,8 +206,7 @@ extern "C" void KB_FlushBatchedDraws() {
     if (!s_bN) return;
     ++g_kbBatchFlushes;
     if (s_bN == 1) {
-        glDrawElementsBaseVertex(s_bMode, s_bCounts[0], s_bType,
-                                 const_cast<void *>(s_bOffsets[0]), s_bBaseVerts[0]);
+        kbDrawElementsBV(s_bMode, s_bCounts[0], s_bType, s_bOffsets[0], s_bBaseVerts[0]);
     } else if (g_kbHasMultiDraw == 1) {
         glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(
             s_bMode, s_bCounts, s_bType, s_bOffsets, s_bInstCounts, s_bBaseVerts, s_bBaseInst, s_bN);
@@ -205,8 +230,7 @@ extern "C" void KB_FlushBatchedDraws() {
         if (s_bElemSlot) *s_bElemSlot = s_mergeIbo;
     } else {
         for (int i = 0; i < s_bN; ++i)
-            glDrawElementsBaseVertex(s_bMode, s_bCounts[i], s_bType,
-                                     const_cast<void *>(s_bOffsets[i]), s_bBaseVerts[i]);
+            kbDrawElementsBV(s_bMode, s_bCounts[i], s_bType, s_bOffsets[i], s_bBaseVerts[i]);
     }
     s_bN = 0;
     s_bMergedN = 0;
@@ -253,6 +277,20 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
         if (curVaoEnt_) curVaoEnt_->elem = elem;
     }
     GLenum idxType = (ib_->format() == D3DFMT_INDEX16) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+    // ?vbarena: the engine's inputs are buffer-relative — bias index byte offsets by the
+    // IB placement and baseVertex by the stream-0 fold (these world surfs are
+    // single-stream by construction, so the fold is valid).
+    static std::vector<const void *> kbOffs; static std::vector<int> kbBases;
+    unsigned kbIbBias = ib_->inArena() ? ib_->arenaOff() : 0u;
+    int kbVBias = (int)s_kbStream0Fold;
+    if (kbIbBias || kbVBias) {
+        kbOffs.resize(n); kbBases.resize(n);
+        for (int i = 0; i < n; ++i) {
+            kbOffs[i]  = (const void *)((size_t)offsets[i] + kbIbBias);
+            kbBases[i] = baseVerts[i] + kbVBias;
+        }
+        offsets = kbOffs.data(); baseVerts = kbBases.data();
+    }
     if (g_kbHasMultiDraw == 1) {
         static std::vector<GLsizei> inst; static std::vector<GLuint> binst;
         if ((int)inst.size() < n) { inst.assign(n, 1); binst.assign(n, 0); }
@@ -260,8 +298,7 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
             GL_TRIANGLES, counts, idxType, offsets, inst.data(), baseVerts, binst.data(), n);
     } else {
         for (int i = 0; i < n; ++i)
-            glDrawElementsBaseVertex(GL_TRIANGLES, counts[i], idxType,
-                                     const_cast<void *>(offsets[i]), baseVerts[i]);
+            kbDrawElementsBV(GL_TRIANGLES, counts[i], idxType, offsets[i], baseVerts[i]);
     }
 #else
     (void)counts; (void)offsets; (void)baseVerts;   // native path unused (engine gates ?worldmerge2 to web)
@@ -516,20 +553,69 @@ HRESULT WINAPI GLDevice::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffe
     if (StreamNumber >= 4) return D3D_OK;  // TODO: support >4 streams if needed
     Stream &s = streams_[StreamNumber];
     GLVertexBuffer *vb = static_cast<GLVertexBuffer *>(pStreamData);
+#if defined(__EMSCRIPTEN__)
+    if (vb && Stride) vb->noteStride(Stride);   // ?vbarena: placement alignment (pre-sync only)
+    // Place arena-eligible buffers NOW (first bind), so ident/fold below see the final
+    // identity — deferring to draw time would build the first VAO without the arena
+    // offset. Same thread the draw-path glName() calls run on; a pending upload landing
+    // here is safe (resource Unlock already flushed any open batch).
+    if (vb && !vb->inArena() && !vb->isDynamic() && KB_VbArenaEnabled()) {
+        KB_EnsureCtxOnThread();
+        vb->glName();
+    }
+    size_t ident = vb ? vb->bindIdent() : 0;
+    unsigned effOff = OffsetInBytes, fold = 0;
+    if (vb && vb->inArena()) {
+        unsigned total = vb->arenaOff() + OffsetInBytes;
+        if (StreamNumber == 0 && Stride && (total % Stride) == 0) { fold = total / Stride; effOff = 0; }
+        else effOff = total;     // unfoldable: VAO carries the arena offset (still correct)
+    }
+    // No-change fast path — by GL bind identity, so two arena co-residents don't flush.
+    // A pending upload on a DIFFERENT object must take the slow path: the batch-start
+    // applyVertexState/glName is what replays it (appends never re-sync).
+    if (s_kbStreamIdent[StreamNumber] == ident && s.offset == effOff && s.stride == Stride
+        && !(vb && vb != s.vb && vb->pendingUpload())) {
+        s.vb = vb;
+        if (StreamNumber == 0) s_kbStream0Fold = fold;
+        return D3D_OK;
+    }
+    KB_FlushTagged(7);
+    s_kbStreamIdent[StreamNumber] = ident;
+    s.vb = vb; s.offset = effOff; s.stride = Stride;
+    if (StreamNumber == 0) s_kbStream0Fold = fold;
+    return D3D_OK;
+#else
     // No-change fast path: the engine re-sets identical bindings around most draws;
     // an unconditional flush here kept draw batches at size 1 (flushes/f == draws/f).
     if (s.vb == vb && s.offset == OffsetInBytes && s.stride == Stride) return D3D_OK;
     KB_FlushTagged(7);
     s.vb = vb; s.offset = OffsetInBytes; s.stride = Stride;
     return D3D_OK;
+#endif
 }
 
 HRESULT WINAPI GLDevice::SetIndices(IDirect3DIndexBuffer9 *pIndexData) {
     GLIndexBuffer *ib = static_cast<GLIndexBuffer *>(pIndexData);
+#if defined(__EMSCRIPTEN__)
+    if (ib && !ib->inArena() && !ib->isDynamic() && KB_VbArenaEnabled()) {
+        KB_EnsureCtxOnThread();                  // place at first bind (see SetStreamSource)
+        ib->glName();
+    }
+    size_t ident = ib ? ib->bindIdent() : 0;
+    if (s_kbIbIdent == ident && !(ib && ib != ib_ && ib->pendingUpload())) {
+        ib_ = ib;               // same GL identity (arena co-resident or same object)
+        return D3D_OK;
+    }
+    KB_FlushTagged(8);
+    s_kbIbIdent = ident;
+    ib_ = ib;
+    return D3D_OK;
+#else
     if (ib_ == ib) return D3D_OK;   // no-change fast path
     KB_FlushTagged(8);
     ib_ = ib;
     return D3D_OK;
+#endif
 }
 
 HRESULT WINAPI GLDevice::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) {
@@ -676,7 +762,7 @@ void GLDevice::flushInstanceRun() {
             GLsizei v = s_iVarying ? s_iVertsArr[i]    : s_iVerts;
             const void *o = s_iVarying ? s_iOffsArr[i] : s_iOffset;
             GLint bv = s_iVarying ? s_iBaseVertArr[i]  : (GLint)s_iGeom.baseVert;
-            glDrawElementsBaseVertex(s_iMode, v, s_iIdxType, const_cast<void *>(o), bv);
+            kbDrawElementsBV(s_iMode, v, s_iIdxType, o, bv);
         }
     };
 
@@ -894,6 +980,18 @@ HRESULT WINAPI GLDevice::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT Star
                                        UINT PrimitiveCount) {
     KB_FlushBatchedDraws();   // also attaches the context to this thread (first use)
     extern unsigned long g_kbDraws; ++g_kbDraws;
+#if defined(__EMSCRIPTEN__)
+    // ?vbarena: same stream-0 fold rules as DrawIndexedPrimitive.
+    if (s_kbStream0Fold) {
+        if (streams_[1].vb || streams_[2].vb || streams_[3].vb) {
+            streams_[0].offset = s_kbStream0Fold * streams_[0].stride;
+            s_kbStream0Fold = 0;
+            s_kbStreamIdent[0] = ~(size_t)0;
+        } else {
+            StartVertex += s_kbStream0Fold;
+        }
+    }
+#endif
     if (!useDrawProgram()) return D3D_OK;   // shader still linking -> skip (pops in next frame)
     applyVertexState();
 
@@ -909,6 +1007,21 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     if (!ib_) return D3D_OK;
     KB_EnsureCtxOnThread();
     extern unsigned long g_kbDraws; ++g_kbDraws;
+#if defined(__EMSCRIPTEN__)
+    // ?vbarena: apply the stream-0 placement fold to this draw's baseVertex. Folding is
+    // only valid single-stream (baseVertex shifts EVERY stream's fetch); a multi-stream
+    // draw un-folds the bind back to a plain VAO offset and re-specifies.
+    if (s_kbStream0Fold) {
+        if (streams_[1].vb || streams_[2].vb || streams_[3].vb) {
+            KB_FlushTagged(7);
+            streams_[0].offset = s_kbStream0Fold * streams_[0].stride;
+            s_kbStream0Fold = 0;
+            s_kbStreamIdent[0] = ~(size_t)0;   // next SetStreamSource(0) re-derives
+        } else {
+            BaseVertexIndex += (INT)s_kbStream0Fold;
+        }
+    }
+#endif
 #if defined(__EMSCRIPTEN__)
     // KB_DRAWCOMP=1: per-frame draw-composition histogram. Key = the GEOMETRY identity
     // (decl + stream0 VB + IB + index range). Repeated identical geometry (the same prop drawn
@@ -932,7 +1045,14 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
     bool is16 = (ib_->format() == D3DFMT_INDEX16);
     GLenum idxType = is16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
     size_t idxSize = is16 ? 2 : 4;
+#if defined(__EMSCRIPTEN__)
+    // ?vbarena: the IB's arena placement biases every index byte offset (placed at
+    // SetIndices, so arenaOff is final here).
+    const void *offset = reinterpret_cast<const void *>(
+        size_t(startIndex) * idxSize + (ib_->inArena() ? ib_->arenaOff() : 0u));
+#else
     const void *offset = reinterpret_cast<const void *>(size_t(startIndex) * idxSize);
+#endif
 
 #if defined(__EMSCRIPTEN__)
     // ---- INSTANCING detection (?inst) -------------------------------------------------
@@ -967,7 +1087,13 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
             normBaseVert += streams_[0].offset / streams_[0].stride;
             normOff = 0;
         }
-        InstGeom g{ (uintptr_t)decl_, (uintptr_t)streams_[0].vb, (uintptr_t)ib_,
+        // Geometry identity by BIND identity (?vbarena: arena co-residents share a GL
+        // name, so same-format draws from different engine buffers can extend one run;
+        // without the arena bindIdent() is the object address — the old behavior). The
+        // IB ident carries the index format: co-residents may mix 16/32-bit indices.
+        uintptr_t kbVbId = streams_[0].vb ? (uintptr_t)streams_[0].vb->bindIdent() : 0;
+        uintptr_t kbIbId = ((uintptr_t)ib_->bindIdent() << 1) | (is16 ? 1u : 0u);
+        InstGeom g{ (uintptr_t)decl_, kbVbId, kbIbId,
                     startIndex, primCount, normBaseVert, normOff, streams_[0].stride };
         // Diagnostic: a same-geometry draw that CAN'T extend a run — why?
         if (!matOnly && ((s_iN > 0 && g == s_iGeom) || (s_haveLast && g == s_lastGeom))) {
@@ -1023,13 +1149,17 @@ HRESULT WINAPI GLDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVer
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elem);
             if (curVaoEnt_) curVaoEnt_->elem = elem;
         }
-        glDrawElementsBaseVertex(mode, verts, idxType, const_cast<void *>(offset), BaseVertexIndex);
+        kbDrawElementsBV(mode, verts, idxType, offset, BaseVertexIndex);
         return D3D_OK;
     }
     // Batch path: if a batch is open, device state is IDENTICAL to the batch's first draw
     // (every mutator flushes first), so just append — zero GL calls for this draw.
+    // ?vbarena caveat: without the multi-draw extension the CPU index-merge flush reads
+    // s_bIb's CPU shadow, which only covers ONE engine buffer — co-resident IB switches
+    // (same GL ident, different object) must not extend such a batch.
     if (s_bN > 0) {
-        if (mode == s_bMode && idxType == s_bType && s_bN < kMaxBatch) {
+        if (mode == s_bMode && idxType == s_bType && s_bN < kMaxBatch
+            && (g_kbHasMultiDraw == 1 || ib_ == s_bIb)) {
             s_bCounts[s_bN]     = verts;
             s_bOffsets[s_bN]    = offset;
             s_bInstCounts[s_bN] = 1;

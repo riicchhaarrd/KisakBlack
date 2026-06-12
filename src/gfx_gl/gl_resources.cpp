@@ -39,11 +39,114 @@ extern "C" int KB_ShadowsEnabled() {
     return en;
 }
 
+// ---- Static-geometry buffer ARENA (web, ?vbarena) --------------------------
+// Place STATIC (non-dynamic) vertex/index buffers inside a few big shared GL buffers
+// instead of one GL buffer each. Different models then bind the SAME GL name, and the
+// draw layer (gl_d3d9_draw.cpp SetStreamSource/SetIndices) folds each buffer's arena
+// placement into per-draw baseVertex / index offsets — switching models then changes
+// no GL vertex state at all: the vtx-cause batch flushes disappear and cross-model
+// draws can ride one multi-draw / instancing run. Allocation happens at first bind on
+// the GL thread (sync(), where the bind stride is known — placement must be
+// stride-aligned for the baseVertex fold); frees (destructors, possibly off-thread)
+// only touch the mutex-guarded free list, never GL. Freed ranges are reused by later
+// buffers; VAOs keyed on the arena name stay valid (per-draw baseVertex selects data),
+// so arena frees do NOT go through the VAO dead-buffer invalidation.
+#if defined(__EMSCRIPTEN__)
+namespace {
+struct KbArenaBlock { unsigned name; UINT off, size; };
+struct KbArena {
+    GLenum bindTarget;            // upload bind point (IBs use COPY_WRITE: ELEMENT is VAO state)
+    UINT   chunkSize;
+    std::mutex mu;
+    std::vector<KbArenaBlock> freeList;   // kept sorted by (name, off); adjacent blocks coalesce
+    unsigned long usedBytes = 0, chunks = 0;
+
+    void insertSorted(KbArenaBlock nb) {             // caller holds mu
+        size_t i = 0;
+        while (i < freeList.size() && (freeList[i].name < nb.name ||
+               (freeList[i].name == nb.name && freeList[i].off < nb.off))) ++i;
+        // coalesce with predecessor / successor when contiguous in the same chunk
+        if (i > 0 && freeList[i-1].name == nb.name && freeList[i-1].off + freeList[i-1].size == nb.off) {
+            freeList[i-1].size += nb.size;
+            if (i < freeList.size() && freeList[i].name == nb.name &&
+                freeList[i-1].off + freeList[i-1].size == freeList[i].off) {
+                freeList[i-1].size += freeList[i].size;
+                freeList.erase(freeList.begin() + i);
+            }
+            return;
+        }
+        if (i < freeList.size() && freeList[i].name == nb.name && nb.off + nb.size == freeList[i].off) {
+            freeList[i].off = nb.off; freeList[i].size += nb.size;
+            return;
+        }
+        freeList.insert(freeList.begin() + i, nb);
+    }
+    // GL thread only (may create a chunk). First-fit honoring `align`; the alignment gap
+    // and the tail remainder stay on the free list.
+    bool alloc(UINT size, UINT align, unsigned *nameOut, UINT *offOut) {
+        if (!align) align = 4;
+        std::lock_guard<std::mutex> g(mu);
+        for (int pass = 0; pass < 2; ++pass) {
+            for (size_t i = 0; i < freeList.size(); ++i) {
+                KbArenaBlock b = freeList[i];
+                UINT aoff = (b.off + align - 1) / align * align;
+                UINT gap = aoff - b.off;
+                if (b.size < gap || b.size - gap < size) continue;
+                freeList.erase(freeList.begin() + i);
+                if (gap) insertSorted(KbArenaBlock{b.name, b.off, gap});
+                UINT rest = b.size - gap - size;
+                if (rest) insertSorted(KbArenaBlock{b.name, aoff + size, rest});
+                usedBytes += size;
+                *nameOut = b.name; *offOut = aoff;
+                return true;
+            }
+            if (pass == 1 || size > chunkSize) break;
+            unsigned name = 0;                       // no fit: grow by one chunk and retry
+            glGenBuffers(1, &name);
+            glBindBuffer(bindTarget, name);
+            glBufferData(bindTarget, chunkSize, nullptr, GL_STATIC_DRAW);
+            glBindBuffer(bindTarget, 0);
+            insertSorted(KbArenaBlock{name, 0, chunkSize});
+            ++chunks;
+            fprintf(stderr, "[vbarena] chunk #%lu created (%u MB, target 0x%x)\n",
+                    chunks, chunkSize >> 20, bindTarget);
+        }
+        return false;                                // caller falls back to an own buffer
+    }
+    void free(unsigned name, UINT off, UINT size) {  // any thread; no GL calls
+        std::lock_guard<std::mutex> g(mu);
+        usedBytes -= size;
+        insertSorted(KbArenaBlock{name, off, size});
+    }
+};
+KbArena g_kbVbArena{GL_ARRAY_BUFFER,      48u << 20};
+KbArena g_kbIbArena{GL_COPY_WRITE_BUFFER, 16u << 20};
+} // namespace
+extern "C" int KB_VbArenaEnabled() {
+    static int envOn = -1;
+    if (envOn < 0) { const char *v = getenv("KB_VBARENA"); envOn = (v && *v == '1') ? 1 : 0; }
+    // The arena's baseVertex folds need a REAL base-vertex draw path. WebGL2 core has
+    // none (the plain glDrawElementsBaseVertex stub DROPS basevertex — the H5 world/gun
+    // corruption); kbDrawElementsBV needs WEBGL_draw_instanced_base_vertex_base_instance.
+    // The flag is -1 until context init, so pre-context buffer ctors see "off" and stay
+    // own-buffer — per-buffer decisions are made once at placement, so mixing is safe.
+    extern int g_kbHasBaseVertexExt;
+    return envOn == 1 && g_kbHasBaseVertexExt == 1;
+}
+#else
+extern "C" int KB_VbArenaEnabled() { return 0; }
+#endif
+
 // ---- GLVertexBuffer -------------------------------------------------------
 GLVertexBuffer::GLVertexBuffer(IDirect3DDevice9 *device, UINT length, DWORD usage,
                                DWORD fvf, D3DPOOL pool)
     : device_(device), length_(length), usage_(usage), fvf_(fvf), pool_(pool),
       shadow_(length, 0) {
+#if defined(__EMSCRIPTEN__)
+    // ?vbarena: static buffers defer creation to sync() at first bind (the proven
+    // off-thread-creation path), where the bind stride is known for aligned placement.
+    if (KB_VbArenaEnabled() && !(usage_ & D3DUSAGE_DYNAMIC)) return;
+#endif
     if (!kbOnGLThread()) return;  // created lazily in sync() on the GL thread
     glGenBuffers(1, &vbo_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
@@ -61,6 +164,21 @@ void GLVertexBuffer::sync() {
         pendMin_ = ~0u; pendMax_ = 0; pendDiscard_ = false;
     }
     if (!vbo_) {
+#if defined(__EMSCRIPTEN__)
+        // ?vbarena: place static buffers in the shared arena, aligned to the bind stride
+        // so the draw layer can fold the placement into baseVertex. No stride recorded
+        // (bound only via odd paths) or stride not 4-aligned -> own-buffer fallback.
+        if (KB_VbArenaEnabled() && !(usage_ & D3DUSAGE_DYNAMIC)
+            && strideHint_ && (strideHint_ % 4) == 0
+            && g_kbVbArena.alloc(length_, strideHint_, &vbo_, &arenaOff_)) {
+            arena_ = true;
+            glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+            glBufferSubData(GL_ARRAY_BUFFER, arenaOff_, length_, shadow_.data());
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            g_kbBufBytes += length_;
+            return;
+        }
+#endif
         // First touch on the GL thread: create and upload the whole shadow (covers any
         // pending ranges in one go).
         glGenBuffers(1, &vbo_);
@@ -71,9 +189,11 @@ void GLVertexBuffer::sync() {
         g_kbBufBytes += length_;
     } else if (upMax > upMin) {
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-        if (upDiscard)
+        if (upDiscard && !arena_)
             glBufferData(GL_ARRAY_BUFFER, length_, nullptr, GL_DYNAMIC_DRAW);
-        glBufferSubData(GL_ARRAY_BUFFER, upMin, upMax - upMin, shadow_.data() + upMin);
+        // Arena residents re-upload in place (no orphan possible — the chunk is shared);
+        // the shadow holds the full current contents either way.
+        glBufferSubData(GL_ARRAY_BUFFER, arenaOff_ + upMin, upMax - upMin, shadow_.data() + upMin);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         g_kbBufBytes += upMax - upMin;
     }
@@ -83,7 +203,13 @@ void GLVertexBuffer::sync() {
 // reference it are dropped (the wholesale clear on every death was the periodic stutter).
 extern "C" void KB_VaoNoteDeadBuf(unsigned name);
 extern "C" void KB_VaoNoteDeadDecl(const void *decl);
-GLVertexBuffer::~GLVertexBuffer() { if (vbo_) { KB_VaoNoteDeadBuf(vbo_); glDeleteBuffers(1, &vbo_); } }
+GLVertexBuffer::~GLVertexBuffer() {
+#if defined(__EMSCRIPTEN__)
+    // Arena resident: return the range; the shared chunk (and VAOs referencing it) live on.
+    if (arena_) { g_kbVbArena.free(vbo_, arenaOff_, length_); return; }
+#endif
+    if (vbo_) { KB_VaoNoteDeadBuf(vbo_); glDeleteBuffers(1, &vbo_); }
+}
 
 HRESULT WINAPI GLVertexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (!ppDevice) return E_INVALIDARG;
@@ -172,6 +298,10 @@ GLIndexBuffer::GLIndexBuffer(IDirect3DDevice9 *device, UINT length, DWORD usage,
                              D3DFORMAT format, D3DPOOL pool)
     : device_(device), length_(length), usage_(usage), format_(format), pool_(pool),
       shadow_(length, 0) {
+#if defined(__EMSCRIPTEN__)
+    // ?vbarena: static IBs defer creation to sync() at first use for arena placement.
+    if (KB_VbArenaEnabled() && !(usage_ & D3DUSAGE_DYNAMIC)) return;
+#endif
     if (!kbOnGLThread()) return;  // created lazily in sync() on the GL thread
     glGenBuffers(1, &ibo_);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
@@ -193,6 +323,19 @@ void GLIndexBuffer::sync() {
     // whatever VAO was current — the per-VAO bind-skip cache then drew with the
     // WRONG index buffer (the spazzing-triangle corruption under the VAO cache).
     if (!ibo_) {
+#if defined(__EMSCRIPTEN__)
+        // ?vbarena: static IBs join the shared index arena. Align 4: covers both index
+        // sizes so the draw layer's byte-offset addition stays index-aligned.
+        if (KB_VbArenaEnabled() && !(usage_ & D3DUSAGE_DYNAMIC)
+            && g_kbIbArena.alloc(length_, 4, &ibo_, &arenaOff_)) {
+            arena_ = true;
+            glBindBuffer(GL_COPY_WRITE_BUFFER, ibo_);
+            glBufferSubData(GL_COPY_WRITE_BUFFER, arenaOff_, length_, shadow_.data());
+            glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+            g_kbBufBytes += length_;
+            return;
+        }
+#endif
         KB_OpTag("ibCreate", length_, 0, 0);
         glGenBuffers(1, &ibo_);
         glBindBuffer(GL_COPY_WRITE_BUFFER, ibo_);
@@ -202,15 +345,20 @@ void GLIndexBuffer::sync() {
         g_kbBufBytes += length_;
     } else if (upMax > upMin) {
         glBindBuffer(GL_COPY_WRITE_BUFFER, ibo_);
-        if (upDiscard)
+        if (upDiscard && !arena_)
             glBufferData(GL_COPY_WRITE_BUFFER, length_, nullptr, GL_DYNAMIC_DRAW);
-        glBufferSubData(GL_COPY_WRITE_BUFFER, upMin, upMax - upMin, shadow_.data() + upMin);
+        glBufferSubData(GL_COPY_WRITE_BUFFER, arenaOff_ + upMin, upMax - upMin, shadow_.data() + upMin);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
         g_kbBufBytes += upMax - upMin;
     }
 }
 
-GLIndexBuffer::~GLIndexBuffer() { if (ibo_) { KB_VaoNoteDeadBuf(ibo_); glDeleteBuffers(1, &ibo_); } }
+GLIndexBuffer::~GLIndexBuffer() {
+#if defined(__EMSCRIPTEN__)
+    if (arena_) { g_kbIbArena.free(ibo_, arenaOff_, length_); return; }
+#endif
+    if (ibo_) { KB_VaoNoteDeadBuf(ibo_); glDeleteBuffers(1, &ibo_); }
+}
 
 HRESULT WINAPI GLIndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
     if (!ppDevice) return E_INVALIDARG;

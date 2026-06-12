@@ -53,6 +53,16 @@ public:
     // DISCARD orphan), so a per-(buffer,offset) VAO cache misses every time and thrashes — these
     // take the shared-VAO re-spec path instead (gl_d3d9_draw.cpp applyVertexState).
     bool     isDynamic() const { return (usage_ & D3DUSAGE_DYNAMIC) != 0; }
+    // ?vbarena (web): static buffers live inside a shared arena chunk (gl_resources.cpp).
+    // SetStreamSource records the bind stride BEFORE first sync so placement can be
+    // stride-aligned; the draw layer folds arenaOff into per-draw baseVertex.
+    void     noteStride(UINT stride) { if (!strideHint_) strideHint_ = stride; }
+    bool     inArena() const { return arena_; }
+    UINT     arenaOff() const { return arenaOff_; }
+    // Bind identity for batch-flush compares: pre-placement the object address (unique);
+    // once arena-placed, the shared chunk's GL name — equal across co-resident buffers.
+    size_t   bindIdent() const { return arena_ ? (size_t)vbo_ : (size_t)this; }
+    bool     pendingUpload() const { return pendMax_ > pendMin_; }   // unlocked hint (see glName)
 
 private:
     IDirect3DDevice9         *device_;
@@ -61,6 +71,9 @@ private:
     DWORD                     usage_;
     DWORD                     fvf_;
     D3DPOOL                   pool_;
+    bool                      arena_ = false;   // ?vbarena: vbo_ is the shared chunk name
+    UINT                      arenaOff_ = 0;    // this buffer's byte offset inside the chunk
+    UINT                      strideHint_ = 0;  // first bind stride (placement alignment)
     std::vector<unsigned char> shadow_;  // CPU mirror backing Lock()
     std::mutex                lockMu_;        // guards lock/pend bookkeeping (FE+BE lock concurrently)
     UINT                      lockDepth_   = 0;
@@ -91,6 +104,13 @@ public:
     D3DFORMAT format() const { return format_; }
     const unsigned char *shadowData() const { return shadow_.data(); }   // CPU mirror (merge-flush)
     UINT     length() const { return length_; }
+    bool     isDynamic() const { return (usage_ & D3DUSAGE_DYNAMIC) != 0; }
+    // ?vbarena (web): see GLVertexBuffer — same scheme; draw layer adds arenaOff to the
+    // per-draw index byte offset.
+    bool     inArena() const { return arena_; }
+    UINT     arenaOff() const { return arenaOff_; }
+    size_t   bindIdent() const { return arena_ ? (size_t)ibo_ : (size_t)this; }
+    bool     pendingUpload() const { return pendMax_ > pendMin_; }
 
 private:
     IDirect3DDevice9         *device_;
@@ -99,6 +119,8 @@ private:
     DWORD                     usage_;
     D3DFORMAT                 format_;
     D3DPOOL                   pool_;
+    bool                      arena_ = false;
+    UINT                      arenaOff_ = 0;
     std::vector<unsigned char> shadow_;
     std::mutex                lockMu_;
     UINT                      lockDepth_   = 0;
