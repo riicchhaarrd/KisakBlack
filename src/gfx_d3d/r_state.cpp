@@ -1,4 +1,5 @@
 #include "r_state.h"
+#include <universal/profile.h>   // PROF_SCOPED("draw submit") — splits tess invoke (GL draw vs CPU geom)
 #include "r_bsp.h"
 #include "r_dvars.h"
 #include "rb_logfile.h"
@@ -1058,6 +1059,7 @@ void __cdecl R_ClearAllStreamSources(GfxCmdBufPrimState *state)
 
 void __cdecl R_DrawIndexedPrimitive(GfxCmdBufPrimState *state, const GfxDrawPrimArgs *args)
 {
+    PROF_SCOPED("draw submit")   // GL DrawIndexedPrimitive submission only; tess invoke minus this = CPU geometry build
     const char *v2; // eax
     int hr; // [esp+4h] [ebp-Ch]
     int triCount; // [esp+8h] [ebp-8h]

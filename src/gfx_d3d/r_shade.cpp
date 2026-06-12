@@ -1001,7 +1001,10 @@ void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex)
     R_SetState(context.state, stateBits);
     R_SetPixelShader(context.state, pass->pixelShader);
     if ( pass->stableArgCount )
+    {
+        PROF_SCOPED("stable args")   // shader-constant upload per pass — splits R_SetupPass self
         R_SetPassShaderStableArguments(context, pass->stableArgCount, &pass->localArgs[pass->perPrimArgCount + pass->perObjArgCount]);
+    }
 }
 
 void __cdecl R_SetState(GfxCmdBufState *state, unsigned int *stateBits)

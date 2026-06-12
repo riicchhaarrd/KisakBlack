@@ -3,6 +3,76 @@
 
 #include "gl_optrace.h"
 
+// ---- kbprof: runtime per-zone SELF-TIME profiler (?kbprof) — declared in universal/profile.h.
+// Reuses the engine's existing PROF_SCOPED zones; each thread accumulates self-time per zone and
+// dumps its top zones periodically. Lets us pinpoint the backend "other" hotspot with no hand-timers.
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <universal/profile.h>
+#include <unordered_map>
+#include <vector>
+#include <algorithm>
+#include <pthread.h>
+#include <cstdio>
+#include <cstdint>
+#include <cstdlib>
+namespace kbprof {
+int g_on = -1;
+int Init() {
+    // Resolve ?kbprof. The PROF_SCOPED zones only ever run on the engine's WORKER threads
+    // (backend/frontend/physics), never on the browser main thread. A worker's location.search
+    // is its worker-script URL, NOT the page URL — so reading location.search here returns ""
+    // and the profiler would never turn on. Instead the page URL is parsed on the MAIN thread in
+    // index.html (?kbprof -> ENV KB_KBPROF), forwarded to every pthread, and read with getenv()
+    // here — exactly like ?perfms (KB_PERFMS). g_on is a SHARED wasm global, so the first worker
+    // to resolve it sets it for all.
+    const char *v = getenv("KB_KBPROF");
+    g_on = (v && *v == '1') ? 1 : 0;
+    return g_on;
+}
+double Now() { return emscripten_get_now(); }
+namespace {
+struct Acc { double self = 0.0, incl = 0.0; unsigned calls = 0; };
+thread_local std::unordered_map<const char *, Acc> t_acc;   // keyed by the literal name's pointer
+thread_local std::vector<double> t_child;                   // per-active-zone child-time accumulator
+thread_local unsigned long long t_n = 0;
+thread_local double t_dumpT = 0.0;
+void Dump() {
+    if (t_acc.empty()) return;
+    double now = Now();
+    double span = t_dumpT > 0.0 ? now - t_dumpT : 0.0;
+    t_dumpT = now;
+    std::vector<std::pair<const char *, Acc>> v(t_acc.begin(), t_acc.end());
+    std::sort(v.begin(), v.end(),
+              [](const std::pair<const char *, Acc> &a, const std::pair<const char *, Acc> &b) {
+                  return a.second.self > b.second.self;
+              });
+    fprintf(stderr, "[kbprof tid=%u over %.0fms] top self-time zones:\n",
+            (unsigned)(uintptr_t)pthread_self(), span);
+    int k = 0;
+    for (const auto &p : v) {
+        if (k++ >= 15) break;
+        fprintf(stderr, "  %-36s self=%.1fms incl=%.1fms n=%u\n",
+                p.first, p.second.self, p.second.incl, p.second.calls);
+    }
+    t_acc.clear();
+}
+}  // namespace
+void Enter() { t_child.push_back(0.0); }
+void Exit(const char *name, double t0) {
+    double incl = Now() - t0;
+    double ch = t_child.empty() ? 0.0 : t_child.back();
+    if (!t_child.empty()) t_child.pop_back();
+    double self = incl - ch;
+    if (self < 0.0) self = 0.0;
+    if (!t_child.empty()) t_child.back() += incl;   // bill our inclusive time up to our parent
+    Acc &a = t_acc[name];
+    a.self += self; a.incl += incl; ++a.calls;
+    if ((++t_n & 0x3FFF) == 0) Dump();              // ~every 16384 zone-exits on this thread
+}
+}  // namespace kbprof
+#endif
+
 // ---- GL-op ring trace (see gl_optrace.h) ------------------------------------
 extern unsigned long g_kbDraws;
 namespace {

@@ -761,6 +761,22 @@ void __cdecl R_SetWndParms(GfxWindowParms *wndParms)
     }
     wndParms->sceneWidth = wndParms->displayWidth;
     wndParms->sceneHeight = wndParms->displayHeight;
+#ifdef __EMSCRIPTEN__
+    // ?rscale=N (0<N<1): render the SCENE at N x the display resolution and let the engine's
+    // built-in scene->display upscale (the sceneViewport math) blow it back up. Pure GPU
+    // fill-rate win (e.g. 0.75 = ~44% fewer fragments) for a little softness — the big lever
+    // when GPU-bound at 1080p+hires. Default (no param) = 1.0 = unchanged.
+    {
+        static float kbRScale = -1.0f;
+        if (kbRScale < 0) { const char *e = getenv("KB_RSCALE"); kbRScale = (e && *e) ? (float)atof(e) : 1.0f; }  // ENV from index.html (worker can't read location.search)
+        if (kbRScale > 0.1f && kbRScale < 0.999f) {
+            wndParms->sceneWidth  = ((int)(wndParms->displayWidth  * kbRScale)) & ~7;  // 8-aligned
+            wndParms->sceneHeight = ((int)(wndParms->displayHeight * kbRScale)) & ~7;
+            if (wndParms->sceneWidth  < 256) wndParms->sceneWidth  = 256;
+            if (wndParms->sceneHeight < 144) wndParms->sceneHeight = 144;
+        }
+    }
+#endif
     if ( wndParms->fullscreen )
     {
         refreshRateString = Dvar_EnumToString(r_displayRefresh);

@@ -1,4 +1,7 @@
 #include "rb_backend.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>   // emscripten_get_now — [perf/ms] buffer-stage split
+#endif
 #include "rb_stats.h"
 #include "r_image.h"
 #include "rb_shade.h"
@@ -1746,6 +1749,7 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                 R_SetupPass(prepassContext, 0);
                 passPrepassContext_4 = prepassContext.state;
             }
+            { PROF_SCOPED("tess invoke")   // splits RenderMatBatch self: geometry emit + DrawIndexedPrimitive vs material setup
 #if defined(__EMSCRIPTEN__)
             subListCount = R_InvokeTessFunc(
                                              (drawSurf.packed >> 51) & 0xF,
@@ -1758,6 +1762,7 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                                              passPrepassContext,
                                              passPrepassContext_4);
 #endif
+            }  // tess invoke
         }
 
         if ( isPixelCostEnabled )
@@ -5272,6 +5277,15 @@ void __cdecl RB_UpdateDynamicBuffers(GfxBackEndData *backendData)
     unsigned __int8 *bufferc; // [esp+18h] [ebp-8h]
 
     PROF_SCOPED("RB_UpdateDynamicBuffers");
+#ifdef __EMSCRIPTEN__
+    // [perf/ms] split: accumulate ms in dynamic-buffer uploads so we can tell how much of
+    // "other" is buffer traffic vs per-draw setup. Active only under ?perfms=1 (g_kbTimeDraws).
+    struct KbBufTimer {
+        double t0;
+        KbBufTimer() { extern int g_kbTimeDraws; t0 = g_kbTimeDraws ? emscripten_get_now() : 0.0; }
+        ~KbBufTimer() { extern double g_kbMsBuffers; if (t0 != 0.0) g_kbMsBuffers += emscripten_get_now() - t0; }
+    } kbBufTimer_;
+#endif
     buffer = (unsigned __int8 *)R_LockVertexBuffer(
                                                                 backendData->skinnedCacheVb->buffer,
                                                                 0,

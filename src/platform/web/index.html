@@ -120,11 +120,31 @@
         // compile failures + tab crashes). HEAP32 is the shared wasm heap.
         try { if (ackPtr && window.Module && Module.HEAP32) Atomics.store(Module.HEAP32, ackPtr >> 2, 0); } catch (e) {}
       }
+      // De-proxy IMPLICIT present: the render worker owns #kbgl as an OffscreenCanvas and commits
+      // it directly on its per-frame event-loop yield (KB_RenderThreadYield). So #kbgl IS the
+      // visible game canvas — promote it to fill the screen behind #canvas, and turn #canvas into
+      // a transparent input-only overlay on top. No transferToImageBitmap readback (that leaked
+      // renderer RAM to ~5GB), no #display overlay. Fired once when the worker signals it has a
+      // local context (kbImplicitPresent). (?manualpresent keeps the old readback path instead.)
+      var kbWentImplicit = false;
+      function kbGoImplicit() {
+        if (kbWentImplicit) return; kbWentImplicit = true;
+        try {
+          var kg = document.getElementById('kbgl');
+          if (kg) kg.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;opacity:1;pointer-events:none;z-index:0';
+          var cv = document.getElementById('canvas');
+          if (cv) { cv.style.background = 'transparent'; cv.style.position = 'relative'; cv.style.zIndex = '1'; }
+          var dp = document.getElementById('display');
+          if (dp) dp.style.display = 'none';
+          console.log('[kbpresent] implicit OffscreenCanvas present active (#kbgl is the visible canvas)');
+        } catch (e) { console.error('[kbpresent] kbGoImplicit failed:', e); }
+      }
       var RealWorker = window.Worker;
       window.Worker = function (url, opts) {
         var w = new RealWorker(url, opts);
         w.addEventListener('message', function (e) {
           if (e.data && e.data.kbFrame) { e.stopImmediatePropagation(); kbPresent(e.data.kbFrame, e.data.kbAck); }
+          else if (e.data && e.data.kbImplicitPresent) { e.stopImmediatePropagation(); kbGoImplicit(); }
         });
         return w;
       };
@@ -220,6 +240,17 @@
               '+set', 'r_picmip_bump', '0', '+set', 'r_picmip_spec', '0', '+set', 'r_picmip_water', '0');
           }
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
+          if (q.has('kbprof'))           ENV.KB_KBPROF = '1';   // [kbprof] per-thread self-time profiler (parse on main thread; workers can't see location.search)
+          // The toggles below run on WORKER threads, whose location.search is the worker-script
+          // URL (no page query string). Parse on the main thread here -> ENV -> getenv() on the
+          // worker, same as KB_PERFMS / KB_KBPROF. (Reading location.search on the worker is a no-op.)
+          if (q.has('nomdraw'))          ENV.KB_NOMDRAW = '1';       // disable multi-draw batching
+          if (q.has('withprepass'))      ENV.KB_WITHPREPASS = '1';   // restore the two-pass depth prepass
+          if (q.has('noslopebias'))      ENV.KB_NOSLOPEBIAS = '1';   // drop slope-scaled depth-bias caps (A/B)
+          if (q.has('manualpresent'))    ENV.KB_MANUALPRESENT = '1'; // legacy transferToImageBitmap present
+          if (q.get('rscale'))           ENV.KB_RSCALE = q.get('rscale'); // scene render-scale N (0<N<1)
+          if (q.has('worldmerge'))       ENV.KB_WORLDMERGE = '1';    // merge world draws per firstVertex-run (B, opt-in)
+          if (q.has('worldmerge2'))      ENV.KB_WORLDMERGE2 = '1';   // DEEP merge: one multi-draw across firstVertex (B escalation)
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
           if (q.get('novao') === '1')    ENV.KB_NOVAO = '1';     // bypass VAO cache (bisect)

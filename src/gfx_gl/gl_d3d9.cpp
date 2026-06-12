@@ -12,6 +12,7 @@ extern "C" void KB_FlushTagged(int cause); // +flush-cause telemetry  // batched
 #include <cstdio>
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/html5_webgl.h>  // emscripten_webgl_get_current_context()
+#include <emscripten.h>              // EM_ASM_INT (?noslopebias toggle in FillDefaultCaps)
 extern "C" void glClearDepthf(float);             // GLES/WebGL2 depth-clear
 extern "C" void glDepthRangef(float, float);      // GLES/WebGL2 depth-range
 #endif
@@ -54,6 +55,23 @@ static void FillDefaultCaps(D3DCAPS9 *c) {
     c->MaxPrimitiveCount       = 0x00FFFFFF;
     c->MaxVertexIndex          = 0x00FFFFFF;
     c->MaxStreams              = 16;
+    // Slope-scaled depth bias: every D3D9-era GPU (incl. the 8600GT this game shipped on) had
+    // it. Without advertising it, R_HW_SetPolygonOffset (r_state.cpp) drops the polygon-offset
+    // SLOPE term entirely and only sends the constant D3DRS_DEPTHBIAS — so decals on
+    // grazing-angle walls/fences are under-biased and render THROUGH the geometry. Advertising
+    // it restores the engine's intended slope+constant bias for both decals and shadowmaps.
+    // Default on; ?noslopebias disables it (A/B, e.g. to check shadow biasing).
+    {
+        static int wantSlope = -1;
+        if (wantSlope < 0) {
+#ifdef __EMSCRIPTEN__
+            { const char *v = getenv("KB_NOSLOPEBIAS"); wantSlope = (v && *v == '1') ? 0 : 1; }  // ENV from index.html (worker can't read location.search)
+#else
+            wantSlope = 1;
+#endif
+        }
+        if (wantSlope) c->RasterCaps |= 0x02000000;  // D3DPRASTERCAPS_SLOPESCALEDEPTHBIAS
+    }
 }
 
 // ---------------------------------------------------------------------------
