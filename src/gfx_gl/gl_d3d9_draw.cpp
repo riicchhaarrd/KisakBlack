@@ -813,6 +813,96 @@ void GLDevice::flushInstanceRun() {
     g_kbInstActive = 0;
 }
 
+#if defined(__EMSCRIPTEN__)
+// KB smodel instanced fast path (engine side: r_draw_staticmodel.cpp KB_TryDrawSmodelInstanced).
+// Submit N instances of the CURRENTLY BOUND geometry in one call; `mats` carries each
+// instance's vec4 rows for vs regs [matBase, matBase+matCount). Reuses the ?inst
+// machinery (instanced shader variant, instance-attribute matrix, free-location pick).
+// The per-instance loop fallback keeps this strictly an additive fast path.
+void GLDevice::KB_DrawXSurfInstanced(unsigned matBase, int matCount, const float *mats,
+                                     int n, unsigned baseIndex, unsigned triCount) {
+    if (!ib_ || n <= 0 || matCount <= 0 || matCount > 8) return;
+    KB_EnsureCtxOnThread();
+    // Route the LAST instance's rows through the normal constant path first: keeps
+    // vsConst_/dirty/version bookkeeping truthful for whatever draws next (the
+    // instanced variant ignores those uniform regs), and its flush-tag closes any
+    // open batch before our submission.
+    SetVertexShaderConstantF(matBase, mats + (size_t)(n - 1) * matCount * 4, (UINT)matCount);
+    KB_FlushBatchedDraws();
+    if (s_iN > 0) flushInstanceRun();        // close any open detected ?inst run
+    extern unsigned long g_kbDraws; g_kbDraws += (unsigned long)n;
+    // ?vbarena stream-0 fold (smodel surfs are single-stream; un-fold if not)
+    INT baseVertex = 0;
+    if (s_kbStream0Fold) {
+        if (streams_[1].vb || streams_[2].vb || streams_[3].vb) {
+            KB_FlushTagged(7);
+            streams_[0].offset = s_kbStream0Fold * streams_[0].stride;
+            s_kbStream0Fold = 0; s_kbStreamIdent[0] = ~(size_t)0;
+        } else {
+            baseVertex = (INT)s_kbStream0Fold;
+        }
+    }
+    bool is16 = (ib_->format() == D3DFMT_INDEX16);
+    GLenum idxType = is16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+    size_t idxSize = is16 ? 2 : 4;
+    const void *offset = reinterpret_cast<const void *>(
+        (size_t)baseIndex * idxSize + (ib_->inArena() ? ib_->arenaOff() : 0u));
+    GLsizei verts = (GLsizei)triCount * 3;
+    auto bindElem = [&]() {
+        unsigned elem = ib_->glName();
+        if (!curVaoEnt_ || curVaoEnt_->elem != elem) {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elem);
+            if (curVaoEnt_) curVaoEnt_->elem = elem;
+        }
+    };
+    auto emitLoop = [&]() {                  // safety net: per-instance normal draws
+        for (int i = 0; i < n; ++i) {
+            SetVertexShaderConstantF(matBase, mats + (size_t)i * matCount * 4, (UINT)matCount);
+            if (!useDrawProgram()) continue;
+            applyVertexState();
+            bindElem();
+            kbDrawElementsBV(GL_TRIANGLES, verts, idxType, offset, baseVertex);
+        }
+    };
+    ++g_kbInstRuns; g_kbInstSaved += (unsigned long)(n - 1);
+    if (g_kbHasBaseVertexExt != 1 || n < 2) { emitLoop(); return; }
+    bool used[16] = {};
+    if (decl_) for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
+        int l = GLAttribLocation(e.Usage, e.UsageIndex); if (l >= 0 && l < 16) used[l] = true;
+    }
+    int locs[8], got = 0;
+    for (int l = 15; l >= 0 && got < matCount; --l) if (!used[l]) locs[got++] = l;
+    if (got < matCount) { emitLoop(); return; }
+    g_kbInstActive = 1; g_kbInstMatBase = matBase; g_kbInstMatCount = matCount;
+    for (int i = 0; i < matCount; ++i) g_kbInstLocs[i] = locs[i];
+    if (!useDrawProgram()) { g_kbInstActive = 0; emitLoop(); return; }
+    applyVertexState();
+    if (!s_instVbo) glGenBuffers(1, &s_instVbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_instVbo);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)n * matCount * 4 * sizeof(float)),
+                 mats, GL_DYNAMIC_DRAW);
+    const GLsizei stride = (GLsizei)(matCount * 4 * sizeof(float));
+    for (int i = 0; i < matCount; ++i) {
+        glEnableVertexAttribArray(locs[i]);
+        glVertexAttribPointer(locs[i], 4, GL_FLOAT, GL_FALSE, stride,
+                              (const void *)(size_t)(i * 4 * sizeof(float)));
+        glVertexAttribDivisor(locs[i], 1);
+    }
+    bindElem();
+    glDrawElementsInstancedBaseVertexBaseInstanceWEBGL(GL_TRIANGLES, verts, idxType,
+        const_cast<void *>(offset), n, baseVertex, 0);
+    for (int i = 0; i < matCount; ++i) { glDisableVertexAttribArray(locs[i]); glVertexAttribDivisor(locs[i], 0); }
+    g_kbInstActive = 0;
+}
+
+extern "C" void KB_DrawXSurfInstancedC(void *dev, unsigned matBase, int matCount,
+                                       const float *mats, int n,
+                                       unsigned baseIndex, unsigned triCount) {
+    static_cast<GLDevice *>(reinterpret_cast<IDirect3DDevice9 *>(dev))
+        ->KB_DrawXSurfInstanced(matBase, matCount, mats, n, baseIndex, triCount);
+}
+#endif
+
 void GLDevice::applyVertexState() {
     // ?novao=1 kill switch: bypass the VAO cache (full attrib re-spec per draw, the
     // pre-B100 path) to bisect geometry corruption vs the cache.
