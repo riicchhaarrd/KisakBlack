@@ -7,6 +7,10 @@ struct GfxWorldVertex;
 struct r_double_index_t;
 
 void __cdecl R_SortDrawSurfs(GfxDrawSurf *drawSurfList, int surfCount);
+// Sort an OPAQUE/depth-only drawsurf list (lit camera lists, shadowmap lists). On web this
+// orders MATERIAL above primary light (see r_drawsurf.cpp) so same-material batches become
+// adjacent; on native it is plain R_SortDrawSurfs. Never use for blended/decal/emissive lists.
+void __cdecl R_SortDrawSurfsOpaque(GfxDrawSurf *drawSurfList, int surfCount);
 void __cdecl R_ReverseSortDrawSurfs(GfxDrawSurf *drawSurfList, int surfCount);
 void __cdecl R_SortWorldSurfaces();
 GfxWorld *R_SetPrimaryLightShadowSurfaces();

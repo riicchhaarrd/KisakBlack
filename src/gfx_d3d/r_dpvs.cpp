@@ -631,7 +631,7 @@ void __cdecl R_AddAllSceneEntSurfacesCamera(const GfxViewInfo *viewInfo)
 
     {
         PROF_SCOPED("sort surfs ENT_CAMERA_LIT");
-        R_SortDrawSurfs(scene.drawSurfs[2], drawSurfCount);
+        R_SortDrawSurfsOpaque(scene.drawSurfs[2], drawSurfCount);
     }
 
     drawSurfCount = drawSurfs[1] - scene.drawSurfs[5];
@@ -1161,9 +1161,9 @@ void __cdecl R_AddAllSceneEntSurfacesRangeSunShadow(unsigned int partitionIndex)
     scene.drawSurfCount[stage] = drawSurfCount;
     {
         PROF_SCOPED("sort surfs");
-        R_SortDrawSurfs(scene.drawSurfs[stage], drawSurfCount);
+        R_SortDrawSurfsOpaque(scene.drawSurfs[stage], drawSurfCount);   // ENT sunshadow list (depth-only)
     }
-    
+
 }
 
 void __cdecl R_AddAllSceneEntSurfacesSpotShadow(
@@ -1273,7 +1273,7 @@ void __cdecl R_AddAllSceneEntSurfacesSpotShadow(
 
     {
         PROF_SCOPED("sort surfs");
-        R_SortDrawSurfs(scene.drawSurfs[stage], drawSurfCount);
+        R_SortDrawSurfsOpaque(scene.drawSurfs[stage], drawSurfCount);   // ENT spotshadow list (depth-only)
     }
 }
 

@@ -91,14 +91,17 @@ GLint glWrap(DWORD d)   { return d == D3DTADDRESS_CLAMP ? GL_CLAMP_TO_EDGE : GL_
 } // namespace
 
 HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
-    KB_FlushTagged(6);
     // Skip the GL call when this state already holds this value — on the proxied web
     // context every glEnable/glBlendFunc/glDepthMask is a cross-thread marshaled call, and
     // the engine re-sets the same blend/depth/cull states constantly between draws.
+    // The redundancy check must run BEFORE the batch flush: an unchanged value has no GL
+    // effect, so flushing for it only breaks an open draw batch for nothing (this used to
+    // flush unconditionally — every redundant engine SetRenderState cost a batch break).
     if ((unsigned)State < 256) {
         if (rsSet_[State] && rsCache_[State] == Value) return D3D_OK;
         rsSet_[State] = 1; rsCache_[State] = Value;
     }
+    KB_FlushTagged(6);   // real change: pending draws must execute under the OLD state
     switch (State) {
         case D3DRS_ZENABLE:
             if (Value) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);

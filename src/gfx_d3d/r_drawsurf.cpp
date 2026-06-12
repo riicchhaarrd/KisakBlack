@@ -299,6 +299,46 @@ void __cdecl R_SortDrawSurfs(GfxDrawSurf *drawSurfList, int surfCount)
     qsortArray_GfxSortDrawSurfsInterface_GfxDrawSurf_(drawSurfList, surfCount);
 }
 
+#if defined(__EMSCRIPTEN__)
+// Web (?nomatsort to disable): sort opaque/depth-only lists MATERIAL-first instead of
+// light-first. The stock key ranks primaryLightIndex (bits 43-50) above materialSortedIndex
+// (bits 31-42), so every material's draws are split across the lights touching it; each
+// adjacent-batch boundary then changes textures+shaders (the dominant GL batch-flush causes,
+// tex/ps in [perf/fc]). Swapping the two ranks makes batches of the SAME material adjacent
+// across lights: boundaries cost only constant changes, which the GL layer absorbs (and
+// which don't break ?inst instancing runs), and copies of one prop under different lights
+// become consecutive so instancing capture rises. Correctness: batches are formed wherever
+// EQUAL packed keys are contiguous and each batch reads all state from its own head surf
+// (R_RenderDrawSurfListMaterial), so any total order yields the same batches — only their
+// ORDER changes, which is z-safe for opaque z-write lists and irrelevant for depth-only
+// shadowmap lists. The remap is a bijective bit-permutation: equal keys stay equal.
+// primarySortKey/noDynamicShadow/prepass/surfType (bits 51-63) keep top rank untouched.
+#include <algorithm>
+#include <cstdlib>
+static inline unsigned __int64 KB_MatFirstKey(unsigned __int64 k)
+{
+    return (k & 0xFFF8000000000000ull)            // bits 51-63 unchanged at top rank
+         | (((k >> 31) & 0xFFFull) << 39)         // materialSortedIndex -> bits 39-50
+         | (((k >> 43) & 0xFFull) << 31)          // primaryLightIndex   -> bits 31-38
+         | (k & 0x7FFFFFFFull);                   // per-instance low bits unchanged
+}
+void __cdecl R_SortDrawSurfsOpaque(GfxDrawSurf *drawSurfList, int surfCount)
+{
+    static int matSort = -1;
+    if (matSort < 0) { const char *e = getenv("KB_NOMATSORT"); matSort = (e && *e == '1') ? 0 : 1; }
+    if (!matSort) { R_SortDrawSurfs(drawSurfList, surfCount); return; }
+    std::sort(drawSurfList, drawSurfList + surfCount,
+              [](const GfxDrawSurf &a, const GfxDrawSurf &b) {
+                  return KB_MatFirstKey(a.packed) < KB_MatFirstKey(b.packed);
+              });
+}
+#else
+void __cdecl R_SortDrawSurfsOpaque(GfxDrawSurf *drawSurfList, int surfCount)
+{
+    R_SortDrawSurfs(drawSurfList, surfCount);
+}
+#endif
+
 void __cdecl R_ReverseSortDrawSurfs(GfxDrawSurf *drawSurfList, int surfCount)
 {
     qsortArray_GfxReverseSortDrawSurfsInterface_GfxDrawSurf_(drawSurfList, surfCount);

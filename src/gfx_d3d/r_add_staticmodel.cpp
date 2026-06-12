@@ -1066,7 +1066,7 @@ void __cdecl R_SortAllStaticModelSurfacesCamera()
 
     {
         PROF_SCOPED("sort surfs SMODEL_CAMERA_LIT");
-        R_SortDrawSurfs(scene.drawSurfs[1], scene.drawSurfCount[1]);
+        R_SortDrawSurfsOpaque(scene.drawSurfs[1], scene.drawSurfCount[1]);
     }
     {
         PROF_SCOPED("sort surfs SMODEL_CAMERA_DECAL");
@@ -1082,11 +1082,11 @@ void __cdecl R_SortAllStaticModelSurfacesSunShadow()
 {
     {
         PROF_SCOPED("sort surfs");
-        R_SortDrawSurfs(scene.drawSurfs[20], scene.drawSurfCount[20]);
+        R_SortDrawSurfsOpaque(scene.drawSurfs[20], scene.drawSurfCount[20]);
     }
     {
         PROF_SCOPED("sort surfs");
-        R_SortDrawSurfs(scene.drawSurfs[24], scene.drawSurfCount[24]);
+        R_SortDrawSurfsOpaque(scene.drawSurfs[24], scene.drawSurfCount[24]);
     }
 }
 
@@ -1511,6 +1511,6 @@ void __cdecl R_AddAllStaticModelSurfacesSpotShadow(
     scene.drawSurfCount[v18] = surfCount;
 
     PROF_SCOPED("sort surfs");
-    R_SortDrawSurfs(scene.drawSurfs[v18], surfCount);
+    R_SortDrawSurfsOpaque(scene.drawSurfs[v18], surfCount);   // v18 = a SMODEL_SPOTSHADOW list (depth-only)
 }
 

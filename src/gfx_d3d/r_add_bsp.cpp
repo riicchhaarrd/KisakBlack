@@ -265,7 +265,12 @@ void __cdecl R_AddAllBspDrawSurfacesRangeCamera(
         R_AddBspDrawSurfs(prevDrawSurf, (unsigned __int8 *)triSurfList, triSurfCount, &surfData);
     R_EndCmdBuf(&surfData.delayedCmdBuf);
     scene.drawSurfCount[stage] = surfData.drawSurfList.current - scene.drawSurfs[stage];
-    R_SortDrawSurfs(scene.drawSurfs[stage], scene.drawSurfCount[stage]);
+    // Stage 0 = BSP_CAMERA_LIT (opaque z-write): material-first order is safe; stage 3
+    // (DECAL) keeps the stock order — overlapping decals are order-sensitive.
+    if ( stage == 0 )
+        R_SortDrawSurfsOpaque(scene.drawSurfs[stage], scene.drawSurfCount[stage]);
+    else
+        R_SortDrawSurfs(scene.drawSurfs[stage], scene.drawSurfCount[stage]);
 }
 
 unsigned __int8 __cdecl GetSurfaceFlags(unsigned int surfIndex)
