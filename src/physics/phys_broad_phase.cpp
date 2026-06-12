@@ -1880,10 +1880,6 @@ void __cdecl destroy_broad_phase_info_list(broad_phase_info *list_bpi)
 {
     broad_phase_info *v1; // esi
     broad_phase_info *m_list_bpb_next; // ebx
-    char *p_m_gjk_geom; // esi
-    phys_free_list<broad_phase_info> *p_g_list_broad_phase_info; // edi
-    unsigned int *v5; // eax
-    int v6; // ecx
 
     v1 = list_bpi;
     if ( list_bpi )
@@ -1901,23 +1897,17 @@ void __cdecl destroy_broad_phase_info_list(broad_phase_info *list_bpi)
             }
             if ( v1->m_sap_node && _tlAssert("source/phys_broad_phase.cpp", 131, "bpi->m_sap_node == NULL", "") )
                 __debugbreak();
+            // Read the next pointer BEFORE freeing v1.
             m_list_bpb_next = (broad_phase_info *)v1->m_list_bpb_next;
-            p_m_gjk_geom = (char *)&v1[-1].m_gjk_geom;
-            p_g_list_broad_phase_info = &G_BPM->g_list_broad_phase_info;
-            PMM_VALIDATE(p_m_gjk_geom, 0x90u, 0x10u);
-            if ( !p_m_gjk_geom )
-            {
-                if ( _tlAssert("c:\\projects_pc\\cod\\codsrc\\tl\\physics\\include\\phys_mem.h", 477, "data", "") )
-                    __debugbreak();
-            }
-            --p_g_list_broad_phase_info->m_list_count;
-            //phys_free_list<broad_phase_info>::debug_remove(p_g_list_broad_phase_info, (phys_free_list<broad_phase_info>::T_internal *)p_m_gjk_geom);
-            p_g_list_broad_phase_info->debug_remove((phys_free_list<broad_phase_info>::T_internal *)p_m_gjk_geom);
-            v5 = (unsigned int *)*((unsigned int *)p_m_gjk_geom + 1);
-            v6 = *(unsigned int *)p_m_gjk_geom;
-            *(unsigned int *)(v6 + 4) = (unsigned int)v5;
-            *v5 = v6;
-            PMM_FREE((unsigned __int8 *)p_m_gjk_geom, 0x90u, 0x10u);
+            // FIX (decompiler negative-index aliasing — the destructible-break OOB crash; same
+            // class as the ragdoll destroy_broad_phase_group fix below): the original
+            // `&v1[-1].m_gjk_geom` is undefined behaviour (OOB access on v1[-1]) which Clang -O2
+            // miscompiles into the heap-corrupting out-of-bounds free seen in
+            // destroy_broad_phase_info_list <- CG_DestructibleSpawnDynEnt/Phys_CreateBodyFromState
+            // (the later "null function" in the physics jobqueue is the corrupted-funcptr symptom).
+            // remove(T*) computes the node via container_of(v1, T_internal, m_data) + PMM_VALIDATE
+            // and then does exactly the inline body (--m_list_count, debug_remove, unlink, PMM_FREE).
+            G_BPM->g_list_broad_phase_info.remove(v1);
             v1 = m_list_bpb_next;
         }
         while ( m_list_bpb_next );
@@ -1965,9 +1955,10 @@ void __cdecl destroy_broad_phase_collision_pair(broad_phase_collision_pair *bpcp
     p_g_list_broad_phase_collision_pair = &G_BPM->g_list_broad_phase_collision_pair;
     if ( bpcp )
     {
-        PMM_VALIDATE((char *)&bpcp[-1].m_bpi2, 0x18u, 4u);
-        //phys_free_list<broad_phase_collision_pair>::remove(p_g_list_broad_phase_collision_pair, (phys_free_list<broad_phase_collision_pair>::T_internal *)&bpcp[-1].m_bpi2);
-        p_g_list_broad_phase_collision_pair->remove((phys_free_list<broad_phase_collision_pair>::T_internal *) &bpcp[-1].m_bpi2);
+        // FIX (decompiler negative-index aliasing — same class as destroy_broad_phase_info_list /
+        // the ragdoll fix): &bpcp[-1].m_bpi2 is UB; remove(T*) does container_of + PMM_VALIDATE +
+        // unlink/free correctly. This path is hit from Phys_CollisionCallback during destructibles.
+        p_g_list_broad_phase_collision_pair->remove(bpcp);
     }
 }
 
@@ -1975,33 +1966,17 @@ void __cdecl destroy_broad_phase_collision_pair_list(broad_phase_collision_pair 
 {
     broad_phase_collision_pair *v1; // eax
     broad_phase_collision_pair *m_next_bpcp; // ebx
-    phys_free_list<broad_phase_collision_pair>::T_internal *p_m_bpi2; // esi
-    phys_free_list<broad_phase_collision_pair> *p_g_list_broad_phase_collision_pair; // edi
-    phys_free_list<broad_phase_collision_pair>::T_internal_base *m_next_T_internal; // eax
-    phys_free_list<broad_phase_collision_pair>::T_internal_base *m_prev_T_internal; // ecx
 
     v1 = list_bpcp;
     if ( list_bpcp )
     {
         do
         {
+            // Read next BEFORE freeing v1. FIX (decompiler negative-index aliasing): the original
+            // &v1[-1].m_bpi2 is UB; remove(T*) computes the node via container_of + PMM_VALIDATE
+            // and unlinks/frees correctly. Same fix as destroy_broad_phase_info_list above.
             m_next_bpcp = v1->m_next_bpcp;
-            p_m_bpi2 = (phys_free_list<broad_phase_collision_pair>::T_internal *)&v1[-1].m_bpi2;
-            p_g_list_broad_phase_collision_pair = &G_BPM->g_list_broad_phase_collision_pair;
-            PMM_VALIDATE((char *)&v1[-1].m_bpi2, 0x18u, 4u);
-            if ( !p_m_bpi2 )
-            {
-                if ( _tlAssert("c:\\projects_pc\\cod\\codsrc\\tl\\physics\\include\\phys_mem.h", 477, "data", "") )
-                    __debugbreak();
-            }
-            --p_g_list_broad_phase_collision_pair->m_list_count;
-            //phys_free_list<broad_phase_collision_pair>::debug_remove(p_g_list_broad_phase_collision_pair, p_m_bpi2);
-            p_g_list_broad_phase_collision_pair->debug_remove(p_m_bpi2);
-            m_next_T_internal = p_m_bpi2->m_next_T_internal;
-            m_prev_T_internal = p_m_bpi2->m_prev_T_internal;
-            m_prev_T_internal->m_next_T_internal = m_next_T_internal;
-            m_next_T_internal->m_prev_T_internal = m_prev_T_internal;
-            PMM_FREE((unsigned __int8 *)p_m_bpi2, 0x18u, 4u);
+            G_BPM->g_list_broad_phase_collision_pair.remove(v1);
             v1 = m_next_bpcp;
         }
         while ( m_next_bpcp );
