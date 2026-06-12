@@ -353,20 +353,29 @@
     const statusEl = document.getElementById('status');
     function setStatus(t) { statusEl.textContent = t; }
 
+    let kbEngineStarted = false;
     function startEngine() {
+      // Re-entry guard: a second callMain mid-run re-executes the boot path on top of the
+      // live game (duplicated argv, trashed fastfile state -> "Couldn't find the bsp").
+      // Seen when a stray Enter re-activates the still-focused #pick button.
+      if (kbEngineStarted) { console.warn('[KB] startEngine ignored (already started)'); return; }
+      kbEngineStarted = true;
       setStatus("starting engine…");
       // Module.run() is provided by blackops.js once the runtime is initialized.
       if (Module.calledRun) { Module.callMain(Module.arguments); }
       else { Module.onRuntimeInitialized = () => Module.callMain(Module.arguments); }
     }
 
-    document.getElementById('pick').addEventListener('click', async () => {
+    document.getElementById('pick').addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget;
+      if (btn.disabled) return;
       try {
         setStatus("select your Steam \"Call of Duty Black Ops\" folder…");
         // pickFolder() uses showDirectoryPicker() on a secure context (https/
         // localhost) and falls back to <input webkitdirectory> over plain HTTP/LAN.
         const n = await Module.KBFS.pickFolder();
         setStatus(`granted: ${n} files indexed. booting…`);
+        btn.disabled = true; btn.blur();   // Enter must never re-trigger the pick/boot
         startEngine();
       } catch (e) { console.error(e); setStatus("folder pick cancelled/failed: " + e.message); }
     });
