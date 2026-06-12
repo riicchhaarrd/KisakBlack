@@ -27,10 +27,14 @@ unsigned long g_kbLitS2Fallback = 0; // stream2 surfaces drawn per-surface insid
 unsigned long g_kbLitBailStock = 0;  // lit calls that took the stock walker (any cause below)
 // Bail-cause split: which dispatch condition sent the call to the stock walker
 unsigned long g_kbLitBailPrepass = 0, g_kbLitBailGate = 0, g_kbLitBailIb = 0;
-// Layered-fold check: a layered surface joins the baseVertex fold iff its stream1 data is packed
-// PARALLEL to the world vertices (vertexLayerData == layerStride * firstVertex — then stream1@0
-// with the same baseVertex lands on the right rows); nlin surfaces draw per-surface.
-unsigned long g_kbLitLayerLinear = 0, g_kbLitLayerNonLin = 0;
+// Layered fold (delta-run grouping): surface i needs stream0 fetch at 44*fv_i + 44*idx and
+// stream1 at vLD_i + stride1*idx. One shared bind pair (O0, O1) with per-draw baseVertex bv_i
+// satisfies both iff delta_i := vLD_i - stride1*fv_i == O1 - stride1*O0/44 — the run key is the
+// single scalar delta (H14 measured delta==0 nowhere, H15 measured ALL deltas negative).
+// Negative deltas fold too: k = ceil(-delta/stride1), O0 = 44k, O1 = delta + stride1*k (both
+// >= 0 by construction), bv_i = fv_i - k (>= 0 within a run, proven from vLD_i >= 0).
+unsigned long g_kbLitDeltaRuns = 0;  // bind-pair rebinds from delta changes (run boundaries)
+unsigned long g_kbLitNegDelta = 0;   // surfaces folded through a negative-delta run (info)
 #endif
 
 int g_layerDataStride[18] = { 0, 0, 0, 8, 12, 16, 20, 24, 24, 28, 32, 32, 36, 40, 0, 0, 16, 0 };
@@ -816,9 +820,10 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
         conflictTex = &(((rg.frontEndFrameCount & 4) != 0) ? rgp.blackImage : rgp.whiteImage)->texture;
     IDirect3DDevice9 *device = primState->device;
 
-    // Fold binding: every stream at offset 0, per-draw baseVertex carries firstVertex. Layered
-    // decls bind stream1 = layerVb @ 0 — its rows are parallel to the world verts, so the same
-    // baseVertex selects the right layer data (per-surface verified below).
+    // Fold binding: stream0 = worldVb @ 0, per-draw baseVertex carries firstVertex. Layered
+    // decls additionally bind stream1 = layerVb at the current delta-run's offset (set per
+    // surface below); under baseVertex=fv a bind at delta = vertexLayerData - layerStride*fv
+    // fetches exactly the surface's rows — surfaces sharing a delta share one bind.
     if ( layerStride )
         R_SetDoubleStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu,
                                 g_worldDraw->vld.layerVb, 0, layerStride);
@@ -826,11 +831,42 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
         R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);
     if ( primState->indexBuffer != wib )
         R_ChangeIndices(primState, wib);
+    int curLayerDelta = 0;        // current run's delta (vLD - stride1*fv) — selects the bind pair
+    unsigned curLayerK = 0;       // current run's k: stream0 @ 44k, stream1 @ delta+stride1*k, bv = fv-k
+    bool foldBound = true;        // fold bind pair + IB intact (false after a fallback)
 
     static std::vector<int> counts;
     static std::vector<const void *> offsets;
     static std::vector<int> baseVerts;
     counts.clear(); offsets.clear(); baseVerts.clear();
+
+    // Restore the fold binding lazily — only when a submit actually needs it (a fallback run
+    // of N surfaces costs 1 restore instead of N). Pending entries always belong to
+    // curLayerDelta: a delta change flushes before rebinding stream1.
+    auto kbBindFoldPair = [&]() {
+        if ( layerStride )
+            R_SetDoubleStreamSource(primState, g_worldDraw->vd.worldVb, 44u * curLayerK, 0x2Cu,
+                                    g_worldDraw->vld.layerVb,
+                                    (unsigned)(curLayerDelta + (int)(layerStride * curLayerK)), layerStride);
+        else
+            R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);
+    };
+    auto kbRestoreFold = [&]() {
+        if ( foldBound )
+            return;
+        kbBindFoldPair();
+        if ( primState->indexBuffer != wib )
+            R_ChangeIndices(primState, wib);
+        foldBound = true;
+    };
+    auto kbFlushAccum = [&]() {
+        if ( counts.empty() )
+            return;
+        kbRestoreFold();
+        ++g_kbLitFlushes; g_kbLitDraws += (unsigned long)counts.size();
+        KB_DrawWorldMultiC(device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
+        counts.clear(); offsets.clear(); baseVerts.clear();
+    };
 
     const unsigned __int16 *list;   // BYREF
     unsigned int count;             // BYREF
@@ -856,12 +892,7 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
                  | (reflectionProbeIndex - bspSurf->reflectionProbeIndex)
                  | (lightmapIndex - bspSurf->lightmapIndex) )
             {
-                if ( !counts.empty() )   // texture state changes: submit the accumulated run first
-                {
-                    ++g_kbLitFlushes; g_kbLitDraws += (unsigned long)counts.size();
-                    KB_DrawWorldMultiC(device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
-                    counts.clear(); offsets.clear(); baseVerts.clear();
-                }
+                kbFlushAccum();   // texture state changes: submit the accumulated run first
                 reflectionProbeIndex = bspSurf->reflectionProbeIndex;
                 lightmapIndex = bspSurf->lightmapIndex;
                 R_LmArraySetLayer(lightmapIndex);   // ?lmarray: set the lightmap page (array bound to s12)
@@ -981,45 +1012,39 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
                 }
             }
             const srfTriangles_t *tris = &bspSurf->tris;
-            // Surfaces that can't ride the fold: stream2 binds a per-surface dynamic-stream
-            // offset, and a layered surface whose layer data is NOT parallel to the world verts
-            // (vertexLayerData != layerStride*firstVertex) can't share the one baseVertex.
-            bool foldable = true;
+            // Layered: this surface's run key is delta = vertexLayerData - layerStride*fv (any
+            // sign — see the counter comment for the (O0, O1, k) construction). Only stream2
+            // surfaces (per-surface dynamic-stream offset) still draw per-surface.
+            int layerDelta = 0;
             if ( layerStride )
+                layerDelta = tris->vertexLayerData - (int)(layerStride * (unsigned)tris->firstVertex);
+            if ( tris->stream2ByteOffset >= 0 )
             {
-                if ( tris->vertexLayerData == (int)layerStride * tris->firstVertex )
-                    ++g_kbLitLayerLinear;
-                else
-                {
-                    ++g_kbLitLayerNonLin;
-                    foldable = false;
-                }
-            }
-            if ( tris->stream2ByteOffset >= 0 || !foldable )
-            {
-                // flush the accumulated multi-draw, draw this one the stock way, then restore
-                // the fold binding + static IB and continue accumulating.
+                // submit what's pending, draw this one the stock way; the fold binding is
+                // restored lazily at the next submit (consecutive fallbacks pay once).
                 ++g_kbLitS2Fallback;
-                if ( !counts.empty() )
-                {
-                    ++g_kbLitFlushes; g_kbLitDraws += (unsigned long)counts.size();
-                    KB_DrawWorldMultiC(device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
-                    counts.clear(); offsets.clear(); baseVerts.clear();
-                }
+                kbFlushAccum();
                 R_SetStreamsForBspSurface(primState, tris);
                 int db = R_SetIndexData(primState, (unsigned __int8 *)&g_worldDraw->indices[tris->baseIndex], tris->triCount);
                 R_EmitMergedRun(primState, db, tris->triCount);
-                if ( layerStride )
-                    R_SetDoubleStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu,
-                                            g_worldDraw->vld.layerVb, 0, layerStride);
-                else
-                    R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);
-                if ( primState->indexBuffer != wib )
-                    R_ChangeIndices(primState, wib);
+                foldBound = false;
                 continue;
             }
+            if ( layerStride && layerDelta != curLayerDelta )
+            {
+                kbFlushAccum();             // pending entries belong to the previous delta run
+                ++g_kbLitDeltaRuns;
+                curLayerDelta = layerDelta;
+                curLayerK = (layerDelta < 0)
+                    ? (unsigned)(((unsigned)-layerDelta + layerStride - 1) / layerStride)
+                    : 0u;
+                if ( foldBound )            // else the lazy restore binds the new pair itself
+                    kbBindFoldPair();
+            }
+            if ( layerDelta < 0 )
+                ++g_kbLitNegDelta;
             ++g_kbLitSurfs;
-            if ( !counts.empty() && baseVerts.back() == (int)tris->firstVertex
+            if ( !counts.empty() && baseVerts.back() == (int)tris->firstVertex - (int)curLayerK
                 && (size_t)offsets.back() + (size_t)counts.back() * 2 == (size_t)tris->baseIndex * 2 )
             {
                 counts.back() += 3 * (int)tris->triCount;   // index-contiguous: extend (stock merged these too)
@@ -1028,15 +1053,11 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
             {
                 counts.push_back(3 * (int)tris->triCount);
                 offsets.push_back((const void *)(size_t)((size_t)tris->baseIndex * 2));   // uint16 IB byte offset
-                baseVerts.push_back((int)tris->firstVertex);
+                baseVerts.push_back((int)tris->firstVertex - (int)curLayerK);
             }
         }
     }
-    if ( !counts.empty() )
-    {
-        ++g_kbLitFlushes; g_kbLitDraws += (unsigned long)counts.size();
-        KB_DrawWorldMultiC(device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
-    }
+    kbFlushAccum();
     drawStream->reflectionProbeTexture = reflectionProbeTexture;
     drawStream->lightmapPrimaryTexture = lightmapPrimaryTexture;
     drawStream->lightmapSecondaryTexture = lightmapSecondaryTexture;
