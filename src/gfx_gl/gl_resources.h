@@ -146,6 +146,9 @@ public:
     UINT      width()  const { return width_; }
     UINT      height() const { return height_; }
     D3DFORMAT format() const { return format_; }
+    // ?lmarray: upload this texture's level-0 pixels into one layer of a GL_TEXTURE_2D_ARRAY,
+    // using its retained CPU shadow + the same D3D->GL format mapping as a normal 2D upload.
+    void      KB_UploadIntoArrayLayer(unsigned arrayTex, int layer);
 
 private:
     void createGL();              // glGen + storage/placeholder (GL thread only)

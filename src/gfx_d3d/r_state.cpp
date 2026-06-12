@@ -756,6 +756,32 @@ const GfxImage *__cdecl R_OverrideGrayscaleImage(const dvar_s *dvar)
     return rgp.grayImage;
 }
 
+#if defined(__EMSCRIPTEN__)
+extern "C" void KB_BuildLightmapArrayC(void *dev, void *const *basemaps, int count);
+extern "C" void KB_SetLightmapLayerC(void *dev, int layer);
+// ?lmarray: lazily build the primary-lightmap texture array (once per world) and set the per-draw
+// page so the lit shaders sample the array layer instead of a per-surface BIND. Called from both lit
+// paths (R_SetLightmap = pretess, R_DrawTrianglesLit = direct). Index 31 = unlit -> no layer set.
+void R_LmArraySetLayer(unsigned lmapIndex)
+{
+    static int lmA = -1;
+    if (lmA < 0) { const char *e = getenv("KB_LMARRAY"); lmA = (e && *e == '1') ? 1 : 0; }
+    if (!lmA || !g_worldDraw) return;
+    static bool built = false;
+    if (!built && g_worldDraw->lightmapCount > 0 && g_worldDraw->lightmapCount <= 64)
+    {
+        built = true;
+        void *bm[64];
+        int n = g_worldDraw->lightmapCount;
+        for (int i = 0; i < n; ++i)
+            bm[i] = g_worldDraw->lightmaps[i].primary ? (void *)g_worldDraw->lightmaps[i].primary->texture.basemap : nullptr;
+        KB_BuildLightmapArrayC(dx.device, bm, n);
+    }
+    if (lmapIndex < (unsigned)g_worldDraw->lightmapCount)
+        KB_SetLightmapLayerC(dx.device, (int)lmapIndex);
+}
+#endif
+
 void __cdecl R_SetLightmap(GfxCmdBufContext context, unsigned int lmapIndex)
 {
     const MaterialPass *pass; // [esp+0h] [ebp-8h]
@@ -766,6 +792,9 @@ void __cdecl R_SetLightmap(GfxCmdBufContext context, unsigned int lmapIndex)
     {
         __debugbreak();
     }
+#if defined(__EMSCRIPTEN__)
+    R_LmArraySetLayer(lmapIndex);
+#endif
     pass = context.state->pass;
     if ( lmapIndex == 31 )
     {

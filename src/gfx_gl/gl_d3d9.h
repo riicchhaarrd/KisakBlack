@@ -155,6 +155,12 @@ public:
     // baseVerts = per-surface base vertex. Collapses many engine R_DrawIndexedPrimitive calls into one.
     // GL types aren't visible in this D3D-shim header (see gl_d3d9.h note) -> plain int/void.
     void KB_DrawWorldMulti(const int *counts, const void *const *offsets, const int *baseVerts, int n);
+    // ?lmarray: build a GL_TEXTURE_2D_ARRAY from the world's per-page lightmap textures (passed as
+    // their IDirect3DBaseTexture9* basemaps), and set the current per-draw layer. KB_DrawWorldMulti's
+    // sibling for lit world: dissolves the per-surface lightmap BIND into the uLmLayer uniform so lit
+    // draws stop breaking batches. Built once; no-op if already built. void* = IDirect3DBaseTexture9*.
+    void KB_BuildLightmapArray(void *const *basemaps, int count);
+    void KB_SetLightmapLayer(int layer);
 private:
     bool applyTextures();         // bind stage-0 texture + sampler state; returns true if sampling
     void applyStageSampler(unsigned stage, unsigned target); // apply stage's filter/wrap to bound tex
@@ -196,6 +202,10 @@ private:
     int      builtinColorOpLoc_   = -1;  // 0 = SELECTARG1 (tex), 1 = MODULATE (tex*diffuse)
     int      builtinAlphaFuncLoc_ = -1;  // GL-style compare func, or 0 = disabled
     int      builtinAlphaRefLoc_  = -1;  // [0,1] reference
+
+    // ?lmarray lit-world lightmap texture array (see KB_BuildLightmapArray).
+    unsigned kbLmArrayTex_ = 0;   // GL_TEXTURE_2D_ARRAY name; 0 = not built
+    float    kbLmLayer_    = 0.0f; // current per-draw lightmap page (-> uLmLayer)
 
     // Redundant-state elimination (WebGL hates per-draw state changes; each is a marshaled
     // call on the proxied context). curProgram_ skips redundant glUseProgram; rsCache_/rsSet_
@@ -294,6 +304,8 @@ private:
                            // batch, not per draw; unconditional re-upload was 2 GL calls
                            // on every one of ~10k draws.
                            int upAlphaFunc = -999; float upAlphaRef = -999.0f;
+                           // ?lmarray: location + last value of uLmLayer (the per-draw lightmap page).
+                           int lmLayerLoc = -1; float upLmLayer = -999.0f;
                            // Versions of the constant arrays last uploaded to this
                            // program — constants change per material/pass, not per
                            // draw, so most of the per-draw glUniform4fv pairs (the

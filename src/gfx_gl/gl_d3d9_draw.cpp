@@ -7,6 +7,7 @@
 // built-in is bypassed.
 #include "gl_d3d9.h"
 #include "gl_resources.h"
+#include "gl_format.h"   // D3DToGLFormat (?lmarray lightmap-array build)
 #include "gl_shader.h"   // GLAttribLocation / GLAttribName / GLBindAttribLocations
 
 #include <GL/glew.h>
@@ -273,6 +274,41 @@ extern "C" void KB_DrawWorldMultiC(void *dev, const int *counts, const void *con
                                    const int *baseVerts, int n) {
     static_cast<GLDevice *>(reinterpret_cast<IDirect3DDevice9 *>(dev))
         ->KB_DrawWorldMulti(counts, offsets, baseVerts, n);
+}
+
+// ?lmarray: build the lit-world lightmap texture array from the world's per-page lightmap textures.
+void GLDevice::KB_BuildLightmapArray(void *const *basemaps, int count) {
+    if (kbLmArrayTex_ || count <= 0 || !basemaps) return;   // built once per world
+    KB_EnsureCtxOnThread();
+    GLTexture *t0 = static_cast<GLTexture *>(reinterpret_cast<IDirect3DBaseTexture9 *>(basemaps[0]));
+    if (!t0) return;
+    int w = (int)t0->width(), h = (int)t0->height();
+    unsigned internal, format, type; int bpp;
+    if (!D3DToGLFormat(t0->format(), &internal, &format, &type, &bpp)) return;
+    glGenTextures(1, &kbLmArrayTex_);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, kbLmArrayTex_);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, internal, w, h, count, 0, format, type, nullptr);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    for (int i = 0; i < count; ++i)
+        if (basemaps[i])
+            static_cast<GLTexture *>(reinterpret_cast<IDirect3DBaseTexture9 *>(basemaps[i]))
+                ->KB_UploadIntoArrayLayer(kbLmArrayTex_, i);
+    unitTex_[12] = 0;   // the per-draw path binds the array to unit 12; clear the 2D cache there
+    fprintf(stderr, "[lmarray] built lightmap array %dx%d x %d layers (internal=0x%x)\n",
+            w, h, count, internal);
+}
+
+void GLDevice::KB_SetLightmapLayer(int layer) { kbLmLayer_ = (float)layer; }
+
+extern "C" void KB_BuildLightmapArrayC(void *dev, void *const *basemaps, int count) {
+    static_cast<GLDevice *>(reinterpret_cast<IDirect3DDevice9 *>(dev))->KB_BuildLightmapArray(basemaps, count);
+}
+extern "C" void KB_SetLightmapLayerC(void *dev, int layer) {
+    static_cast<GLDevice *>(reinterpret_cast<IDirect3DDevice9 *>(dev))->KB_SetLightmapLayer(layer);
 }
 #endif
 

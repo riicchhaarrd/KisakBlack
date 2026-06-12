@@ -541,6 +541,21 @@ void GLTexture::uploadLevel(UINT Level) {
                 uerr, Level, (unsigned)format_, w, h, cfmt ? "DXT" : "raw");
 }
 
+// ?lmarray: copy this texture's level-0 pixels into one layer of a GL_TEXTURE_2D_ARRAY, reusing the
+// retained CPU shadow (no readback / renderability needed). Stage 1a = primary lightmap (D3DFMT_L8 ->
+// R8/RED, no swizzle). Secondary G16R16 (s13/s14) will need the RG8 down-convert applied here first.
+void GLTexture::KB_UploadIntoArrayLayer(unsigned arrayTex, int layer) {
+    glName();   // ensure the GL texture exists; the level-0 CPU shadow persists after upload
+    if (levelShadow_.empty() || levelShadow_[0].empty()) return;
+    unsigned internal, format, type; int bpp;
+    if (!D3DToGLFormat(format_, &internal, &format, &type, &bpp)) return;
+    glBindTexture(GL_TEXTURE_2D_ARRAY, arrayTex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer,
+                    (GLsizei)width_, (GLsizei)height_, 1, format, type, levelShadow_[0].data());
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+}
+
 // ---- GLVolumeTexture (GL_TEXTURE_3D) --------------------------------------
 GLVolumeTexture::GLVolumeTexture(IDirect3DDevice9 *device, UINT w, UINT h, UINT d, UINT levels,
                                  DWORD usage, D3DFORMAT format, D3DPOOL pool)

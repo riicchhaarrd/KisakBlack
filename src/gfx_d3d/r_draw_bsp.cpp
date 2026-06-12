@@ -14,6 +14,7 @@
 // static IB, each with its own baseVertex. See GLDevice::KB_DrawWorldMulti.
 extern "C" void KB_DrawWorldMultiC(void *dev, const int *counts, const void *const *offsets,
                                    const int *baseVerts, int n);
+void R_LmArraySetLayer(unsigned lmapIndex);   // ?lmarray: defined in r_state.cpp (build + set page)
 #endif
 
 int g_layerDataStride[18] = { 0, 0, 0, 8, 12, 16, 20, 24, 24, 28, 32, 32, 36, 40, 0, 0, 16, 0 };
@@ -231,6 +232,9 @@ void __cdecl R_DrawTrianglesLit(
                 }
                 reflectionProbeIndex = bspSurf->reflectionProbeIndex;
                 lightmapIndex = bspSurf->lightmapIndex;
+#if defined(__EMSCRIPTEN__)
+                R_LmArraySetLayer(lightmapIndex);   // ?lmarray: set the lightmap page (array bound to s12)
+#endif
                 if ( reflectionProbeFlag )
                 {
                     if ( reflectionProbeIndex >= g_worldDraw->reflectionProbeCount

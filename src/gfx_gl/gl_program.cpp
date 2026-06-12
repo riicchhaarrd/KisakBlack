@@ -260,6 +260,7 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
 #ifdef __EMSCRIPTEN__
     lp.alphaFuncLoc = KB_glGetUniformLocation(lp.prog, "uAlphaTestFunc");
     lp.alphaRefLoc  = KB_glGetUniformLocation(lp.prog, "uAlphaRef");
+    lp.lmLayerLoc   = KB_glGetUniformLocation(lp.prog, "uLmLayer");   // ?lmarray (-1 if shader has no lightmap array)
 #endif
     for (int i = 0; i < kMaxStages; ++i) {
         char name[4]; snprintf(name, sizeof(name), "s%d", i);
@@ -451,11 +452,23 @@ bool GLDevice::useDrawProgram() {
     }
 #endif
 
+    // ?lmarray: the lightmap is a sampler2DArray on unit 12 (s12), bound once below; the per-surface
+    // 2D lightmap bind on that unit must be skipped (sampler-type mismatch would invalidate the draw).
+#if defined(__EMSCRIPTEN__)
+    extern unsigned KB_LmArrayMask();
+    static int s_lmA12 = -1;
+    if (s_lmA12 < 0) s_lmA12 = (KB_LmArrayMask() >> 12) & 1;
+    const bool lmArray12 = s_lmA12 && kbLmArrayTex_;
+#else
+    const bool lmArray12 = false;
+#endif
+
     // Bind each referenced sampler s# to texture unit # and the matching texture.
     // Uses the cached location (queried once at link) — no per-draw glGetUniformLocation.
     for (int i = 0; i < kMaxStages; ++i) {
         int loc = lp.samplerLoc[i];
         if (loc < 0) continue;
+        if (lmArray12 && i == 12) continue;   // ?lmarray: unit 12 is the lightmap array (bound below)
         // (sampler->unit binding now done once at link, see finalizeProgram)
         if (boundTexName_[i]) {
             // Per-unit cache: rebinding the same texture (the common case inside a
@@ -468,5 +481,16 @@ bool GLDevice::useDrawProgram() {
             }
         }
     }
+#if defined(__EMSCRIPTEN__)
+    if (lmArray12 && lp.samplerLoc[12] >= 0) {
+        glActiveTexture(GL_TEXTURE0 + 12);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, kbLmArrayTex_);
+        unitTex_[12] = 0;                       // array bind: invalidate the 2D per-unit cache here
+        if (lp.lmLayerLoc >= 0 && lp.upLmLayer != kbLmLayer_) {
+            glUniform1f(lp.lmLayerLoc, kbLmLayer_);
+            lp.upLmLayer = kbLmLayer_;
+        }
+    }
+#endif
     return true;
 }
