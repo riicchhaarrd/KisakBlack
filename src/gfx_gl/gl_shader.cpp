@@ -97,6 +97,16 @@ struct Ctx {
     // Texture sampler call: texture2D in 120, overloaded texture() in ES 3.00.
     const char *texFn() const { return emitES ? "texture" : "texture2D"; }
     unsigned shadowMask = 0;   // samplers typed sampler2DShadow (depth-compare lookups)
+    // ?lmarray: sampler stages to emit as sampler2DArray instead of sampler2D, sampling layer
+    // uLmLayer (the per-draw lightmap page). Dissolves the per-surface lightmap BIND (s12/13/14)
+    // into a per-draw layer index so lit-world draws can collapse into one multi-draw. 0 = off.
+    unsigned lmArrayMask = 0;
+    // True only when stage sN is an lmArray stage, a plain 2D sampler (not shadow), AND we emit ES
+    // 3.00 (sampler2DArray needs GLSL ES 3.00 / desktop 130+; the #version 120 path stays untouched).
+    bool lmA(int sN) const {
+        return emitES && ((lmArrayMask >> sN) & 1) && !((shadowMask >> sN) & 1)
+            && (samplerDim.count(sN) ? samplerDim.at(sN) : 2) == 2;
+    }
     std::map<int, std::pair<int,int>> inputs;   // reg -> (usage, usageIndex)
     std::map<int, std::pair<int,int>> outputs;  // reg -> (usage, usageIndex)  (vertex)
     std::set<int> samplers;
@@ -246,6 +256,10 @@ void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
                 else
                     expr = c.emitES ? "vec4(texture(" + samp + ", KB_sc(vec4((" + s(0) + ").xyz, 1.0))))"
                                     : "vec4(shadow2D(" + samp + ", KB_sc(vec4((" + s(0) + ").xyz, 1.0))).x)";
+            } else if (c.lmA(sreg)) {
+                // lightmap array: sample layer uLmLayer instead of a bound 2D texture (?lmarray).
+                // (lit lightmap lookups are plain 2D fetches — never projective/biased here.)
+                expr = "texture(" + samp + ", vec3((" + s(0) + ").xy, uLmLayer))";
             } else if (ctrl == 1) {
                 expr = std::string(c.emitES ? "textureProj" : "texture2DProj") + "(" + samp + ", " + s(0) + ")";
             } else {
@@ -358,6 +372,14 @@ static bool KB_DumpEnvWanted() {
     return en == 1;
 }
 
+// ?lmarray (KB_LMARRAY=1): which sampler stages to translate as sampler2DArray (layer = uLmLayer).
+// Stage 1a = primary lightmap only (s12); extend to s12|s13|s14 once primary is verified. Cached.
+unsigned KB_LmArrayMask() {
+    static int mask = -1;
+    if (mask < 0) { const char *e = getenv("KB_LMARRAY"); mask = (e && *e == '1') ? (1 << 12) : 0; }
+    return (unsigned)mask;
+}
+
 bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
                          unsigned shadowSamplerMask, unsigned *outSamplerMask) {
     Ctx c;
@@ -368,6 +390,7 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
     DWORD ver = *tok++;
     c.isPixel = (ver >> 16) == 0xFFFF;
     c.shadowMask = shadowSamplerMask;
+    if (c.isPixel) c.lmArrayMask = KB_LmArrayMask();   // lightmaps are sampled in the pixel shader
     if (outIsPixel) *outIsPixel = c.isPixel;
 
     std::ostringstream body;
@@ -467,10 +490,18 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
             // single line every shadow variant failed to compile (and the affected
             // draws fell to the builtin, which used to fail too -> invisible geometry).
             if (c.shadowMask) o << "precision highp sampler2DShadow;\n";
+            bool anyLmArray = false;
+            for (int sN : c.samplers) if (c.lmA(sN)) anyLmArray = true;
+            if (anyLmArray) {
+                // ES 3.00 has no default precision for sampler2DArray (same trap as sampler3D/2DShadow).
+                o << "precision highp sampler2DArray;\n";
+                o << "uniform float uLmLayer;\n";   // per-draw lightmap page (set by the state layer)
+            }
             for (int sN : c.samplers)
             {
                 int dim = c.samplerDim.count(sN) ? c.samplerDim.at(sN) : 2;
                 const char *ty = ((c.shadowMask >> sN) & 1) ? "sampler2DShadow"
+                                 : c.lmA(sN) ? "sampler2DArray"
                                  : dim == 4 ? "sampler3D" : dim == 3 ? "samplerCube" : "sampler2D";
                 o << "uniform " << ty << " s" << sN << ";\n";
             }
