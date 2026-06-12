@@ -68,6 +68,9 @@ extern int g_kbHasMultiDraw;                              // multi-draw ext avai
 extern int g_kbHasBaseVertexExt;                          // single-draw base-vertex ext (kbDrawElementsBV / ?vbarena gate)
 // [perf/tr] adjacent-batch transition counters (rb_backend.cpp R_RenderDrawSurfListMaterial)
 extern unsigned long g_kbTrBatches, g_kbTrSameMatDiffLight, g_kbTrSameMatDiffTech, g_kbTrDiffMat;
+// [perf/lit] lit-world multi-draw merge counters (r_draw_bsp.cpp) — file scope: a block-scope
+// extern inside the anon-namespace class would declare (anonymous namespace)::g_kbLit* (link error)
+extern unsigned long g_kbLitSurfs, g_kbLitDraws, g_kbLitFlushes, g_kbLitS2Fallback, g_kbLitBailStock;
 extern int g_kbCtxIsLocal;                                // 1 = worker-local context
 extern int g_kbBatchEnable, g_kbCoalesceEnable;           // opt-in perf toggles (ENV)
 extern unsigned long g_kbGLCtxHandle;                     // context handle for thread-attach
@@ -108,7 +111,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: H11 (H10 + [perf/tr] batch-transition classifier for the cross-light merge design)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: H12 (H11 + lit-world multi-draw merge, ?nolitmerge escape)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -518,6 +521,18 @@ public:
                         (g_kbTrSameMatDiffTech - tt0) / frames, (g_kbTrDiffMat - tm0) / frames);
                 tb0 = g_kbTrBatches; tl0 = g_kbTrSameMatDiffLight;
                 tt0 = g_kbTrSameMatDiffTech; tm0 = g_kbTrDiffMat;
+            }
+            // [perf/lit] lit-world multi-draw merge (r_draw_bsp.cpp): surfs accumulated, entries
+            // submitted, multi-draw submissions (~texture runs), stream2 per-surface fallbacks,
+            // lit calls that took the stock walker (layered decl / prepass / merge disabled).
+            {
+                static unsigned long li0[5] = {0};
+                fprintf(stderr, "[perf/lit] surfs=%lu ent=%lu mdraw=%lu s2=%lu stock=%lu\n",
+                        (g_kbLitSurfs - li0[0]) / frames, (g_kbLitDraws - li0[1]) / frames,
+                        (g_kbLitFlushes - li0[2]) / frames, (g_kbLitS2Fallback - li0[3]) / frames,
+                        (g_kbLitBailStock - li0[4]) / frames);
+                li0[0] = g_kbLitSurfs; li0[1] = g_kbLitDraws; li0[2] = g_kbLitFlushes;
+                li0[3] = g_kbLitS2Fallback; li0[4] = g_kbLitBailStock;
             }
             // ?perfms=1: wall-time split. draw = inside DrawIndexedPrimitive (program
             // setup + GL submission), pres = inside SwapBuffers (commit + bitmap ship),

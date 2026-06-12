@@ -70,6 +70,12 @@ static inline void kbDrawElementsBV(GLenum mode, GLsizei count, GLenum type,
     }
     glDrawElementsBaseVertex(mode, count, type, const_cast<void *>(offset), bv);
 }
+// Engine-side gate (r_draw_bsp.cpp lit-world merge): non-zero baseVertex draws are only correct
+// when the multi-draw or base-vertex extension is live — the core glDrawElementsBaseVertex link
+// stub silently DROPS the base. Returns 0 until the context-init probes resolve.
+extern "C" int KB_WorldBaseVertexOK() {
+    return g_kbHasMultiDraw == 1 || g_kbHasBaseVertexExt == 1;
+}
 // 1 = worker-LOCAL WebGL context (direct emscripten_gl* calls legal), 0 = PROXIED
 // (calls must go through the proxy-aware GLEW pointers or they hit a stub GLctx).
 int g_kbCtxIsLocal = 0;

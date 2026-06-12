@@ -15,6 +15,16 @@
 extern "C" void KB_DrawWorldMultiC(void *dev, const int *counts, const void *const *offsets,
                                    const int *baseVerts, int n);
 void R_LmArraySetLayer(unsigned lmapIndex);   // ?lmarray: defined in r_state.cpp (build + set page)
+// Lit-world multi-draw merge (?nolitmerge escape) — defined after the worldmerge2 helpers below.
+extern "C" int KB_WorldBaseVertexOK();        // gl_d3d9_draw.cpp: multi-draw or base-vertex ext live
+static bool R_LitMergeEnabled();
+static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *primState);
+// [perf/lit] counters (printed once a second in glcontext_sdl.cpp)
+unsigned long g_kbLitSurfs = 0;      // surfaces accumulated into multi-draw entries
+unsigned long g_kbLitDraws = 0;      // entries submitted (after index-contiguity extension)
+unsigned long g_kbLitFlushes = 0;    // KB_DrawWorldMultiC submissions (~ lightmap/probe texture runs)
+unsigned long g_kbLitS2Fallback = 0; // stream2 surfaces drawn per-surface inside the merged walk
+unsigned long g_kbLitBailStock = 0;  // lit calls that took the stock walker (layered decl/prepass/no IB)
 #endif
 
 int g_layerDataStride[18] = { 0, 0, 0, 8, 12, 16, 20, 24, 24, 28, 32, 32, 36, 40, 0, 0, 16, 0 };
@@ -138,6 +148,19 @@ void __cdecl R_DrawTrianglesLit(
                 GfxCmdBufPrimState *primState,
                 GfxCmdBufPrimState *prepassPrimState)
 {
+#if defined(__EMSCRIPTEN__)
+    // Lit-world multi-draw merge: the same stream0@0 + static-IB + per-surface-baseVertex fold
+    // ?worldmerge2 applies to the unlit walker. Layered (terrain) decls bind a per-surface
+    // stream1 whose byte offset is NOT firstVertex*stride (baseVertex shifts EVERY stream's
+    // fetch), so they keep the stock walker; same for prepass and pre-static-IB worlds.
+    if ( !prepassPrimState && g_layerDataStride[primState->vertDeclType] == 0
+        && R_LitMergeEnabled() && KB_WorldBaseVertexOK()
+        && R_DrawTrianglesLitMulti(drawStream, primState) )
+    {
+        return;
+    }
+    ++g_kbLitBailStock;
+#endif
     GfxTexture *whiteTexture; // [esp+0h] [ebp-ACh]
     GfxImage *blackImage; // [esp+8h] [ebp-A4h]
     const GfxSurface *bspSurf; // [esp+34h] [ebp-78h]
@@ -740,6 +763,249 @@ static void R_DrawTrianglesMergedMulti(GfxTrianglesDrawStream *drawStream, GfxCm
     if ( !counts.empty() )
         KB_DrawWorldMultiC(state->device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
 }
+
+// Lit-world multi-draw merge (default ON, ?nolitmerge escape): R_DrawTrianglesLit is the LAST
+// per-surface world walker — every firstVertex change rebinds streams (the [perf/fc] vtx class)
+// and every index gap is its own engine draw. Apply the validated ?worldmerge2 fold: stream0 =
+// worldVb @ offset 0 bound ONCE, the static world IB, per-surface baseVertex = firstVertex, and
+// ONE KB_DrawWorldMultiC per (lightmap, reflection-probe) texture run — those sampler binds are
+// the only state changes in the walk that a draw can't carry. stream2 surfaces can't share the
+// stream0-only binding -> drawn per-surface, then accumulation resumes. The texture-change body
+// MUST MIRROR R_DrawTrianglesLit above (incl. the overrideImage reassignment quirk).
+int g_kbLitMerge = -1;
+static bool R_LitMergeEnabled()
+{
+    if ( g_kbLitMerge < 0 ) { const char *e = getenv("KB_NOLITMERGE"); g_kbLitMerge = (e && *e == '1') ? 0 : 1; }
+    return g_kbLitMerge != 0;
+}
+static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *primState)
+{
+    IDirect3DIndexBuffer9 *wib = R_GetWorldStaticIb();
+    if ( !wib )
+        return false;                       // static-IB alloc failed -> stock walker (stream untouched)
+
+    unsigned int reflectionProbeIndex = 255;
+    unsigned int lightmapIndex = 31;
+    const GfxTexture *reflectionProbeTexture = drawStream->reflectionProbeTexture;
+    const GfxTexture *lightmapPrimaryTexture = drawStream->lightmapPrimaryTexture;
+    const GfxTexture *lightmapSecondaryTexture = drawStream->lightmapSecondaryTexture;
+    const GfxTexture *lightmapSecondaryTextureB = drawStream->lightmapSecondaryTextureB;
+    unsigned int reflectionProbeFlag = drawStream->customSamplerFlags & 1;
+    unsigned int lightmapPrimaryFlag = drawStream->customSamplerFlags & 2;
+    unsigned int lightmapSecondaryFlag = drawStream->customSamplerFlags & 4;
+    GfxTexture *reflectionProbeTextures = g_worldDraw->reflectionProbeTextures;
+    int hasSunDirChanged = drawStream->hasSunDirChanged;
+    const GfxImage *overrideImage = 0;
+    bool override = r_lightMap->current.integer != 1;
+    if ( override )
+        overrideImage = R_OverrideGrayscaleImage(r_lightMap);
+    GfxTexture *conflictTex = 0;
+    if ( r_lightConflicts->current.enabled )
+        conflictTex = &(((rg.frontEndFrameCount & 4) != 0) ? rgp.blackImage : rgp.whiteImage)->texture;
+    IDirect3DDevice9 *device = primState->device;
+
+    R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);   // baseVertex carries firstVertex
+    if ( primState->indexBuffer != wib )
+        R_ChangeIndices(primState, wib);
+
+    static std::vector<int> counts;
+    static std::vector<const void *> offsets;
+    static std::vector<int> baseVerts;
+    counts.clear(); offsets.clear(); baseVerts.clear();
+
+    const unsigned __int16 *list;   // BYREF
+    unsigned int count;             // BYREF
+    while ( R_ReadBspDrawSurfs(&drawStream->primDrawSurfPos, &list, &count) )
+    {
+        for ( unsigned int index = 0; index < count; ++index )
+        {
+            unsigned int surfIndex = list[index];
+            if ( surfIndex >= rgp.world->surfaceCount
+                && !Assert_MyHandler(
+                            "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_draw_bsp.cpp",
+                            539,
+                            0,
+                            "surfIndex doesn't index rgp.world->surfaceCount\n\t%i not in [0, %i)",
+                            surfIndex,
+                            rgp.world->surfaceCount) )
+            {
+                __debugbreak();
+            }
+            const GfxSurface *bspSurf = &rgp.world->dpvs.surfaces[surfIndex];
+            _mm_prefetch((const char *)&rgp.world->dpvs.surfaces[list[index + 1]].lightmapIndex, 1);
+            if ( r_lightConflicts->current.color[0]
+                 | (reflectionProbeIndex - bspSurf->reflectionProbeIndex)
+                 | (lightmapIndex - bspSurf->lightmapIndex) )
+            {
+                if ( !counts.empty() )   // texture state changes: submit the accumulated run first
+                {
+                    ++g_kbLitFlushes; g_kbLitDraws += (unsigned long)counts.size();
+                    KB_DrawWorldMultiC(device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
+                    counts.clear(); offsets.clear(); baseVerts.clear();
+                }
+                reflectionProbeIndex = bspSurf->reflectionProbeIndex;
+                lightmapIndex = bspSurf->lightmapIndex;
+                R_LmArraySetLayer(lightmapIndex);   // ?lmarray: set the lightmap page (array bound to s12)
+                if ( reflectionProbeFlag )
+                {
+                    if ( reflectionProbeIndex >= g_worldDraw->reflectionProbeCount
+                        && !Assert_MyHandler(
+                                    "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_draw_bsp.cpp",
+                                    582,
+                                    0,
+                                    "reflectionProbeIndex doesn't index g_worldDraw->reflectionProbeCount\n\t%i not in [0, %i)",
+                                    reflectionProbeIndex,
+                                    g_worldDraw->reflectionProbeCount) )
+                    {
+                        __debugbreak();
+                    }
+                    const GfxTexture *newReflectionProbeTexture = &reflectionProbeTextures[reflectionProbeIndex];
+                    if ( reflectionProbeTexture != newReflectionProbeTexture )
+                    {
+                        reflectionProbeTexture = newReflectionProbeTexture;
+                        R_HW_SetSamplerTexture(device, 0xFu, newReflectionProbeTexture);
+                    }
+                }
+                if ( lightmapIndex == 31 )
+                {
+                    if ( lightmapPrimaryFlag
+                        && !Assert_MyHandler(
+                                    "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_draw_bsp.cpp",
+                                    673,
+                                    0,
+                                    "%s\n\t(bspSurf->material->info.name) = %s",
+                                    "(!lightmapPrimaryFlag)",
+                                    bspSurf->material->info.name) )
+                    {
+                        __debugbreak();
+                    }
+                    if ( lightmapSecondaryFlag
+                        && !Assert_MyHandler(
+                                    "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_draw_bsp.cpp",
+                                    675,
+                                    0,
+                                    "%s\n\t(bspSurf->material->info.name) = %s",
+                                    "(!lightmapSecondaryFlag)",
+                                    bspSurf->material->info.name) )
+                    {
+                        __debugbreak();
+                    }
+                }
+                else
+                {
+                    if ( lightmapIndex >= g_worldDraw->lightmapCount
+                        && !Assert_MyHandler(
+                                    "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_draw_bsp.cpp",
+                                    593,
+                                    0,
+                                    "lightmapIndex doesn't index g_worldDraw->lightmapCount\n\t%i not in [0, %i)",
+                                    lightmapIndex,
+                                    g_worldDraw->lightmapCount) )
+                    {
+                        __debugbreak();
+                    }
+                    if ( lightmapPrimaryFlag )
+                    {
+                        const GfxTexture *newLightmapPrimaryTexture;
+                        if ( override )
+                        {
+                            newLightmapPrimaryTexture = &overrideImage->texture;
+                        }
+                        else if ( hasSunDirChanged )
+                        {
+                            newLightmapPrimaryTexture = drawStream->whiteTexture;
+                        }
+                        else
+                        {
+                            newLightmapPrimaryTexture = &g_worldDraw->lightmapPrimaryTextures[lightmapIndex];
+                        }
+                        if ( conflictTex && (bspSurf->flags & 2) != 0 )
+                            newLightmapPrimaryTexture = conflictTex;
+                        if ( lightmapPrimaryTexture != newLightmapPrimaryTexture )
+                        {
+                            lightmapPrimaryTexture = newLightmapPrimaryTexture;
+                            R_HW_SetSamplerTexture(device, 0xCu, newLightmapPrimaryTexture);
+                        }
+                    }
+                    if ( lightmapSecondaryFlag )
+                    {
+                        const GfxTexture *newLightmapSecondaryTexture;
+                        GfxImage *newLightmapSecondaryTextureB;
+                        if ( override )
+                        {
+                            R_OverrideGrayscaleImage(r_lightMap);
+                            newLightmapSecondaryTexture = &rgp.r5g6b5Image->texture;
+                            overrideImage = rgp.g16r16Image;
+                            newLightmapSecondaryTextureB = rgp.g16r16Image;
+                        }
+                        else
+                        {
+                            newLightmapSecondaryTexture = &g_worldDraw->lightmapSecondaryTextures[lightmapIndex];
+                            newLightmapSecondaryTextureB = (GfxImage *)&g_worldDraw->lightmapSecondaryTexturesB[lightmapIndex];
+                        }
+                        if ( conflictTex && (bspSurf->flags & 2) != 0 )
+                        {
+                            newLightmapSecondaryTexture = conflictTex;
+                            newLightmapSecondaryTextureB = (GfxImage *)conflictTex;
+                        }
+                        if ( lightmapSecondaryTexture != newLightmapSecondaryTexture )
+                        {
+                            lightmapSecondaryTexture = newLightmapSecondaryTexture;
+                            R_HW_SetSamplerTexture(device, 0xDu, newLightmapSecondaryTexture);
+                        }
+                        if ( lightmapSecondaryTextureB != (const GfxTexture *)newLightmapSecondaryTextureB )
+                        {
+                            lightmapSecondaryTextureB = &newLightmapSecondaryTextureB->texture;
+                            R_HW_SetSamplerTexture(device, 0xEu, &newLightmapSecondaryTextureB->texture);
+                        }
+                    }
+                }
+            }
+            const srfTriangles_t *tris = &bspSurf->tris;
+            if ( tris->stream2ByteOffset >= 0 )
+            {
+                // needs the secondary stream: flush the accumulated multi-draw, draw this one the
+                // stock way, then restore stream0@0 + static IB and continue accumulating.
+                ++g_kbLitS2Fallback;
+                if ( !counts.empty() )
+                {
+                    ++g_kbLitFlushes; g_kbLitDraws += (unsigned long)counts.size();
+                    KB_DrawWorldMultiC(device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
+                    counts.clear(); offsets.clear(); baseVerts.clear();
+                }
+                R_SetStreamsForBspSurface(primState, tris);
+                int db = R_SetIndexData(primState, (unsigned __int8 *)&g_worldDraw->indices[tris->baseIndex], tris->triCount);
+                R_EmitMergedRun(primState, db, tris->triCount);
+                R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);
+                if ( primState->indexBuffer != wib )
+                    R_ChangeIndices(primState, wib);
+                continue;
+            }
+            ++g_kbLitSurfs;
+            if ( !counts.empty() && baseVerts.back() == (int)tris->firstVertex
+                && (size_t)offsets.back() + (size_t)counts.back() * 2 == (size_t)tris->baseIndex * 2 )
+            {
+                counts.back() += 3 * (int)tris->triCount;   // index-contiguous: extend (stock merged these too)
+            }
+            else
+            {
+                counts.push_back(3 * (int)tris->triCount);
+                offsets.push_back((const void *)(size_t)((size_t)tris->baseIndex * 2));   // uint16 IB byte offset
+                baseVerts.push_back((int)tris->firstVertex);
+            }
+        }
+    }
+    if ( !counts.empty() )
+    {
+        ++g_kbLitFlushes; g_kbLitDraws += (unsigned long)counts.size();
+        KB_DrawWorldMultiC(device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
+    }
+    drawStream->reflectionProbeTexture = reflectionProbeTexture;
+    drawStream->lightmapPrimaryTexture = lightmapPrimaryTexture;
+    drawStream->lightmapSecondaryTexture = lightmapSecondaryTexture;
+    drawStream->lightmapSecondaryTextureB = lightmapSecondaryTextureB;
+    return true;
+}
 #endif
 
 void __cdecl R_DrawTriangles(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *state)
@@ -755,7 +1021,9 @@ void __cdecl R_DrawTriangles(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimSt
     int baseVertex; // [esp+24h] [ebp-4h]
 
 #if defined(__EMSCRIPTEN__)
-    if ( R_WorldMerge2Enabled() ) { R_DrawTrianglesMergedMulti(drawStream, state); return; }
+    // KB_WorldBaseVertexOK: without the multi-draw/base-vertex exts (headless Chromium) the
+    // core glDrawElementsBaseVertex stub DROPS the base -> corrupted world; take stock instead.
+    if ( R_WorldMerge2Enabled() && KB_WorldBaseVertexOK() ) { R_DrawTrianglesMergedMulti(drawStream, state); return; }
     if ( R_WorldMergeEnabled() )  { R_DrawTrianglesMerged(drawStream, state); return; }
 #endif
 
