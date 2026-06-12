@@ -46,7 +46,7 @@ HRESULT WINAPI GLDevice::SetPixelShader(IDirect3DPixelShader9 *pShader) {
 // Instancing (gl_d3d9_draw.cpp): the per-object matrix candidate = the vs-const range changed
 // since the last draw, tracked here.
 extern int g_kbInstEnable, g_kbVscCalls; extern unsigned g_kbVscChangedMin, g_kbVscChangedMax;
-extern int g_kbInstActive, g_kbInstMatCount, g_kbInstLocs[4]; extern unsigned g_kbInstMatBase;
+extern int g_kbInstActive, g_kbInstMatCount, g_kbInstLocs[8]; extern unsigned g_kbInstMatBase;
 
 HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) {
     // No-change fast path: the engine re-sets identical constants around most draws.
@@ -277,6 +277,9 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
 // otherwise the built-in pre-transformed program. Sets the program's uniforms.
 // Returns false if the (vs,ps) program is still linking — caller must skip the draw.
 bool GLDevice::useDrawProgram() {
+    // Resolve any staged blend render-states once here — the single choke point every draw
+    // path funnels through (builtin + programmable + instanced + batched). See commitBlendState.
+    commitBlendState();
     if (!(vs_ && ps_ && vs_->ok() && ps_->ok())) {
         bindBuiltinForDraw();
         return true;

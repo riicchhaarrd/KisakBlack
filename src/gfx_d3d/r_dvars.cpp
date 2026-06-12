@@ -1070,7 +1070,15 @@ void __cdecl R_RegisterDvars()
     r_spotLightShadows = _Dvar_RegisterBool("r_spotLightShadows", 1, 0x80u, "Enable shadows for spot lights.");
     r_spotLightSModelShadows = _Dvar_RegisterBool(
                                                              "r_spotLightSModelShadows",
+#ifdef __EMSCRIPTEN__
+                                                             // Web fps: static props stop casting dynamic SPOT-light shadows. Each shadowed
+                                                             // spot/point light re-draws BSP + static models + entities (3 geometry sweeps);
+                                                             // this drops the static-model sweep — a large draw-call cut in prop-dense
+                                                             // interiors — at low visual cost (world + characters still cast spot shadows).
+                                                             0,
+#else
                                                              1,
+#endif
                                                              0x80u,
                                                              "Enable static model shadows for spot lights.");
     r_spotLightEntityShadows = _Dvar_RegisterBool(
@@ -1368,7 +1376,14 @@ void __cdecl R_RegisterDvars()
     sm_enable = _Dvar_RegisterBool("sm_enable", 1, 0, "Enable shadow mapping");
     sm_sunEnable = _Dvar_RegisterBool("sm_sunEnable", 1, 0x1000u, "Enable sun shadow mapping from script");
     sm_spotEnable = _Dvar_RegisterBool("sm_spotEnable", 1, 0x1000u, "Enable spot shadow mapping from script");
+#ifdef __EMSCRIPTEN__
+    // Web fps: 4->2 shadowed lights. Each shadowed primary light costs 3 full geometry sweeps
+    // (BSP + static models + entities); dropping two of them is a big draw-call cut. The
+    // flashlight is forced to the top score so it always keeps its shadow.
+    sm_maxLights = _Dvar_RegisterInt("sm_maxLights", 2, 0, 4, 1u, "Limits how many primary lights can have shadow maps");
+#else
     sm_maxLights = _Dvar_RegisterInt("sm_maxLights", 4, 0, 4, 1u, "Limits how many primary lights can have shadow maps");
+#endif
     sm_spotShadowFadeTime = _Dvar_RegisterFloat(
                                                         "sm_spotShadowFadeTime",
                                                         1.0,

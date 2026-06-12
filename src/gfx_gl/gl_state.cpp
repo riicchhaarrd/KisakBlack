@@ -11,17 +11,29 @@
 
 #include <GL/glew.h>
 #include <cstdlib>   // getenv (KB_NOPREPASS)
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>   // EM_ASM_INT (?withprepass override)
+#endif
 extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
 extern "C" void KB_FlushTagged(int cause); // same, +flush-cause telemetry
 
-// KB_NOPREPASS env (?noprepass=1): remap the lit pass's EQUAL depth test to LEQUAL since
-// the depth pre-pass is disabled. Read lazily on first use (env is set in preRun, which
-// runs after C++ static init). -1 = not yet read.
+// Single-pass (NO depth prepass) is the WEB DEFAULT. The depth prepass re-draws ALL opaque
+// world geometry up front to populate depth so the lit pass can ZFUNC=EQUAL-shade each pixel
+// once — a win only when fill/overdraw-bound. The web build is GL-CALL-bound (every draw
+// crosses the wasm->JS boundary), so the prepass is thousands of pure-overhead draws in dense
+// areas. Skipping it (here: remap the lit pass's EQUAL->LEQUAL so it still depth-tests in one
+// pass; and gate the prepass pass itself off in rb_draw3d.cpp via KB_NoPrepass) removes them
+// at no visible cost. ?withprepass restores the classic two-pass for A/B (or if foliage depth
+// ever looks wrong). Native build keeps the env toggle (default two-pass). -1 = not yet read.
 int g_kbNoPrepass = -1;
 extern "C" int KB_NoPrepass() {
     if (g_kbNoPrepass < 0) {
+#ifdef __EMSCRIPTEN__
+        { const char *v = getenv("KB_WITHPREPASS"); g_kbNoPrepass = (v && *v == '1') ? 0 : 1; }  // ENV from index.html (worker can't read location.search); default = single-pass
+#else
         const char *v = getenv("KB_NOPREPASS");
         g_kbNoPrepass = (v && *v == '1') ? 1 : 0;
+#endif
     }
     return g_kbNoPrepass;
 }
@@ -30,11 +42,22 @@ extern "C" int KB_NoPrepass() {
 namespace {
 
 GLenum glBlend(DWORD d) {
+    // Map ALL D3DBLEND factors. The header only declares ZERO/ONE/SRCALPHA/INVSRCALPHA; the other
+    // six (SRCCOLOR=3, INVSRCCOLOR=4, DESTALPHA=7, INVDESTALPHA=8, DESTCOLOR=9, INVDESTCOLOR=10 —
+    // these values match the engine's GFXS blend enum exactly) were silently falling through to
+    // GL_ONE, so any material using a colour/dest blend (decals, modulated marks, many fx) composited
+    // wrong — additive/opaque instead of blended (the "black decal" symptom, game-wide).
     switch (d) {
-        case D3DBLEND_ZERO:        return GL_ZERO;
-        case D3DBLEND_ONE:         return GL_ONE;
-        case D3DBLEND_SRCALPHA:    return GL_SRC_ALPHA;
-        case D3DBLEND_INVSRCALPHA: return GL_ONE_MINUS_SRC_ALPHA;
+        case D3DBLEND_ZERO:        return GL_ZERO;                  // 1
+        case D3DBLEND_ONE:         return GL_ONE;                   // 2
+        case 3:                    return GL_SRC_COLOR;             // D3DBLEND_SRCCOLOR
+        case 4:                    return GL_ONE_MINUS_SRC_COLOR;   // D3DBLEND_INVSRCCOLOR
+        case D3DBLEND_SRCALPHA:    return GL_SRC_ALPHA;             // 5
+        case D3DBLEND_INVSRCALPHA: return GL_ONE_MINUS_SRC_ALPHA;   // 6
+        case 7:                    return GL_DST_ALPHA;             // D3DBLEND_DESTALPHA
+        case 8:                    return GL_ONE_MINUS_DST_ALPHA;   // D3DBLEND_INVDESTALPHA
+        case 9:                    return GL_DST_COLOR;             // D3DBLEND_DESTCOLOR
+        case 10:                   return GL_ONE_MINUS_DST_COLOR;   // D3DBLEND_INVDESTCOLOR
         default:                   return GL_ONE;
     }
 }
@@ -128,7 +151,9 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
             }
             break;
         case D3DRS_ALPHABLENDENABLE:
-            if (Value) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+            // Lazy: stage it; commitBlendState() (once per draw) emits glEnable/glDisable only
+            // when the applied value actually flips. See commitBlendState below.
+            blendEnabled_ = (Value != 0); blendDirty_ = true;
             break;
         // Alpha test — foliage/grass/fences use an alpha-cutout; without it their
         // transparent (alpha-0) texels render opaque. Keep the compatibility-profile
@@ -156,9 +181,11 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
             glAlphaFunc(glCmp(alphaFunc_), (GLfloat)alphaRef_ / 255.0f);
 #endif
             break;
-        case D3DRS_SRCBLEND:  blendSrc_  = Value; glBlendFunc(glBlend(blendSrc_), glBlend(blendDest_)); break;
-        case D3DRS_DESTBLEND: blendDest_ = Value; glBlendFunc(glBlend(blendSrc_), glBlend(blendDest_)); break;
-        case D3DRS_BLENDOP:   glBlendEquation(glBlendEq(Value)); break;
+        // Lazy: stage src/dest/op; commitBlendState() coalesces them into one glBlendFunc +
+        // one glBlendEquation per draw (instead of glBlendFunc firing on BOTH src and dest).
+        case D3DRS_SRCBLEND:  blendSrc_  = Value; blendDirty_ = true; break;
+        case D3DRS_DESTBLEND: blendDest_ = Value; blendDirty_ = true; break;
+        case D3DRS_BLENDOP:   blendOp_   = Value; blendDirty_ = true; break;
         case D3DRS_COLORWRITEENABLE:
             glColorMask((Value & D3DCOLORWRITEENABLE_RED)   ? GL_TRUE : GL_FALSE,
                         (Value & D3DCOLORWRITEENABLE_GREEN) ? GL_TRUE : GL_FALSE,
@@ -176,6 +203,35 @@ HRESULT WINAPI GLDevice::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
             break;  // unhandled state: ignore (see file header)
     }
     return D3D_OK;
+}
+
+// Resolve the staged blend render-states into GL, exactly once per draw (called from the top
+// of useDrawProgram). Each GL call is emitted only when its already-applied value differs, so:
+//   * a material that sets SRCBLEND+DESTBLEND together costs ONE glBlendFunc, not two;
+//   * blend that's unchanged across a run of draws costs zero GL calls;
+//   * factors/equation are skipped entirely while blending is disabled (don't-care).
+// This is the "cache blend state" win — WebGL2/ANGLE charges a steep CPU price per blend call.
+void GLDevice::commitBlendState() {
+    if (!blendDirty_) return;
+    blendDirty_ = false;
+
+    int wantEnabled = blendEnabled_ ? 1 : 0;
+    if (wantEnabled != appliedBlendEnabled_) {
+        if (wantEnabled) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+        appliedBlendEnabled_ = wantEnabled;
+    }
+    if (!wantEnabled) return;   // factors/equation are don't-care while blending is off
+
+    GLenum s = glBlend(blendSrc_), d = glBlend(blendDest_);
+    if (s != appliedBlendSrc_ || d != appliedBlendDest_) {
+        glBlendFunc(s, d);
+        appliedBlendSrc_ = s; appliedBlendDest_ = d;
+    }
+    GLenum op = glBlendEq(blendOp_);
+    if (op != appliedBlendOp_) {
+        glBlendEquation(op);
+        appliedBlendOp_ = op;
+    }
 }
 
 HRESULT WINAPI GLDevice::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
@@ -248,13 +304,27 @@ HRESULT WINAPI GLDevice::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture
 
 HRESULT WINAPI GLDevice::SetScissorRect(const RECT *pRect) {
     KB_FlushTagged(11);
-    if (pRect)
+    if (pRect) {
         // Y flip only for the window target — see SetViewport (FBO sub-rects keep
         // D3D placement so sampled atlases match D3D-convention coordinates).
-        glScissor(pRect->left,
-                  (fboActive_ && dsLive_ && (fbWidth_ != bbWidth_ || fbHeight_ != bbHeight_))
-                      ? pRect->top : fbHeight_ - pRect->bottom,
-                  pRect->right - pRect->left, pRect->bottom - pRect->top);
+        int x = pRect->left;
+        int y = (fboActive_ && dsLive_ && (fbWidth_ != bbWidth_ || fbHeight_ != bbHeight_))
+                    ? pRect->top : (int)fbHeight_ - pRect->bottom;
+        int w = pRect->right - pRect->left;
+        int h = pRect->bottom - pRect->top;
+        // Clamp to the bound render target. A stale full-scene scissor (R_Set2D never clears it)
+        // leaking into a smaller post/2D RT (e.g. the quarter-res godrays/sun pass) would otherwise
+        // give a NEGATIVE top + oversized box after the GL Y-flip, masking the draw to a fraction of
+        // the target — the "rainbow/sky cut off to half/quarter screen" bug. Clamping keeps the box
+        // on-target; normal full-size scene scissors are unaffected.
+        if (x < 0) { w += x; x = 0; }
+        if (y < 0) { h += y; y = 0; }
+        if (x + w > (int)fbWidth_)  w = (int)fbWidth_  - x;
+        if (y + h > (int)fbHeight_) h = (int)fbHeight_ - y;
+        if (w < 0) w = 0;
+        if (h < 0) h = 0;
+        glScissor(x, y, w, h);
+    }
     return D3D_OK;
 }
 

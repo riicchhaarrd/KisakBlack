@@ -57,8 +57,10 @@ extern unsigned long g_kbDraws, g_kbReadbacks, g_kbPresentEnter;
 extern unsigned long g_kbBatchedDraws, g_kbBatchFlushes;  // draw batcher (gl_d3d9_draw.cpp)
 extern unsigned long g_kbInstRuns, g_kbInstSaved;        // ?inst instancing (gl_d3d9_draw.cpp)
 extern unsigned long g_kbBrk[3], g_kbBrkCause[12]; extern int g_kbBrkMaxRange;  // run-break diag
+extern unsigned long g_kbMdrawSameBuf, g_kbMdrawDiffBuf;   // multiDraw-target classification
 extern unsigned long g_kbFlushCause[12], g_kbMergeSubmits; // flush-cause telemetry + merge path
 extern int g_kbTimeDraws; extern double g_kbMsDraw;        // ?perfms=1 frame split (gl_d3d9_draw.cpp)
+extern double g_kbMsBuffers;                               // ?perfms=1 buffer-upload split (file scope: SwapBuffers' class is in an anon namespace)
 extern unsigned long g_kbSkipPending, g_kbBuiltinFall;    // dropped/degraded draws (gl_program.cpp)
 extern unsigned long g_kbBlits;                           // StretchRect blits (gl_surface_ops.cpp)
 extern int g_kbRaceParity;                                // SMP parity of the frame being rendered
@@ -69,12 +71,33 @@ extern unsigned long g_kbGLCtxHandle;                     // context handle for 
 unsigned long g_kbPresPosted = 0, g_kbPresDropped = 0;   // de-proxy present delivery
 unsigned long g_kbYields = 0;                            // render-thread event-loop yields
 
-// No-op on this (proxied-focus) branch — the DOM thread has its own event loop, so WebGL
-// shader/link completions are delivered without the render thread yielding. The real
-// ASYNCIFY yield (emscripten_sleep) that fixed de-proxy shader delivery lives on the
-// `deproxy` branch (kept off here to avoid the ~6MB + render-loop instrumentation).
-extern "C" void KB_RenderThreadYield() {}
+// On the PROXIED build this is a no-op stub — the DOM thread has its own event loop, so WebGL
+// shader/link completions are delivered without the render thread yielding (and emscripten_sleep
+// / ASYNCIFY stay out of the proxied wasm entirely). On the DE-PROXY build (-DKB_DEPROXY_BUILD,
+// linked with -sASYNCIFY) it restores the B127/B129 fix: the render thread blocks forever
+// otherwise, so Chrome never delivers WebGL completions on the worker's never-pumped event loop
+// -> useProgram rejected -> nondeterministic in-game black. emscripten_sleep(0) unwinds to the
+// event loop once/frame during active link windows; quiet once the map's programs are compiled.
+extern "C" void KB_RenderThreadYield() {
+#ifdef KB_DEPROXY_BUILD
+    // Yield to the worker event loop EVERY frame. Two jobs: (1) deliver Chrome's WebGL
+    // shader/link completions (B127); (2) trigger the IMPLICIT OffscreenCanvas present — the
+    // browser shows #kbgl's committed frame when the worker returns to its event loop. (2)
+    // replaces the old transferToImageBitmap manual present, whose per-frame GPU->CPU readback
+    // leaked renderer RAM to ~5GB and OOM-crashed the tab. Must fire every frame (not just during
+    // link windows like B129) so the present keeps flowing after the map's shaders compile.
+    if (g_kbCtxIsLocal) { ++g_kbYields; emscripten_sleep(0); }
+#endif
+}
 extern "C" void KB_DrawCompFrame();   // ?drawcomp histogram, defined in gl_d3d9_draw.cpp
+
+// ?manualpresent: fall back to the legacy transferToImageBitmap readback present (which leaked
+// RAM). Default = implicit OffscreenCanvas present via the per-frame yield (no readback).
+static bool kbManualPresent() {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("KB_MANUALPRESENT"); v = (e && *e == '1') ? 1 : 0; }  // ENV from index.html (worker can't read location.search)
+    return v != 0;
+}
 
 namespace {
 class EmWebGLContext final : public GLContext {
@@ -203,6 +226,12 @@ public:
             g_kbCtxIsLocal = EM_ASM_INT({
                 return (typeof GL !== 'undefined' && GL.currentContextIsProxied) ? 0 : 1;
             });
+            // Implicit-present mode (default): tell the page to promote the hidden 2x2 #kbgl into
+            // the visible full-size canvas. The worker's per-frame event-loop yield then commits
+            // its rendered frame directly (no transferToImageBitmap readback, no #display overlay).
+            if (g_kbCtxIsLocal && !kbManualPresent()) {
+                EM_ASM({ try { postMessage({ kbImplicitPresent: true }); } catch (e) {} });
+            }
             g_kbHasMultiDraw = (g_kbCtxIsLocal && emscripten_webgl_enable_extension(
                 ctx_, "WEBGL_multi_draw_instanced_base_vertex_base_instance")) ? 1 : 0;
             // Default ON: the post-flicker perf push. The crash that originally
@@ -288,6 +317,25 @@ public:
         double kbT0 = g_kbTimeDraws ? emscripten_get_now() : 0.0;  // ?perfms=1
         ++g_kbPresentEnter;            // reached present (before commit_frame) this frame
         KB_DrawCompFrame();           // ?drawcomp=1 histogram (no-op unless enabled)
+        // Default draw-call readout: every ~120 rendered frames print draws/frame + ms/frame
+        // (ms/frame is the honest per-frame cost — call-bound, so draws/frame ~= the bottleneck).
+        // Stand in a dense area and read these off. KB_NODRAWLOG=1 silences it.
+        {
+            static int kbDrawLogOff = -1;
+            if (kbDrawLogOff < 0) { const char *e = getenv("KB_NODRAWLOG"); kbDrawLogOff = (e && *e == '1') ? 1 : 0; }
+            if (!kbDrawLogOff) {
+                static unsigned long s_lastDraws = 0; static int s_fc = 0; static double s_lastT = 0.0;
+                if (++s_fc >= 120) {
+                    double now = emscripten_get_now();
+                    double secs = s_lastT > 0.0 ? (now - s_lastT) / 1000.0 : 0.0;
+                    unsigned long d = g_kbDraws - s_lastDraws;
+                    fprintf(stderr, "[perf] %.2f ms/frame, %lu draws/frame  (%lu draws / %d frames)\n",
+                            secs > 0.0 ? 1000.0 * secs / s_fc : 0.0,
+                            d / (unsigned long)s_fc, d, s_fc);
+                    s_lastDraws = g_kbDraws; s_lastT = now; s_fc = 0;
+                }
+            }
+        }
         // Diagnostic center-pixel canary (ctrPx in [perf/rb]). A 1px glReadPixels still forces a
         // full GPU pipeline flush + sync round-trip on the proxied context (it waits for the whole
         // deep command queue) — a periodic stall every 30 frames (readPixels = 3.6% in a trace).
@@ -333,7 +381,12 @@ public:
         // compiles with EMPTY info logs and sometimes kills the tab. Allow exactly ONE
         // frame in flight: the page clears the ack flag (shared heap) after consuming;
         // until then, DROP frames instead of allocating more bitmaps.
-        {
+        //
+        // DEFAULT NOW = IMPLICIT present (the per-frame KB_RenderThreadYield commits #kbgl
+        // directly), so this manual readback path is OFF unless ?manualpresent is set. The
+        // readback leaked renderer RAM to ~5GB (each transferToImageBitmap copies the frame
+        // GPU->CPU and the staging RAM wasn't reclaimed) — the implicit path has no readback.
+        if (kbManualPresent()) {
             static int s_frameInFlight = 0;  // 1 = an ImageBitmap is in flight to the page
             // Ack watchdog: if the page stops consuming (a dropped message, a present
             // error before the ack store), the flag wedges at 1 and every later frame
@@ -441,18 +494,22 @@ public:
             // Instancing run-break reasons (cumulative): nonMat=a state mutator between copies
             // (broken down by which: tex/rs/stream/decl/other), multiCall=>1 vs-const set,
             // range=single set but >4 regs (maxRange=biggest seen -> how many ?instregs to capture).
-            fprintf(stderr, "[perf/brk] nonMat=%lu(tex=%lu rs=%lu strm=%lu decl=%lu oth=%lu) multiCall=%lu range=%lu maxRange=%d\n",
+            fprintf(stderr, "[perf/brk] nonMat=%lu(tex=%lu rs=%lu strm=%lu decl=%lu oth=%lu) multiCall=%lu range=%lu maxRange=%d | mdrawSameBuf=%lu mdrawDiffBuf=%lu\n",
                     g_kbBrk[0], g_kbBrkCause[4], g_kbBrkCause[5]+g_kbBrkCause[6], g_kbBrkCause[7],
-                    g_kbBrkCause[9], g_kbBrkCause[11], g_kbBrk[1], g_kbBrk[2], g_kbBrkMaxRange);
+                    g_kbBrkCause[9], g_kbBrkCause[11], g_kbBrk[1], g_kbBrk[2], g_kbBrkMaxRange,
+                    g_kbMdrawSameBuf, g_kbMdrawDiffBuf);
             // ?perfms=1: wall-time split. draw = inside DrawIndexedPrimitive (program
             // setup + GL submission), pres = inside SwapBuffers (commit + bitmap ship),
             // other = engine CPU (drawsurf generation, state-setter work, waits).
             if (g_kbTimeDraws) {
                 double fAvg = dt / frames;
                 double dAvg = g_kbMsDraw / frames, pAvg = kbMsPresent / frames;
-                fprintf(stderr, "[perf/ms] frame=%.1f draw=%.1f pres=%.1f other=%.1f\n",
-                        fAvg, dAvg, pAvg, fAvg - dAvg - pAvg);
-                g_kbMsDraw = 0.0; kbMsPresent = 0.0;
+                double bAvg = g_kbMsBuffers / frames;
+                // other = frame - draw - pres - buf -> the per-draw setup CPU (state/constants/
+                // texture binds + RB command dispatch). buf = dynamic VB/IB uploads.
+                fprintf(stderr, "[perf/ms] frame=%.1f draw=%.1f pres=%.1f buf=%.1f other=%.1f\n",
+                        fAvg, dAvg, pAvg, bAvg, fAvg - dAvg - pAvg - bAvg);
+                g_kbMsDraw = 0.0; kbMsPresent = 0.0; g_kbMsBuffers = 0.0;
             }
 
             pp0 = g_kbPresPosted; pd0 = g_kbPresDropped; yl0 = g_kbYields;

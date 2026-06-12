@@ -11,6 +11,14 @@
 #include "rb_sky.h"
 #include <client/cl_compositing.h>
 #include "rb_debug.h"
+
+// Web single-pass default: skip the depth prepass when the GL backend remaps EQUAL->LEQUAL.
+// Defined in gl_state.cpp (web only); native d3d keeps the prepass (no-op stub).
+#ifdef __EMSCRIPTEN__
+extern "C" int KB_NoPrepass();
+#else
+static inline int KB_NoPrepass() { return 0; }
+#endif
 #include "rb_showcollision.h"
 #include "r_ui3d.h"
 #include "rb_sunshadow.h"
@@ -689,7 +697,11 @@ void __cdecl RB_StandardDrawCommands(GfxViewInfo *viewInfo)
   //if ( needsDepthPrepass )
   // LWSS: wire up this dvar, it's in the game but removed. 
   // It appears at one point that this was optional but it is now mandatory for some rendering (trees on `mp_mountain`)
-  if ( needsDepthPrepass && r_depthPrepass->current.enabled )
+  // Web: single-pass by default — skip the depth prepass entirely (it re-draws all opaque
+  // world geometry for a fill/overdraw win we don't need; we're GL-call-bound). The lit pass's
+  // EQUAL test is remapped to LEQUAL on the GL side so one-pass depth still works. ?withprepass
+  // restores it. See KB_NoPrepass (gl_state.cpp; declared extern at file scope above).
+  if ( needsDepthPrepass && r_depthPrepass->current.enabled && !KB_NoPrepass() )
   {
     PROF_SCOPED("R_DepthPrepass");
     R_InitContext(data, &cmdBuf);

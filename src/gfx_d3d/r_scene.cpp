@@ -1,6 +1,10 @@
 #include "r_scene.h"
 
 #include <Windows.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>   // emscripten_get_now — [perf/front] frontend cost probe
+#include <cstdio>
+#endif
 #include "r_dvars.h"
 #include "r_warn.h"
 #include "r_stream.h"
@@ -3415,6 +3419,24 @@ void __cdecl R_GenerateSortedDrawSurfs(
                 const refdef_s *refdef,
                 bool forMissileCamView)
 {
+#ifdef __EMSCRIPTEN__
+    // [perf/front] probe: time the whole game-thread render frontend (DPVS visibility/culling +
+    // drawsurf generation — the work the render backend stalls waiting on, per heartbeat
+    // ww=r_dpvs_static). Prints avg ms/call every 120 calls. KB_NODRAWLOG=1 silences.
+    struct KbFrontTimer {
+        double t0;
+        KbFrontTimer() : t0(emscripten_get_now()) {}
+        ~KbFrontTimer() {
+            static double acc = 0.0; static int n = 0, off = -1;
+            if (off < 0) { const char *e = getenv("KB_NODRAWLOG"); off = (e && *e == '1') ? 1 : 0; }
+            acc += emscripten_get_now() - t0;
+            if (!off && ++n >= 120) {
+                fprintf(stderr, "[perf/front] R_GenerateSortedDrawSurfs %.2f ms/call (avg/%d)\n", acc / n, n);
+                acc = 0.0; n = 0;
+            }
+        }
+    } kbFront_;
+#endif
     int v6; // eax
     //jpeg_decompress_struct *v7; // [esp+10h] [ebp-280h]
     //jpeg_decompress_struct *v8; // [esp+10h] [ebp-280h]

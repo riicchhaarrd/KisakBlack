@@ -87,6 +87,16 @@ int __cdecl R_ReleaseDXDeviceOwnership()
 
 void __cdecl R_AssertDXDeviceOwnership()
 {
+#ifdef __EMSCRIPTEN__
+    // Web fps: this is a DEBUG-ONLY invariant check (the render thread owns the DX device), but
+    // it's called at the top of EVERY D3D state call and takes CRITSECT_DXDEVICE_GLOB each time —
+    // ~160k lock acquire/release pairs/frame on the backend thread. The original author flagged
+    // the sibling path "4 MILLION CALLS PER SECOND. THIS LAGS." With ASSERTIONS=0 (release) the
+    // checks are dead code; only the lock remains, as pure overhead. The function has NO
+    // functional side effect, so skipping it entirely is safe and removes the per-call lock —
+    // the dominant cost of the backend command-buffer execution ("other" in [perf/ms]).
+    return;
+#else
     if ( !Sys_IsRenderThread()
         && !Assert_MyHandler(
                     "C:\\projects_pc\\cod\\codsrc\\src\\gfx_d3d\\r_singlethreaded_device_pc.cpp",
@@ -109,6 +119,7 @@ void __cdecl R_AssertDXDeviceOwnership()
         __debugbreak();
     }
     Sys_LeaveCriticalSection(CRITSECT_DXDEVICE_GLOB);
+#endif
 }
 
 #endif
