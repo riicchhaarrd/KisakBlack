@@ -24,7 +24,13 @@ unsigned long g_kbLitSurfs = 0;      // surfaces accumulated into multi-draw ent
 unsigned long g_kbLitDraws = 0;      // entries submitted (after index-contiguity extension)
 unsigned long g_kbLitFlushes = 0;    // KB_DrawWorldMultiC submissions (~ lightmap/probe texture runs)
 unsigned long g_kbLitS2Fallback = 0; // stream2 surfaces drawn per-surface inside the merged walk
-unsigned long g_kbLitBailStock = 0;  // lit calls that took the stock walker (layered decl/prepass/no IB)
+unsigned long g_kbLitBailStock = 0;  // lit calls that took the stock walker (any cause below)
+// Bail-cause split: which dispatch condition sent the call to the stock walker
+unsigned long g_kbLitBailPrepass = 0, g_kbLitBailGate = 0, g_kbLitBailIb = 0;
+// Layered-fold check: a layered surface joins the baseVertex fold iff its stream1 data is packed
+// PARALLEL to the world vertices (vertexLayerData == layerStride * firstVertex — then stream1@0
+// with the same baseVertex lands on the right rows); nlin surfaces draw per-surface.
+unsigned long g_kbLitLayerLinear = 0, g_kbLitLayerNonLin = 0;
 #endif
 
 int g_layerDataStride[18] = { 0, 0, 0, 8, 12, 16, 20, 24, 24, 28, 32, 32, 36, 40, 0, 0, 16, 0 };
@@ -150,14 +156,19 @@ void __cdecl R_DrawTrianglesLit(
 {
 #if defined(__EMSCRIPTEN__)
     // Lit-world multi-draw merge: the same stream0@0 + static-IB + per-surface-baseVertex fold
-    // ?worldmerge2 applies to the unlit walker. Layered (terrain) decls bind a per-surface
-    // stream1 whose byte offset is NOT firstVertex*stride (baseVertex shifts EVERY stream's
-    // fetch), so they keep the stock walker; same for prepass and pre-static-IB worlds.
-    if ( !prepassPrimState && g_layerDataStride[primState->vertDeclType] == 0
-        && R_LitMergeEnabled() && KB_WorldBaseVertexOK()
-        && R_DrawTrianglesLitMulti(drawStream, primState) )
+    // ?worldmerge2 applies to the unlit walker. Layered (terrain) decls join the fold with
+    // stream1 = layerVb @ 0 (their layer data is parallel to the world verts; per-surface
+    // checked, non-parallel surfaces draw per-surface). Prepass and pre-static-IB keep stock.
+    if ( R_LitMergeEnabled() )
     {
-        return;
+        if ( prepassPrimState )
+            ++g_kbLitBailPrepass;
+        else if ( !KB_WorldBaseVertexOK() )
+            ++g_kbLitBailGate;
+        else if ( R_DrawTrianglesLitMulti(drawStream, primState) )
+            return;
+        else
+            ++g_kbLitBailIb;
     }
     ++g_kbLitBailStock;
 #endif
@@ -783,6 +794,7 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
     IDirect3DIndexBuffer9 *wib = R_GetWorldStaticIb();
     if ( !wib )
         return false;                       // static-IB alloc failed -> stock walker (stream untouched)
+    unsigned int layerStride = g_layerDataStride[primState->vertDeclType];
 
     unsigned int reflectionProbeIndex = 255;
     unsigned int lightmapIndex = 31;
@@ -804,7 +816,14 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
         conflictTex = &(((rg.frontEndFrameCount & 4) != 0) ? rgp.blackImage : rgp.whiteImage)->texture;
     IDirect3DDevice9 *device = primState->device;
 
-    R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);   // baseVertex carries firstVertex
+    // Fold binding: every stream at offset 0, per-draw baseVertex carries firstVertex. Layered
+    // decls bind stream1 = layerVb @ 0 — its rows are parallel to the world verts, so the same
+    // baseVertex selects the right layer data (per-surface verified below).
+    if ( layerStride )
+        R_SetDoubleStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu,
+                                g_worldDraw->vld.layerVb, 0, layerStride);
+    else
+        R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);
     if ( primState->indexBuffer != wib )
         R_ChangeIndices(primState, wib);
 
@@ -962,10 +981,24 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
                 }
             }
             const srfTriangles_t *tris = &bspSurf->tris;
-            if ( tris->stream2ByteOffset >= 0 )
+            // Surfaces that can't ride the fold: stream2 binds a per-surface dynamic-stream
+            // offset, and a layered surface whose layer data is NOT parallel to the world verts
+            // (vertexLayerData != layerStride*firstVertex) can't share the one baseVertex.
+            bool foldable = true;
+            if ( layerStride )
             {
-                // needs the secondary stream: flush the accumulated multi-draw, draw this one the
-                // stock way, then restore stream0@0 + static IB and continue accumulating.
+                if ( tris->vertexLayerData == (int)layerStride * tris->firstVertex )
+                    ++g_kbLitLayerLinear;
+                else
+                {
+                    ++g_kbLitLayerNonLin;
+                    foldable = false;
+                }
+            }
+            if ( tris->stream2ByteOffset >= 0 || !foldable )
+            {
+                // flush the accumulated multi-draw, draw this one the stock way, then restore
+                // the fold binding + static IB and continue accumulating.
                 ++g_kbLitS2Fallback;
                 if ( !counts.empty() )
                 {
@@ -976,7 +1009,11 @@ static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBu
                 R_SetStreamsForBspSurface(primState, tris);
                 int db = R_SetIndexData(primState, (unsigned __int8 *)&g_worldDraw->indices[tris->baseIndex], tris->triCount);
                 R_EmitMergedRun(primState, db, tris->triCount);
-                R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);
+                if ( layerStride )
+                    R_SetDoubleStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu,
+                                            g_worldDraw->vld.layerVb, 0, layerStride);
+                else
+                    R_SetStreamSource(primState, g_worldDraw->vd.worldVb, 0, 0x2Cu);
                 if ( primState->indexBuffer != wib )
                     R_ChangeIndices(primState, wib);
                 continue;

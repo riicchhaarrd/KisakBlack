@@ -71,6 +71,8 @@ extern unsigned long g_kbTrBatches, g_kbTrSameMatDiffLight, g_kbTrSameMatDiffTec
 // [perf/lit] lit-world multi-draw merge counters (r_draw_bsp.cpp) — file scope: a block-scope
 // extern inside the anon-namespace class would declare (anonymous namespace)::g_kbLit* (link error)
 extern unsigned long g_kbLitSurfs, g_kbLitDraws, g_kbLitFlushes, g_kbLitS2Fallback, g_kbLitBailStock;
+extern unsigned long g_kbLitBailPrepass, g_kbLitBailGate, g_kbLitBailIb;
+extern unsigned long g_kbLitLayerLinear, g_kbLitLayerNonLin;
 extern int g_kbCtxIsLocal;                                // 1 = worker-local context
 extern int g_kbBatchEnable, g_kbCoalesceEnable;           // opt-in perf toggles (ENV)
 extern unsigned long g_kbGLCtxHandle;                     // context handle for thread-attach
@@ -111,7 +113,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: H12 (H11 + lit-world multi-draw merge, ?nolitmerge escape)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: H13 (H12 + layered decls join the lit-world fold; bail-cause split)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -523,16 +525,21 @@ public:
                 tt0 = g_kbTrSameMatDiffTech; tm0 = g_kbTrDiffMat;
             }
             // [perf/lit] lit-world multi-draw merge (r_draw_bsp.cpp): surfs accumulated, entries
-            // submitted, multi-draw submissions (~texture runs), stream2 per-surface fallbacks,
-            // lit calls that took the stock walker (layered decl / prepass / merge disabled).
+            // submitted, multi-draw submissions (~texture runs), per-surface fallbacks (stream2 /
+            // non-parallel layer data), stock-walker bails split by cause, layered lin/nlin split.
             {
-                static unsigned long li0[5] = {0};
-                fprintf(stderr, "[perf/lit] surfs=%lu ent=%lu mdraw=%lu s2=%lu stock=%lu\n",
+                static unsigned long li0[10] = {0};
+                fprintf(stderr, "[perf/lit] surfs=%lu ent=%lu mdraw=%lu fb=%lu stock=%lu(pre=%lu gate=%lu ib=%lu) lin=%lu nlin=%lu\n",
                         (g_kbLitSurfs - li0[0]) / frames, (g_kbLitDraws - li0[1]) / frames,
                         (g_kbLitFlushes - li0[2]) / frames, (g_kbLitS2Fallback - li0[3]) / frames,
-                        (g_kbLitBailStock - li0[4]) / frames);
+                        (g_kbLitBailStock - li0[4]) / frames,
+                        (g_kbLitBailPrepass - li0[5]) / frames, (g_kbLitBailGate - li0[6]) / frames,
+                        (g_kbLitBailIb - li0[7]) / frames,
+                        (g_kbLitLayerLinear - li0[8]) / frames, (g_kbLitLayerNonLin - li0[9]) / frames);
                 li0[0] = g_kbLitSurfs; li0[1] = g_kbLitDraws; li0[2] = g_kbLitFlushes;
                 li0[3] = g_kbLitS2Fallback; li0[4] = g_kbLitBailStock;
+                li0[5] = g_kbLitBailPrepass; li0[6] = g_kbLitBailGate; li0[7] = g_kbLitBailIb;
+                li0[8] = g_kbLitLayerLinear; li0[9] = g_kbLitLayerNonLin;
             }
             // ?perfms=1: wall-time split. draw = inside DrawIndexedPrimitive (program
             // setup + GL submission), pres = inside SwapBuffers (commit + bitmap ship),

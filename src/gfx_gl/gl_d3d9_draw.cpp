@@ -276,6 +276,14 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
     KB_EnsureCtxOnThread();
     extern unsigned long g_kbDraws; g_kbDraws += (unsigned long)n;
     if (!useDrawProgram()) return;   // shader still linking -> skip (re-drawn next frame)
+    // ?vbarena stream-0 fold: valid single-stream only. The LIT layered fold binds stream1
+    // (parallel layer data), so un-fold the placement back into the VAO offset — one per-draw
+    // baseVertex must apply uniformly to every stream (mirrors DrawIndexedPrimitive's un-fold).
+    if (s_kbStream0Fold && (streams_[1].vb || streams_[2].vb || streams_[3].vb)) {
+        streams_[0].offset = s_kbStream0Fold * streams_[0].stride;
+        s_kbStream0Fold = 0;
+        s_kbStreamIdent[0] = ~(size_t)0;   // next SetStreamSource(0) re-derives
+    }
     applyVertexState();
     unsigned elem = ib_->glName();
     if (!curVaoEnt_ || curVaoEnt_->elem != elem) {
@@ -284,8 +292,8 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
     }
     GLenum idxType = (ib_->format() == D3DFMT_INDEX16) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
     // ?vbarena: the engine's inputs are buffer-relative — bias index byte offsets by the
-    // IB placement and baseVertex by the stream-0 fold (these world surfs are
-    // single-stream by construction, so the fold is valid).
+    // IB placement and baseVertex by the stream-0 fold (zero when multi-stream: the
+    // un-fold above moved the placement into the VAO offset).
     static std::vector<const void *> kbOffs; static std::vector<int> kbBases;
     unsigned kbIbBias = ib_->inArena() ? ib_->arenaOff() : 0u;
     int kbVBias = (int)s_kbStream0Fold;
