@@ -5,6 +5,16 @@
 #include "rb_shade.h"
 #include "r_dvars.h"
 #include "r_shade.h"
+#include "r_buffers.h"   // R_AllocStaticIndexBuffer/R_FinishStaticIndexBuffer (static world IB)
+#include <string.h>
+#include <stdio.h>
+#if defined(__EMSCRIPTEN__)
+#include <vector>
+// GL bridge (gl_d3d9_draw.cpp): draw N single-stream world surfaces as ONE multi-draw from the bound
+// static IB, each with its own baseVertex. See GLDevice::KB_DrawWorldMulti.
+extern "C" void KB_DrawWorldMultiC(void *dev, const int *counts, const void *const *offsets,
+                                   const int *baseVerts, int n);
+#endif
 
 int g_layerDataStride[18] = { 0, 0, 0, 8, 12, 16, 20, 24, 24, 28, 32, 32, 36, 40, 0, 0, 16, 0 };
 int g_stream2Stride[18] = { 0, 0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0, 0 };
@@ -367,13 +377,62 @@ void __cdecl R_DrawTrianglesLit(
     drawStream->lightmapSecondaryTextureB = lightmapSecondaryTextureB;
 }
 
+#if defined(__EMSCRIPTEN__)
+// Static world index buffer. g_worldDraw->indices never changes after load, yet R_DrawBspTris copied
+// a CONTIGUOUS slice of it into the dynamic IB on EVERY world draw (~1880/frame) — a per-draw
+// lock+memcpy+GPU-upload that kbprof showed to be ~half of the "tess invoke" hotspot. Upload it once
+// to a static IB and draw with baseIndex = tris->baseIndex (exactly what the model/particle paths
+// already do via R_ChangeIndices). The callers only merge surfaces sharing firstVertex + a contiguous
+// index range, and the indices are straight-copied (never rebased), so direct draws are identical.
+static IDirect3DIndexBuffer9 *g_worldStaticIb = 0;
+static const unsigned short *g_worldStaticIbSrc = 0;   // which indices[] array is currently uploaded
+static int g_worldStaticIbCount = 0;
+
+static IDirect3DIndexBuffer9 *R_GetWorldStaticIb()
+{
+    if ( g_worldStaticIb
+        && g_worldStaticIbSrc == g_worldDraw->indices
+        && g_worldStaticIbCount == g_worldDraw->indexCount )
+        return g_worldStaticIb;                        // already uploaded for this world
+    if ( g_worldStaticIb ) { g_worldStaticIb->Release(); g_worldStaticIb = 0; }  // world changed -> rebuild
+    g_worldStaticIbSrc = 0;
+    g_worldStaticIbCount = 0;
+    int count = g_worldDraw->indexCount;
+    if ( count <= 0 || !g_worldDraw->indices )
+        return 0;                                      // fall back to the dynamic path
+    void *data = R_AllocStaticIndexBuffer(&g_worldStaticIb, count * 2);
+    if ( !data ) { g_worldStaticIb = 0; fprintf(stderr, "[worldStaticIb] ALLOC FAILED (%d indices) -> dynamic fallback\n", count); return 0; }
+    memcpy(data, g_worldDraw->indices, (size_t)count * 2);
+    R_FinishStaticIndexBuffer(g_worldStaticIb);
+    g_worldStaticIbSrc = g_worldDraw->indices;
+    g_worldStaticIbCount = count;
+    fprintf(stderr, "[worldStaticIb] built: %d indices (%d KB) — world draws now skip per-draw R_SetIndexData\n",
+            count, (count * 2) / 1024);
+    return g_worldStaticIb;
+}
+#endif
+
 void __cdecl R_DrawBspTris(GfxCmdBufPrimState *state, const srfTriangles_t *tris, unsigned int triCount)
 {
     GfxDrawPrimArgs args; // [esp+0h] [ebp-Ch] BYREF
 
     args.vertexCount = tris->vertexCount;
     args.triCount = triCount;
+#if defined(__EMSCRIPTEN__)
+    IDirect3DIndexBuffer9 *wib = R_GetWorldStaticIb();
+    if ( wib )
+    {
+        if ( state->indexBuffer != wib )
+            R_ChangeIndices(state, wib);
+        args.baseIndex = tris->baseIndex;              // natural offset into the static world IB
+    }
+    else
+    {
+        args.baseIndex = R_SetIndexData(state, (unsigned __int8 *)&g_worldDraw->indices[tris->baseIndex], triCount);
+    }
+#else
     args.baseIndex = R_SetIndexData(state, (unsigned __int8 *)&g_worldDraw->indices[tris->baseIndex], triCount);
+#endif
     R_DrawIndexedPrimitive(state, &args);
     if ( state->primStats )
     {
@@ -543,6 +602,139 @@ void __cdecl R_DrawBspDrawSurfs(const unsigned int *primDrawSurfPos, GfxCmdBufSt
     R_DrawTriangles(&drawStream, &state->prim);
 }
 
+#if defined(__EMSCRIPTEN__)
+// ?worldmerge (opt-in, default OFF): collapse engine-side world draw calls. The regular world path
+// emits one R_DrawIndexedPrimitive per index-CONTIGUOUS run; surfaces drawn in sort order with the
+// same firstVertex but gaps in the index buffer each become a separate draw (~4.8 draws/material
+// batch, ~1980 engine draws/frame — kbprof "draw submit"). This path gathers ALL surfaces sharing a
+// firstVertex into the dynamic IB (consecutive R_SetIndexData calls append contiguously — exactly
+// what happened per-surface before the static-IB change, so the buffer is already sized for it) and
+// issues ONE draw per firstVertex run. Trades A's static-IB no-copy for fewer draw calls; ?worldmerge
+// lets us measure which wins. Indices stay relative to the shared firstVertex (no rebase, no uint16
+// overflow). Default off so the shipped build is unaffected until verified.
+int g_kbWorldMerge = -1;
+static bool R_WorldMergeEnabled()
+{
+    if ( g_kbWorldMerge < 0 ) { const char *e = getenv("KB_WORLDMERGE"); g_kbWorldMerge = (e && *e == '1') ? 1 : 0; }
+    return g_kbWorldMerge != 0;
+}
+static inline void R_EmitMergedRun(GfxCmdBufPrimState *state, int dynBaseIndex, int triCount)
+{
+    if ( triCount <= 0 ) return;
+    GfxDrawPrimArgs args;
+    args.vertexCount = 0;            // GL ignores NumVertices; the gathered index range defines the draw
+    args.triCount = triCount;
+    args.baseIndex = dynBaseIndex;
+    R_DrawIndexedPrimitive(state, &args);
+    if ( state->primStats )
+    {
+        state->frameStats.geoIndexCount += 3 * triCount;
+        state->primStats->dynamicIndexCount += 3 * triCount;
+    }
+}
+static void R_DrawTrianglesMerged(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *state)
+{
+    const unsigned __int16 *list;     // BYREF
+    unsigned int count;               // BYREF
+    int baseVertex = -1;
+    int runDynBase = -1;              // first dynamic-IB baseIndex of the current firstVertex run
+    int runTriCount = 0;
+    while ( R_ReadBspDrawSurfs(&drawStream->primDrawSurfPos, &list, &count) )
+    {
+        for ( unsigned int index = 0; index < count; ++index )
+        {
+            const GfxSurface *bspSurf = &rgp.world->dpvs.surfaces[list[index]];
+            const srfTriangles_t *tris = &bspSurf->tris;
+            if ( baseVertex != tris->firstVertex )
+            {
+                R_EmitMergedRun(state, runDynBase, runTriCount);   // flush previous firstVertex run
+                runDynBase = -1;
+                runTriCount = 0;
+                baseVertex = tris->firstVertex;
+                R_SetStreamsForBspSurface(state, tris);            // rebind vertex stream for the new base
+            }
+            int dynBase = R_SetIndexData(state, (unsigned __int8 *)&g_worldDraw->indices[tris->baseIndex], tris->triCount);
+            if ( runDynBase < 0 )
+                runDynBase = dynBase;
+            else if ( dynBase != runDynBase + 3 * runTriCount )
+            {
+                // dynamic IB wrapped (DISCARD) mid-run -> emit what we have and start a fresh run
+                R_EmitMergedRun(state, runDynBase, runTriCount);
+                runDynBase = dynBase;
+                runTriCount = 0;
+            }
+            runTriCount += tris->triCount;
+        }
+    }
+    R_EmitMergedRun(state, runDynBase, runTriCount);
+}
+
+// ?worldmerge2 (opt-in): the DEEP merge. Unlike ?worldmerge (which still breaks per firstVertex), this
+// binds worldVb at offset 0 ONCE and uses the static world IB (no gather), accumulating EVERY
+// single-stream surface as (count, byte-offset, baseVertex=firstVertex) and issuing ONE
+// glMultiDrawElementsBaseVertex for the whole stream. Collapses the ~1980 engine draws/frame to a
+// handful. Surfaces needing the secondary vertex stream (stream2ByteOffset >= 0) can't share the
+// stream0-only binding -> flushed and drawn the normal way, then accumulation resumes.
+int g_kbWorldMerge2 = -1;
+static bool R_WorldMerge2Enabled()
+{
+    if ( g_kbWorldMerge2 < 0 ) { const char *e = getenv("KB_WORLDMERGE2"); g_kbWorldMerge2 = (e && *e == '1') ? 1 : 0; }
+    return g_kbWorldMerge2 != 0;
+}
+static void R_DrawTrianglesMergedMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *state)
+{
+    IDirect3DIndexBuffer9 *wib = R_GetWorldStaticIb();
+    // Layered (terrain) decls bind multiple per-surface streams -> can't fold to one stream0 binding.
+    // R_DrawTriangles is the non-layered world path, but guard anyway; fall back to the gather-merge.
+    if ( !wib || g_layerDataStride[state->vertDeclType] != 0 )
+    {
+        R_DrawTrianglesMerged(drawStream, state);
+        return;
+    }
+    R_SetStreamSource(state, g_worldDraw->vd.worldVb, 0, 0x2Cu);   // stream0 @ offset 0; baseVertex carries firstVertex
+    if ( state->indexBuffer != wib )
+        R_ChangeIndices(state, wib);
+
+    static std::vector<int> counts;
+    static std::vector<const void *> offsets;
+    static std::vector<int> baseVerts;
+    counts.clear(); offsets.clear(); baseVerts.clear();
+
+    const unsigned __int16 *list;   // BYREF
+    unsigned int count;             // BYREF
+    while ( R_ReadBspDrawSurfs(&drawStream->primDrawSurfPos, &list, &count) )
+    {
+        for ( unsigned int index = 0; index < count; ++index )
+        {
+            const GfxSurface *bspSurf = &rgp.world->dpvs.surfaces[list[index]];
+            const srfTriangles_t *tris = &bspSurf->tris;
+            if ( tris->stream2ByteOffset >= 0 )
+            {
+                // needs the secondary stream: flush the accumulated multidraw, draw this one normally,
+                // then restore stream0@0 + static IB and continue accumulating.
+                if ( !counts.empty() )
+                {
+                    KB_DrawWorldMultiC(state->device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
+                    counts.clear(); offsets.clear(); baseVerts.clear();
+                }
+                R_SetStreamsForBspSurface(state, tris);
+                int db = R_SetIndexData(state, (unsigned __int8 *)&g_worldDraw->indices[tris->baseIndex], tris->triCount);
+                R_EmitMergedRun(state, db, tris->triCount);
+                R_SetStreamSource(state, g_worldDraw->vd.worldVb, 0, 0x2Cu);
+                if ( state->indexBuffer != wib )
+                    R_ChangeIndices(state, wib);
+                continue;
+            }
+            counts.push_back(3 * (int)tris->triCount);
+            offsets.push_back((const void *)(size_t)((size_t)tris->baseIndex * 2));   // uint16 IB byte offset
+            baseVerts.push_back(tris->firstVertex);
+        }
+    }
+    if ( !counts.empty() )
+        KB_DrawWorldMultiC(state->device, counts.data(), offsets.data(), baseVerts.data(), (int)counts.size());
+}
+#endif
+
 void __cdecl R_DrawTriangles(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *state)
 {
     int baseIndex; // [esp+0h] [ebp-28h]
@@ -554,6 +746,11 @@ void __cdecl R_DrawTriangles(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimSt
     unsigned int index; // [esp+1Ch] [ebp-Ch]
     unsigned int count; // [esp+20h] [ebp-8h] BYREF
     int baseVertex; // [esp+24h] [ebp-4h]
+
+#if defined(__EMSCRIPTEN__)
+    if ( R_WorldMerge2Enabled() ) { R_DrawTrianglesMergedMulti(drawStream, state); return; }
+    if ( R_WorldMergeEnabled() )  { R_DrawTrianglesMerged(drawStream, state); return; }
+#endif
 
     prevTris = 0;
     triCount = 0;
