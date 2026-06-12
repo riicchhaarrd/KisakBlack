@@ -73,7 +73,7 @@ public:
     HRESULT WINAPI EndScene() override   { inScene_ = false; return D3D_OK; }
     HRESULT WINAPI Clear(DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR Color,
                          float Z, DWORD Stencil) override;
-    HRESULT WINAPI SetViewport(const D3DVIEWPORT9 *pViewport) override;
+    HRESULT WINAPI SetViewport(const D3DVIEWPORT9 *pViewport) KB_DEVHOT_OVERRIDE;
 
     // --- Geometry resources + draw (gl_d3d9_draw.cpp) ---
     HRESULT WINAPI CreateVertexBuffer(UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool,
@@ -83,26 +83,26 @@ public:
     HRESULT WINAPI CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pElements,
                                            IDirect3DVertexDeclaration9 **ppDecl) override;
     HRESULT WINAPI SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9 *pStreamData,
-                                   UINT OffsetInBytes, UINT Stride) override;
-    HRESULT WINAPI SetIndices(IDirect3DIndexBuffer9 *pIndexData) override;
-    HRESULT WINAPI SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) override;
+                                   UINT OffsetInBytes, UINT Stride) KB_DEVHOT_OVERRIDE;
+    HRESULT WINAPI SetIndices(IDirect3DIndexBuffer9 *pIndexData) KB_DEVHOT_OVERRIDE;
+    HRESULT WINAPI SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) KB_DEVHOT_OVERRIDE;
     HRESULT WINAPI DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex,
-                                 UINT PrimitiveCount) override;
+                                 UINT PrimitiveCount) KB_DEVHOT_OVERRIDE;
     HRESULT WINAPI DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVertexIndex,
                                         UINT MinVertexIndex, UINT NumVertices,
-                                        UINT startIndex, UINT primCount) override;
+                                        UINT startIndex, UINT primCount) KB_DEVHOT_OVERRIDE;
     HRESULT WINAPI DrawPrimitiveUP(D3DPRIMITIVETYPE, UINT, const void *, UINT) override { return D3D_OK; }
 
     // --- Render / sampler / texture state (gl_state.cpp) ---
-    HRESULT WINAPI SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) override;
-    HRESULT WINAPI SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) override;
+    HRESULT WINAPI SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) KB_DEVHOT_OVERRIDE;
+    HRESULT WINAPI SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) KB_DEVHOT_OVERRIDE;
     HRESULT WINAPI SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) override;
-    HRESULT WINAPI SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) override;
+    HRESULT WINAPI SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) KB_DEVHOT_OVERRIDE;
     HRESULT WINAPI SetScissorRect(const RECT *pRect) override;
-    HRESULT WINAPI SetVertexShader(IDirect3DVertexShader9 *pShader) override;
-    HRESULT WINAPI SetVertexShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) override;
-    HRESULT WINAPI SetPixelShader(IDirect3DPixelShader9 *pShader) override;
-    HRESULT WINAPI SetPixelShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) override;
+    HRESULT WINAPI SetVertexShader(IDirect3DVertexShader9 *pShader) KB_DEVHOT_OVERRIDE;
+    HRESULT WINAPI SetVertexShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) KB_DEVHOT_OVERRIDE;
+    HRESULT WINAPI SetPixelShader(IDirect3DPixelShader9 *pShader) KB_DEVHOT_OVERRIDE;
+    HRESULT WINAPI SetPixelShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) KB_DEVHOT_OVERRIDE;
     HRESULT WINAPI SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) override;
     HRESULT WINAPI SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) override;
     void    WINAPI SetGammaRamp(UINT, DWORD, const D3DGAMMARAMP *) override {}

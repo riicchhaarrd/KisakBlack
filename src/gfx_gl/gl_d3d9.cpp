@@ -17,6 +17,26 @@ extern "C" void glClearDepthf(float);             // GLES/WebGL2 depth-clear
 extern "C" void glDepthRangef(float, float);      // GLES/WebGL2 depth-range
 #endif
 
+#if defined(__EMSCRIPTEN__)
+// KB_DEVHOT forwarders (see winsdk/d3d9.h): the hot device methods are NON-virtual on
+// web, so every engine call site compiles to a direct call here, which direct-calls the
+// GLDevice member (its same-name declaration hides these) — no fpcast-emu trampoline,
+// no indirect call. GLDevice is the only device implementation on this build.
+HRESULT WINAPI IDirect3DDevice9::SetViewport(const D3DVIEWPORT9 *p) { return static_cast<GLDevice *>(this)->SetViewport(p); }
+HRESULT WINAPI IDirect3DDevice9::SetRenderState(D3DRENDERSTATETYPE s, DWORD v) { return static_cast<GLDevice *>(this)->SetRenderState(s, v); }
+HRESULT WINAPI IDirect3DDevice9::SetSamplerState(DWORD s, D3DSAMPLERSTATETYPE t, DWORD v) { return static_cast<GLDevice *>(this)->SetSamplerState(s, t, v); }
+HRESULT WINAPI IDirect3DDevice9::SetTexture(DWORD st, IDirect3DBaseTexture9 *t) { return static_cast<GLDevice *>(this)->SetTexture(st, t); }
+HRESULT WINAPI IDirect3DDevice9::SetStreamSource(UINT n, IDirect3DVertexBuffer9 *vb, UINT off, UINT stride) { return static_cast<GLDevice *>(this)->SetStreamSource(n, vb, off, stride); }
+HRESULT WINAPI IDirect3DDevice9::SetIndices(IDirect3DIndexBuffer9 *ib) { return static_cast<GLDevice *>(this)->SetIndices(ib); }
+HRESULT WINAPI IDirect3DDevice9::SetVertexDeclaration(IDirect3DVertexDeclaration9 *d) { return static_cast<GLDevice *>(this)->SetVertexDeclaration(d); }
+HRESULT WINAPI IDirect3DDevice9::SetVertexShader(IDirect3DVertexShader9 *sh) { return static_cast<GLDevice *>(this)->SetVertexShader(sh); }
+HRESULT WINAPI IDirect3DDevice9::SetVertexShaderConstantF(UINT r, const float *d, UINT n) { return static_cast<GLDevice *>(this)->SetVertexShaderConstantF(r, d, n); }
+HRESULT WINAPI IDirect3DDevice9::SetPixelShader(IDirect3DPixelShader9 *sh) { return static_cast<GLDevice *>(this)->SetPixelShader(sh); }
+HRESULT WINAPI IDirect3DDevice9::SetPixelShaderConstantF(UINT r, const float *d, UINT n) { return static_cast<GLDevice *>(this)->SetPixelShaderConstantF(r, d, n); }
+HRESULT WINAPI IDirect3DDevice9::DrawPrimitive(D3DPRIMITIVETYPE t, UINT sv, UINT pc) { return static_cast<GLDevice *>(this)->DrawPrimitive(t, sv, pc); }
+HRESULT WINAPI IDirect3DDevice9::DrawIndexedPrimitive(D3DPRIMITIVETYPE t, INT bv, UINT mv, UINT nv, UINT si, UINT pc) { return static_cast<GLDevice *>(this)->DrawIndexedPrimitive(t, bv, mv, nv, si, pc); }
+#endif
+
 // glClearDepth/glDepthRange take doubles and are desktop-GL only. Under WebGL2 the
 // render backend runs on a worker whose GL context is PROXIED to the main thread;
 // only the GLES3 core entry points carry proxy wrappers. The desktop double variants

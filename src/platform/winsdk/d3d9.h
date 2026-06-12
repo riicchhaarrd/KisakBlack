@@ -159,6 +159,23 @@ struct IDirect3DSwapChain9 : public IUnknown {
 };
 
 // ---------------------------------------------------------------------------
+// KB_DEVHOT — devirtualized hot path (web). The engine makes ~160k device->Set*/Draw*
+// calls per frame, and with -sEMULATE_FUNCTION_POINTER_CASTS every VIRTUAL call rides a
+// byn$fpcast-emu trampoline through the indirect-call table. GLDevice is the ONLY device
+// implementation on the web build, so the per-draw mutators + draw calls are declared
+// NON-virtual there and forwarded directly to GLDevice (definitions in
+// gfx_gl/gl_d3d9.cpp) — every engine call site becomes a direct wasm call. Native keeps
+// the virtual interface. NOTE: this changes the device vtable LAYOUT between configs;
+// never mix objects across a flag change (full rebuild).
+#if defined(__EMSCRIPTEN__)
+#define KB_DEVHOT
+#define KB_DEVHOT_PURE
+#define KB_DEVHOT_OVERRIDE
+#else
+#define KB_DEVHOT          virtual
+#define KB_DEVHOT_PURE     = 0
+#define KB_DEVHOT_OVERRIDE override
+#endif
 struct IDirect3DDevice9 : public IUnknown {
     virtual HRESULT WINAPI TestCooperativeLevel() = 0;
     virtual UINT    WINAPI GetAvailableTextureMem() = 0;
@@ -221,45 +238,45 @@ struct IDirect3DDevice9 : public IUnknown {
     virtual HRESULT WINAPI EndScene() = 0;
     virtual HRESULT WINAPI Clear(DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR Color,
                                  float Z, DWORD Stencil) = 0;
-    virtual HRESULT WINAPI SetViewport(const D3DVIEWPORT9 *pViewport) = 0;
+    KB_DEVHOT HRESULT WINAPI SetViewport(const D3DVIEWPORT9 *pViewport) KB_DEVHOT_PURE;
 
     // Fixed/programmable state
-    virtual HRESULT WINAPI SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) = 0;
-    virtual HRESULT WINAPI SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) = 0;
+    KB_DEVHOT HRESULT WINAPI SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) KB_DEVHOT_PURE;
+    KB_DEVHOT HRESULT WINAPI SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) KB_DEVHOT_PURE;
     virtual HRESULT WINAPI SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type,
                                                 DWORD Value) = 0;
-    virtual HRESULT WINAPI SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) = 0;
+    KB_DEVHOT HRESULT WINAPI SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) KB_DEVHOT_PURE;
     virtual HRESULT WINAPI SetScissorRect(const RECT *pRect) = 0;
 
     // Geometry binding
-    virtual HRESULT WINAPI SetStreamSource(UINT StreamNumber,
-                                           IDirect3DVertexBuffer9 *pStreamData,
-                                           UINT OffsetInBytes, UINT Stride) = 0;
-    virtual HRESULT WINAPI SetIndices(IDirect3DIndexBuffer9 *pIndexData) = 0;
+    KB_DEVHOT HRESULT WINAPI SetStreamSource(UINT StreamNumber,
+                                             IDirect3DVertexBuffer9 *pStreamData,
+                                             UINT OffsetInBytes, UINT Stride) KB_DEVHOT_PURE;
+    KB_DEVHOT HRESULT WINAPI SetIndices(IDirect3DIndexBuffer9 *pIndexData) KB_DEVHOT_PURE;
     virtual HRESULT WINAPI CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pVertexElements,
                                                    IDirect3DVertexDeclaration9 **ppDecl) = 0;
-    virtual HRESULT WINAPI SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) = 0;
+    KB_DEVHOT HRESULT WINAPI SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) KB_DEVHOT_PURE;
 
     // Shaders
     virtual HRESULT WINAPI CreateVertexShader(const DWORD *pFunction,
                                               IDirect3DVertexShader9 **ppShader) = 0;
-    virtual HRESULT WINAPI SetVertexShader(IDirect3DVertexShader9 *pShader) = 0;
-    virtual HRESULT WINAPI SetVertexShaderConstantF(UINT StartRegister,
-                                                    const float *pConstantData,
-                                                    UINT Vector4fCount) = 0;
+    KB_DEVHOT HRESULT WINAPI SetVertexShader(IDirect3DVertexShader9 *pShader) KB_DEVHOT_PURE;
+    KB_DEVHOT HRESULT WINAPI SetVertexShaderConstantF(UINT StartRegister,
+                                                      const float *pConstantData,
+                                                      UINT Vector4fCount) KB_DEVHOT_PURE;
     virtual HRESULT WINAPI CreatePixelShader(const DWORD *pFunction,
                                              IDirect3DPixelShader9 **ppShader) = 0;
-    virtual HRESULT WINAPI SetPixelShader(IDirect3DPixelShader9 *pShader) = 0;
-    virtual HRESULT WINAPI SetPixelShaderConstantF(UINT StartRegister,
-                                                   const float *pConstantData,
-                                                   UINT Vector4fCount) = 0;
+    KB_DEVHOT HRESULT WINAPI SetPixelShader(IDirect3DPixelShader9 *pShader) KB_DEVHOT_PURE;
+    KB_DEVHOT HRESULT WINAPI SetPixelShaderConstantF(UINT StartRegister,
+                                                     const float *pConstantData,
+                                                     UINT Vector4fCount) KB_DEVHOT_PURE;
 
     // Draw
-    virtual HRESULT WINAPI DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex,
-                                         UINT PrimitiveCount) = 0;
-    virtual HRESULT WINAPI DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVertexIndex,
-                                                UINT MinVertexIndex, UINT NumVertices,
-                                                UINT startIndex, UINT primCount) = 0;
+    KB_DEVHOT HRESULT WINAPI DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex,
+                                           UINT PrimitiveCount) KB_DEVHOT_PURE;
+    KB_DEVHOT HRESULT WINAPI DrawIndexedPrimitive(D3DPRIMITIVETYPE Type, INT BaseVertexIndex,
+                                                  UINT MinVertexIndex, UINT NumVertices,
+                                                  UINT startIndex, UINT primCount) KB_DEVHOT_PURE;
     virtual HRESULT WINAPI DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount,
                                            const void *pVertexStreamZeroData,
                                            UINT VertexStreamZeroStride) = 0;
