@@ -21,20 +21,26 @@ static int kbSpecEnabled() {
     return v;
 }
 static void kbSpecLogCode(const GfxCmdBufContext &context, const MaterialShaderArgument *arg, const char *cls) {
-    if (!kbSpecEnabled() || arg->u.codeConst.index != 0x45) return;
-    static std::set<const void *> seen;
+    if (!kbSpecEnabled()) return;
+    unsigned idx = arg->u.codeConst.index;
+    // 0x45 = envMapParms (proven unbound); 17/18/19 = the sun consts the world envmap
+    // term reads (c17 sun dir, c18/c19 sun colors) — runtime-value audit for the
+    // mirror-surfaces hunt. Log each (material, index) once.
+    if (idx != 0x45 && (idx < 17 || idx > 19)) return;
+    static std::set<std::pair<const void *, unsigned>> seen;
     const Material *m = context.state->material;
-    if (!seen.insert(m).second) return;
-    const float *v = R_GetCodeConstant(context, 0x45);
-    fprintf(stderr, "[kbspec] %s mat=%s dest=%u vals=%.3f %.3f %.3f %.3f\n",
-            cls, m && m->info.name ? m->info.name : "?", arg->dest, v[0], v[1], v[2], v[3]);
+    if (!seen.insert(std::make_pair((const void *)m, idx)).second) return;
+    const float *v = R_GetCodeConstant(context, idx);
+    fprintf(stderr, "[kbspec] %s idx=%u mat=%s dest=%u vals=%.3f %.3f %.3f %.3f\n",
+            cls, idx, m && m->info.name ? m->info.name : "?", arg->dest, v[0], v[1], v[2], v[3]);
 }
-static void kbSpecLogLocal(const Material *m, const MaterialConstantDef *cd) {
+static void kbSpecLogLocal(const Material *m, const MaterialConstantDef *cd, unsigned dest) {
     if (!kbSpecEnabled() || strncmp(cd->name, "envMapParms", 11) != 0) return;
     static std::set<const void *> seen;
     if (!seen.insert(m).second) return;
-    fprintf(stderr, "[kbspec] LOCAL mat=%s vals=%.3f %.3f %.3f %.3f\n",
-            m && m->info.name ? m->info.name : "?", cd->literal[0], cd->literal[1], cd->literal[2], cd->literal[3]);
+    fprintf(stderr, "[kbspec] LOCAL mat=%s dest=%u vals=%.3f %.3f %.3f %.3f\n",
+            m && m->info.name ? m->info.name : "?", dest,
+            cd->literal[0], cd->literal[1], cd->literal[2], cd->literal[3]);
 }
 // ?envclamp=N — the WORKING global reflection dimmer. [kbspec] proved every world material
 // delivers envMapParms as a LOCAL constant (code-const 69 is bound by NO shader), and the
@@ -442,7 +448,7 @@ void __cdecl R_SetPassPixelShaderStableArguments(const GfxCmdBufContext context,
             }
         }
 #if defined(__EMSCRIPTEN__)
-        kbSpecLogLocal(material, constDef);
+        kbSpecLogLocal(material, constDef, arg->dest);
         R_SetPixelShaderConstantFromLiteral(context.state, arg->dest, kbEnvAdjust(constDef));
 #else
         R_SetPixelShaderConstantFromLiteral(context.state, arg->dest, constDef->literal);
@@ -760,7 +766,7 @@ void __cdecl R_SetPassShaderStableArguments(
             }
         }
 #if defined(__EMSCRIPTEN__)
-        kbSpecLogLocal(material, constDef);
+        kbSpecLogLocal(material, constDef, arg->dest);
         R_SetVertexShaderConstantFromLiteral(context.state, arg->dest, kbEnvAdjust(constDef));
 #else
         R_SetVertexShaderConstantFromLiteral(context.state, arg->dest, constDef->literal);
