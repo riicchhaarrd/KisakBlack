@@ -349,6 +349,10 @@ static unsigned int R_InvokeTessFunc(
     GfxCmdBufContext prepassContext;
     prepassContext.source = prepassSource;
     prepassContext.state = prepassState;
+    // Split the parent "tess invoke" zone by surface category so kbprof localizes the 43ms:
+    // world (0,1) vs model (2-9) vs fx/other (10-15). One profile picks the next lever.
+    const char *kbTessZone = (idx <= 1) ? "tess world" : (idx <= 9) ? "tess model" : "tess fx";
+    PROF_SCOPED(kbTessZone)
     switch ( idx )
     {
     case 0:  return R_TessTrianglesList(listArgs, prepassContext);
