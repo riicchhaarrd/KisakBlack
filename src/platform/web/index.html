@@ -156,7 +156,7 @@
   <script>
     window.Module = {
       canvas: (function () { return document.getElementById('canvas'); })(),
-      arguments: ['+devmap','mp_nuked'],   // engine cmdline; edit the map or add +set dvar value
+      arguments: ['+devmap', (new URLSearchParams(location.search).get('map') || 'mp_nuked')],   // ?map=<name> overrides; edit or add +set dvar value
       noInitialRun: true,            // we call run() ourselves after data is ready
       print:    (t) => console.log(t),
       printErr: (t) => { console.warn(t); try { if (/error|abort|exception|fail|fatal|GL_INVALID|context/i.test(t)) window.__kbShowErr && window.__kbShowErr(t); } catch(e){} },
