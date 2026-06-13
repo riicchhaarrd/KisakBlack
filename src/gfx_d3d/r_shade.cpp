@@ -36,6 +36,23 @@ static void kbSpecLogLocal(const Material *m, const MaterialConstantDef *cd) {
     fprintf(stderr, "[kbspec] LOCAL mat=%s vals=%.3f %.3f %.3f %.3f\n",
             m && m->info.name ? m->info.name : "?", cd->literal[0], cd->literal[1], cd->literal[2], cd->literal[3]);
 }
+// ?envclamp=N — the WORKING global reflection dimmer. [kbspec] proved every world material
+// delivers envMapParms as a LOCAL constant (code-const 69 is bound by NO shader), and the
+// runtime-combined *blend materials carry degenerate values (min=max=1 -> constant full-mirror,
+// the garage-door look). Until the generator/technique-selection bug is fixed, scale min/max at
+// the delivery point. Backend-thread only -> the static return buffer is safe.
+static const float *kbEnvAdjust(const MaterialConstantDef *cd) {
+    static float scale = -2.0f;
+    if (scale < -1.0f) { const char *e = getenv("KB_ENVCLAMP"); scale = e ? (float)atof(e) : -1.0f; }
+    if (scale < 0.0f || strncmp(cd->name, "envMapParms", 11) != 0)
+        return cd->literal;
+    static float adj[4];
+    adj[0] = cd->literal[0] * scale;   // envMapMin
+    adj[1] = cd->literal[1] * scale;   // envMapMax
+    adj[2] = cd->literal[2];           // exponent
+    adj[3] = cd->literal[3];           // sun scale
+    return adj;
+}
 #endif
 
 
@@ -426,8 +443,10 @@ void __cdecl R_SetPassPixelShaderStableArguments(const GfxCmdBufContext context,
         }
 #if defined(__EMSCRIPTEN__)
         kbSpecLogLocal(material, constDef);
-#endif
+        R_SetPixelShaderConstantFromLiteral(context.state, arg->dest, kbEnvAdjust(constDef));
+#else
         R_SetPixelShaderConstantFromLiteral(context.state, arg->dest, constDef->literal);
+#endif
         ++arg;
         if ( !--argCount )
             return;
@@ -742,8 +761,10 @@ void __cdecl R_SetPassShaderStableArguments(
         }
 #if defined(__EMSCRIPTEN__)
         kbSpecLogLocal(material, constDef);
-#endif
+        R_SetVertexShaderConstantFromLiteral(context.state, arg->dest, kbEnvAdjust(constDef));
+#else
         R_SetVertexShaderConstantFromLiteral(context.state, arg->dest, constDef->literal);
+#endif
         ++arg;
         if ( !--argCount )
             return;
