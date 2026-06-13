@@ -260,6 +260,7 @@
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.has('perflog'))          ENV.KB_PERFLOG = '1';   // enable ALL periodic diagnostics ([perf/*], [heartbeat]); default = quiet console
           if (q.has('kbprof'))           ENV.KB_KBPROF = '1';   // [kbprof] per-thread self-time profiler (parse on main thread; workers can't see location.search)
+          if (q.get('kbspec') === '1')   ENV.KB_KBSPEC = '1';   // [kbspec] envMapParms forensics (mirror-surfaces hunt)
           // The toggles below run on WORKER threads, whose location.search is the worker-script
           // URL (no page query string). Parse on the main thread here -> ENV -> getenv() on the
           // worker, same as KB_PERFMS / KB_KBPROF. (Reading location.search on the worker is a no-op.)

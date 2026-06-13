@@ -8,6 +8,36 @@
 
 bool Use_R_SetVertexShaderConstantFromCode_New = true;
 
+#if defined(__EMSCRIPTEN__)
+#include <set>
+#include <string.h>
+// ?kbspec=1 — envMapParms forensics (the mirror-surfaces hunt): log ONCE per material which
+// path delivers it (CODE69 = code const 0x45 from the input block — whose ONLY writer is the
+// r_envMapOverride debug path — vs LOCAL = a material-named constant) and the values flowing.
+// One headless run yields the whole table; see ISSUES.txt "MIRROR SURFACES".
+static int kbSpecEnabled() {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("KB_KBSPEC"); v = (e && *e == '1') ? 1 : 0; }
+    return v;
+}
+static void kbSpecLogCode(const GfxCmdBufContext &context, const MaterialShaderArgument *arg, const char *cls) {
+    if (!kbSpecEnabled() || arg->u.codeConst.index != 0x45) return;
+    static std::set<const void *> seen;
+    const Material *m = context.state->material;
+    if (!seen.insert(m).second) return;
+    const float *v = R_GetCodeConstant(context, 0x45);
+    fprintf(stderr, "[kbspec] %s mat=%s dest=%u vals=%.3f %.3f %.3f %.3f\n",
+            cls, m && m->info.name ? m->info.name : "?", arg->dest, v[0], v[1], v[2], v[3]);
+}
+static void kbSpecLogLocal(const Material *m, const MaterialConstantDef *cd) {
+    if (!kbSpecEnabled() || strncmp(cd->name, "envMapParms", 11) != 0) return;
+    static std::set<const void *> seen;
+    if (!seen.insert(m).second) return;
+    fprintf(stderr, "[kbspec] LOCAL mat=%s vals=%.3f %.3f %.3f %.3f\n",
+            m && m->info.name ? m->info.name : "?", cd->literal[0], cd->literal[1], cd->literal[2], cd->literal[3]);
+}
+#endif
+
 
 void __cdecl R_SetupPassPerPrimArgs(GfxCmdBufContext context)
 {
@@ -22,6 +52,9 @@ void __cdecl R_SetPassShaderPrimArguments(const GfxCmdBufContext context, unsign
 {
     while ( arg->type == 3 )
     {
+#if defined(__EMSCRIPTEN__)
+        kbSpecLogCode(context, arg, "VS-CODE69");
+#endif
         if ( Use_R_SetVertexShaderConstantFromCode_New )
             R_SetVertexShaderConstantFromCode_New(context, arg);
         else
@@ -309,6 +342,9 @@ void __cdecl R_SetPassShaderObjectArguments(const GfxCmdBufContext context, unsi
 
     while ( arg->type == 3 )
     {
+#if defined(__EMSCRIPTEN__)
+        kbSpecLogCode(context, arg, "VS-CODE69");
+#endif
         if ( Use_R_SetVertexShaderConstantFromCode_New )
             R_SetVertexShaderConstantFromCode_New(context, arg);
         else
@@ -361,6 +397,9 @@ void __cdecl R_SetPassPixelShaderStableArguments(const GfxCmdBufContext context,
     }
     while ( arg->type == 5 )
     {
+#if defined(__EMSCRIPTEN__)
+        kbSpecLogCode(context, arg, "PS-CODE69");
+#endif
         if ( !R_IsPixelShaderConstantUpToDate(context, arg) )
             R_SetPixelShaderConstantFromCode(context, arg);
         ++arg;
@@ -385,6 +424,9 @@ void __cdecl R_SetPassPixelShaderStableArguments(const GfxCmdBufContext context,
                     __debugbreak();
             }
         }
+#if defined(__EMSCRIPTEN__)
+        kbSpecLogLocal(material, constDef);
+#endif
         R_SetPixelShaderConstantFromLiteral(context.state, arg->dest, constDef->literal);
         ++arg;
         if ( !--argCount )
@@ -698,6 +740,9 @@ void __cdecl R_SetPassShaderStableArguments(
                     __debugbreak();
             }
         }
+#if defined(__EMSCRIPTEN__)
+        kbSpecLogLocal(material, constDef);
+#endif
         R_SetVertexShaderConstantFromLiteral(context.state, arg->dest, constDef->literal);
         ++arg;
         if ( !--argCount )
@@ -721,6 +766,9 @@ void __cdecl R_SetPassShaderStableArguments(
 
     while ( arg->type == 3 )
     {
+#if defined(__EMSCRIPTEN__)
+        kbSpecLogCode(context, arg, "VS-CODE69");
+#endif
         if ( Use_R_SetVertexShaderConstantFromCode_New )
             R_SetVertexShaderConstantFromCode_New(context, arg);
         else
