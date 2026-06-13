@@ -85,6 +85,11 @@ public:
     // cached; the program cache keys on GL shader ids so (vs, ps-variant) pairs link
     // independently.
     unsigned glShader(unsigned shadowMask);
+    // ?matarray stage 2: variant with matMask's sampler stages typed sampler2DArray
+    // sampling layer uMatLayer (the material's bucket layer). Cached per (matMask,
+    // shadowMask); matMask 0 falls through to glShader(shadowMask). Default-inert —
+    // nothing calls this until the stage-3 bind plumbing lands.
+    unsigned glShaderMat(unsigned matMask, unsigned shadowMask);
     bool ok() const { return translatedOk_; }
 private:
     IDirect3DDevice9 *device_;
@@ -99,6 +104,7 @@ private:
     // compiles with empty logs; retry with cooldown instead of caching failure forever.
     struct Variant { unsigned gl = 0; int tries = 0; unsigned long lastPres = 0; };
     std::map<unsigned, Variant> variants_;
+    std::map<unsigned long long, Variant> matVariants_;   // (matMask<<32 | shadowMask) -> variant
 };
 
 #endif // KISAK_GL_SHADER_H

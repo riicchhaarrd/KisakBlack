@@ -162,6 +162,15 @@ struct Ctx {
         return emitES && ((lmArrayMask >> sN) & 1) && !((shadowMask >> sN) & 1)
             && (samplerDim.count(sN) ? samplerDim.at(sN) : 2) == 2;
     }
+    // ?matarray stage 2: sampler stages to emit as sampler2DArray sampling layer uMatLayer —
+    // the per-draw MATERIAL layer in its bucket's stage array (consolidation; the lmarray
+    // mechanism generalized). Per-variant, set via KB_SetMatArrayTranslateMask before the
+    // translate call (mask differs per material bucket, unlike the global lmArrayMask).
+    unsigned matArrayMask = 0;
+    bool matA(int sN) const {
+        return emitES && ((matArrayMask >> sN) & 1) && !((shadowMask >> sN) & 1) && !lmA(sN)
+            && (samplerDim.count(sN) ? samplerDim.at(sN) : 2) == 2;
+    }
     std::map<int, std::pair<int,int>> inputs;   // reg -> (usage, usageIndex)
     std::map<int, std::pair<int,int>> outputs;  // reg -> (usage, usageIndex)  (vertex)
     std::set<int> samplers;
@@ -315,6 +324,10 @@ void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
                 // lightmap array: sample layer uLmLayer instead of a bound 2D texture (?lmarray).
                 // (lit lightmap lookups are plain 2D fetches — never projective/biased here.)
                 expr = "texture(" + samp + ", vec3((" + s(0) + ").xy, uLmLayer))";
+            } else if (c.matA(sreg)) {
+                // ?matarray stage 2: material stage rides its bucket's texture array; the
+                // per-draw layer (this material's index in the bucket) comes via uMatLayer.
+                expr = "texture(" + samp + ", vec3((" + s(0) + ").xy, uMatLayer))";
             } else if (ctrl == 1) {
                 expr = std::string(c.emitES ? "textureProj" : "texture2DProj") + "(" + samp + ", " + s(0) + ")";
             } else {
@@ -435,6 +448,12 @@ unsigned KB_LmArrayMask() {
     return (unsigned)mask;
 }
 
+// ?matarray stage 2: the pending per-variant material-array mask for the NEXT translate
+// call (glShaderMat sets it around its TranslateD3D9Shader invocation; single-threaded
+// translate path — the GL thread). 0 = plain translation.
+static unsigned g_kbMatTranslateMask = 0;
+extern "C" void KB_SetMatArrayTranslateMask(unsigned mask) { g_kbMatTranslateMask = mask; }
+
 bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
                          unsigned shadowSamplerMask, unsigned *outSamplerMask) {
     Ctx c;
@@ -446,6 +465,7 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
     c.isPixel = (ver >> 16) == 0xFFFF;
     c.shadowMask = shadowSamplerMask;
     if (c.isPixel) c.lmArrayMask = KB_LmArrayMask();   // lightmaps are sampled in the pixel shader
+    if (c.isPixel) c.matArrayMask = g_kbMatTranslateMask;   // ?matarray stage-2 variant (0 = plain)
     if (outIsPixel) *outIsPixel = c.isPixel;
 
     std::ostringstream body;
@@ -561,18 +581,19 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
             // single line every shadow variant failed to compile (and the affected
             // draws fell to the builtin, which used to fail too -> invisible geometry).
             if (c.shadowMask) o << "precision highp sampler2DShadow;\n";
-            bool anyLmArray = false;
-            for (int sN : c.samplers) if (c.lmA(sN)) anyLmArray = true;
-            if (anyLmArray) {
+            bool anyLmArray = false, anyMatArray = false;
+            for (int sN : c.samplers) { if (c.lmA(sN)) anyLmArray = true; if (c.matA(sN)) anyMatArray = true; }
+            if (anyLmArray || anyMatArray) {
                 // ES 3.00 has no default precision for sampler2DArray (same trap as sampler3D/2DShadow).
                 o << "precision highp sampler2DArray;\n";
-                o << "uniform float uLmLayer;\n";   // per-draw lightmap page (set by the state layer)
             }
+            if (anyLmArray)  o << "uniform float uLmLayer;\n";    // per-draw lightmap page (state layer)
+            if (anyMatArray) o << "uniform float uMatLayer;\n";   // per-draw bucket layer (?matarray stage 2)
             for (int sN : c.samplers)
             {
                 int dim = c.samplerDim.count(sN) ? c.samplerDim.at(sN) : 2;
                 const char *ty = ((c.shadowMask >> sN) & 1) ? "sampler2DShadow"
-                                 : c.lmA(sN) ? "sampler2DArray"
+                                 : (c.lmA(sN) || c.matA(sN)) ? "sampler2DArray"
                                  : dim == 4 ? "sampler3D" : dim == 3 ? "samplerCube" : "sampler2D";
                 o << "uniform " << ty << " s" << sN << ";\n";
             }
@@ -907,6 +928,26 @@ unsigned GLPixelShader::glShader(unsigned shadowMask) {
         std::string glsl; bool isPix = false;
         if (TranslateD3D9Shader(func_.data(), glsl, &isPix, shadowMask) && isPix)
             v.gl = compileGL(GL_FRAGMENT_SHADER, glsl, "pixel shader (shadow variant)");
+        v.tries = v.gl ? 0 : v.tries + 1;
+    }
+    return v.gl;
+}
+unsigned GLPixelShader::glShaderMat(unsigned matMask, unsigned shadowMask) {
+    matMask &= samplerMask_;             // only samplers this shader actually reads
+    if (matMask == 0 || func_.empty())
+        return glShader(shadowMask);
+    Variant &v = matVariants_[((unsigned long long)matMask << 32) | (shadowMask & samplerMask_)];
+    if (kbCompileGate(v.gl, v.tries, v.lastPres)) {
+        v.lastPres = g_kbPresentEnter;
+        // Retranslate with matMask's stages typed sampler2DArray (layer = uMatLayer) on top
+        // of any shadow typing — the pending-mask global (defined above) routes it into
+        // the translator.
+        KB_SetMatArrayTranslateMask(matMask);
+        std::string glsl; bool isPix = false;
+        bool ok = TranslateD3D9Shader(func_.data(), glsl, &isPix, shadowMask) && isPix;
+        KB_SetMatArrayTranslateMask(0);
+        if (ok)
+            v.gl = compileGL(GL_FRAGMENT_SHADER, glsl, "pixel shader (matarray variant)");
         v.tries = v.gl ? 0 : v.tries + 1;
     }
     return v.gl;
