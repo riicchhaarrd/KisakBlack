@@ -10,6 +10,8 @@
 #include <stdio.h>
 #if defined(__EMSCRIPTEN__)
 #include <vector>
+#include <map>
+#include <set>
 // GL bridge (gl_d3d9_draw.cpp): draw N single-stream world surfaces as ONE multi-draw from the bound
 // static IB, each with its own baseVertex. See GLDevice::KB_DrawWorldMulti.
 extern "C" void KB_DrawWorldMultiC(void *dev, const int *counts, const void *const *offsets,
@@ -793,11 +795,75 @@ static bool R_LitMergeEnabled()
     if ( g_kbLitMerge < 0 ) { const char *e = getenv("KB_NOLITMERGE"); g_kbLitMerge = (e && *e == '1') ? 0 : 1; }
     return g_kbLitMerge != 0;
 }
+// [matarray] one-shot world-material bucketing report — sizes the texture-array material
+// consolidation (memory + capture) before building it. A bucket = materials sharing
+// (techniqueSet, textureCount, per-stage {nameHash, semantic, dims, mips}); one set of
+// per-stage GL_TEXTURE_2D_ARRAYs serves a bucket, layer count = its material count.
+// baseSize = the image's loaded bytes incl. mips, so est-MB ≈ the EXTRA GPU memory the
+// arrays would add (originals must stay for non-bucketed techniques).
+static const void *g_kbMatReportWorld = 0;
+static void R_MatArrayReport()
+{
+    if ( !rgp.world || g_kbMatReportWorld == (const void *)rgp.world )
+        return;
+    g_kbMatReportWorld = rgp.world;
+    std::set<const Material *> seen;
+    std::map<std::vector<unsigned>, std::vector<const Material *>> buckets;
+    for ( unsigned int i = 0; i < rgp.world->surfaceCount; ++i )
+    {
+        const Material *m = rgp.world->dpvs.surfaces[i].material;
+        if ( !m || !seen.insert(m).second )
+            continue;
+        std::vector<unsigned> key;
+        key.push_back((unsigned)(uintptr_t)m->techniqueSet);
+        key.push_back(m->textureCount);
+        bool ok = true;
+        for ( unsigned int t = 0; t < m->textureCount; ++t )
+        {
+            const MaterialTextureDef *td = &m->textureTable[t];
+            if ( td->semantic == 11 || !td->u.image ) { ok = false; break; }   // 11 = water
+            key.push_back(td->nameHash);
+            key.push_back(td->semantic);
+            key.push_back(((unsigned)td->u.image->width << 16) | td->u.image->height);
+            key.push_back(td->u.image->levelCount);
+        }
+        if ( ok )
+            buckets[key].push_back(m);
+    }
+    size_t arrMats = 0, multiBuckets = 0, topLayers[5] = {0};
+    unsigned long long arrBytes = 0;
+    for ( auto &b : buckets )
+    {
+        size_t layers = b.second.size();
+        if ( layers < 2 )
+            continue;
+        ++multiBuckets; arrMats += layers;
+        unsigned long long perLayer = 0;
+        const Material *m0 = b.second[0];
+        for ( unsigned int t = 0; t < m0->textureCount; ++t )
+            if ( m0->textureTable[t].u.image )
+                perLayer += m0->textureTable[t].u.image->baseSize;
+        arrBytes += perLayer * layers;
+        for ( int k = 0; k < 5; ++k )
+            if ( layers > topLayers[k] )
+            {
+                for ( int j = 4; j > k; --j ) topLayers[j] = topLayers[j - 1];
+                topLayers[k] = layers;
+                break;
+            }
+    }
+    fprintf(stderr, "[matarray] world mats=%u buckets>=2: %u covering %u mats, est extra MB=%llu, top layers: %u %u %u %u %u\n",
+            (unsigned)seen.size(), (unsigned)multiBuckets, (unsigned)arrMats,
+            arrBytes >> 20, (unsigned)topLayers[0], (unsigned)topLayers[1],
+            (unsigned)topLayers[2], (unsigned)topLayers[3], (unsigned)topLayers[4]);
+}
+
 static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *primState)
 {
     IDirect3DIndexBuffer9 *wib = R_GetWorldStaticIb();
     if ( !wib )
         return false;                       // static-IB alloc failed -> stock walker (stream untouched)
+    R_MatArrayReport();                     // one-shot sizing report at first lit draw
     unsigned int layerStride = g_layerDataStride[primState->vertDeclType];
 
     unsigned int reflectionProbeIndex = 255;
