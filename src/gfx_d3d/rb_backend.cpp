@@ -1706,6 +1706,7 @@ unsigned long g_kbTrArrayable = 0;
 // per-instance layer (step 2 as planned). The rest would need per-instance constants too.
 unsigned long g_kbTrArrSameConst = 0;
 extern "C" int KB_MatArrayLevelC();   // ?matarray level (r_draw_bsp.cpp): 3 gates the 3b skip
+extern "C" int KB_MatArrayHasC(const void *mat);   // is this material world-bucketed (array-drawn)?
 #endif
 
 unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *listArgs, GfxCmdBufContext prepassContext)
@@ -1844,7 +1845,11 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
         // a guaranteed no-op for a run-equivalent material). Never skip the prepass pass.
         { static int lv = -2; if (lv == -2) lv = KB_MatArrayLevelC();
           static int noSkip = -1; if (noSkip < 0) { const char *e = getenv("KB_NOSKIP"); noSkip = (e && *e == '1') ? 1 : 0; }
-          if (lv < 3 || noSkip) kbEquivToPrev = false; }   // ?noskip bisects the 3b skip vs step-1 instanced
+          // Skip ONLY when this material is itself world-bucketed (array-drawn) — a non-bucketed
+          // material (static-model fence etc.) draws plain 2D, so skipping its binds would leave
+          // it sampling the previous material's textures (the view/order-dependent wrong-texture).
+          if ( lv < 3 || noSkip || !KB_MatArrayHasC(listArgs->context.state->material) )
+              kbEquivToPrev = false; }
 #else
         kbEquivToPrev = false;
 #endif

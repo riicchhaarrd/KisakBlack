@@ -833,6 +833,13 @@ static int R_MatArrayLevel()
 }
 static bool R_MatArrayEnabled() { return R_MatArrayLevel() > 0; }
 extern "C" int KB_MatArrayLevelC() { return R_MatArrayLevel(); }   // GL layer queries the level
+// Is this material WORLD-bucketed (drawn via the texture arrays + per-material layer)? The 3b
+// setup-skip is only safe for these — a non-bucketed material (e.g. a static-model fence) draws
+// plain 2D, so skipping its texture binds would leave it sampling the previous material's textures.
+extern "C" int KB_MatArrayHasC(const void *mat)
+{
+    return g_kbMatArrayLayer.find((const Material *)mat) != g_kbMatArrayLayer.end();
+}
 // GPU-memory ceiling for the bucket arrays (extra VRAM beyond the originals). A heavy map could
 // otherwise OOM the GPU process now that parity is default-on; over the cap, stay plain (logged).
 static const unsigned long long KB_MATARRAY_CAP_MB = 320;
