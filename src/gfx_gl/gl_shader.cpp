@@ -79,6 +79,61 @@ std::string swizStr(int sw) {  // src swizzle as a 4-component selector, "" if i
     return s;
 }
 
+// ---- D3D9 disassembler (?dumpenv) ------------------------------------------
+// Faithful asm text rebuilt from the SAME token stream the translator consumes, but
+// through NONE of the translation logic — so a translated-GLSL-vs-asm diff exposes
+// translator bugs instead of reflecting them (the envmap over-reflection hunt).
+static const char *kbOpName(int op) {
+    switch (op) {
+        case OP_MOV: return "mov";   case OP_ADD: return "add";   case OP_SUB: return "sub";
+        case OP_MAD: return "mad";   case OP_MUL: return "mul";   case OP_RCP: return "rcp";
+        case OP_RSQ: return "rsq";   case OP_DP3: return "dp3";   case OP_DP4: return "dp4";
+        case OP_MIN: return "min";   case OP_MAX: return "max";   case OP_SLT: return "slt";
+        case OP_SGE: return "sge";   case OP_EXP: return "exp";   case OP_LOG: return "log";
+        case OP_LRP: return "lrp";   case OP_FRC: return "frc";   case OP_POW: return "pow";
+        case OP_ABS: return "abs";   case OP_NRM: return "nrm";   case OP_SINCOS: return "sincos";
+        case OP_MOVA: return "mova"; case OP_TEXKILL: return "texkill";
+        case OP_TEXLD: return "texld"; case OP_CMP: return "cmp"; case OP_DP2ADD: return "dp2add";
+        case OP_DSX: return "dsx";   case OP_DSY: return "dsy";   case OP_TEXLDD: return "texldd";
+        case OP_TEXLDL: return "texldl";
+        default: return "op?";
+    }
+}
+static std::string kbRegAsm(const Operand &o) {
+    const char *t;
+    switch (o.type) {
+        case RT_TEMP: t = "r"; break;       case RT_INPUT: t = "v"; break;
+        case RT_CONST: t = "c"; break;      case RT_TEXTURE: t = "t"; break;
+        case RT_SAMPLER: t = "s"; break;    case RT_COLOROUT: t = "oC"; break;
+        case RT_DEPTHOUT: t = "oDepth"; break; case RT_OUTPUT: t = "o"; break;
+        case RT_RASTOUT: t = "oPos"; break; case RT_MISCTYPE: t = "vMisc"; break;
+        default: t = "x"; break;
+    }
+    char buf[32]; snprintf(buf, sizeof buf, "%s%d", t, o.reg);
+    return buf;
+}
+static std::string kbSrcAsm(const Operand &o) {
+    std::string s = kbRegAsm(o);
+    if (o.rel) { s += "[a0."; s += kComp[o.relComp & 3]; s += "]"; }
+    s += swizStr(o.swizzle);
+    switch (o.mod) {   // D3DSPSM_*
+        case 1:  return "-" + s;
+        case 2:  return s + "_bias";
+        case 3:  return "-" + s + "_bias";
+        case 4:  return s + "_bx2";
+        case 5:  return "-" + s + "_bx2";
+        case 6:  return "1-" + s;
+        case 7:  return s + "_x2";
+        case 8:  return "-" + s + "_x2";
+        case 9:  return s + "_dz";
+        case 10: return s + "_dw";
+        case 11: return s + "_abs";
+        case 12: return "-" + s + "_abs";
+        case 13: return "!" + s;
+        default: return s;
+    }
+}
+
 // GLSL output dialect. The desktop build emits `#version 120` compat GLSL; the
 // WebGL2 build emits `#version 300 es` (GLSL ES 3.00). The translator is
 // parameterized on this — the 120 path is preserved verbatim, not replaced.
@@ -394,6 +449,8 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
     if (outIsPixel) *outIsPixel = c.isPixel;
 
     std::ostringstream body;
+    std::ostringstream dis;                       // ?dumpenv: side-channel D3D9 disassembly
+    const bool wantAsm = KB_DumpEnvWanted();
     int indent = 1, loopId = 0;
     auto ind = [](int n) { return std::string(2 * (n < 1 ? 1 : n), ' '); };
     // D3DSHADER_COMPARISON (ctrl): 1 GT, 2 EQ, 3 GE, 4 LT, 5 NE, 6 LE.
@@ -414,6 +471,12 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
             DWORD usageTok = *tok;
             Operand reg = decodeParam(tok[1]);
             tok += len;
+            if (wantAsm) {
+                static const char *dims[] = {"?", "?", "2d", "cube", "volume"};
+                int d = (int)((usageTok >> 27) & 0xF);
+                dis << "dcl" << (reg.type == RT_SAMPLER ? (std::string("_") + (d >= 2 && d <= 4 ? dims[d] : "?")) : "")
+                    << " " << kbRegAsm(reg) << "\n";
+            }
             if (reg.type == RT_SAMPLER) {
                 c.samplers.insert(reg.reg);
                 // dcl_2d/dcl_cube/dcl_volume: texture type in usage token bits 27..30.
@@ -435,6 +498,8 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
             Operand reg = decodeParam(tok[0]);
             float f[4]; std::memcpy(f, &tok[1], sizeof(f));
             std::memcpy(c.defs[reg.reg], f, sizeof(f));
+            if (wantAsm)
+                dis << "def c" << reg.reg << ", " << f[0] << ", " << f[1] << ", " << f[2] << ", " << f[3] << "\n";
             tok += len; continue;
         }
         if (op == OP_DEFI) { Operand reg = decodeParam(tok[0]); c.idefs[reg.reg] = (int)tok[1]; tok += len; continue; }
@@ -466,6 +531,12 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
         int nsrc = 0;
         while (k < len && nsrc < 4) k += decodeParamRel(tok + k, src[nsrc++]);
         tok += len;
+        if (wantAsm) {
+            dis << kbOpName(op) << ((dst.dmod & 1) ? "_sat" : "") << " "
+                << kbRegAsm(dst) << maskStr(dst.writemask);
+            for (int si = 0; si < nsrc; ++si) dis << ", " << kbSrcAsm(src[si]);
+            dis << "\n";
+        }
         emitInstr(c, op, src, nsrc, dst, body, ind(indent), ctrl);
     }
 
@@ -592,16 +663,23 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
         *outSamplerMask = m;
     }
     out = o.str();
-    // ?dumpenv=1: print the first cube-sampling PIXEL shaders (the envmap/specular
-    // users) so the over-gloss math can be read from the real translated source.
+    // ?dumpenv=1: print cube-sampling PIXEL shaders (the envmap/specular users) with the
+    // ORIGINAL D3D9 disassembly side-by-side, so the term math can be diffed op-by-op
+    // against the translation. world=1 marks lightmap-sampling (lit-world) techniques —
+    // the mirror-surfaces class; up to 2 model + 2 world shaders per run.
     if (KB_DumpEnvWanted() && c.isPixel) {
         bool hasCube = false;
         for (auto &kv : c.samplerDim) if (kv.second == 3) hasCube = true;
-        static int dumped = 0;
-        if (hasCube && dumped < 2) {
-            ++dumped;
-            fprintf(stderr, "[gl] ===== ENVMAP PS DUMP %d =====\n%s\n[gl] ===== END DUMP =====\n",
-                    dumped, out.c_str());
+        bool isWorld = c.samplers.count(12) != 0;   // s12 = primary lightmap
+        static int dumpedModel = 0, dumpedWorld = 0;
+        int &slot = isWorld ? dumpedWorld : dumpedModel;
+        if (hasCube && slot < 2) {
+            ++slot;
+            fprintf(stderr, "[gl] ===== ENVMAP PS DUMP %s%d world=%d =====\n"
+                            "[gl] --- d3d9 asm ---\n%s"
+                            "[gl] --- glsl ---\n%s\n[gl] ===== END DUMP =====\n",
+                    isWorld ? "W" : "M", slot, isWorld ? 1 : 0,
+                    dis.str().c_str(), out.c_str());
         }
     }
     return true;
