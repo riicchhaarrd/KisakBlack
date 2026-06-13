@@ -283,7 +283,8 @@
           if (q.get('matarray'))         ENV.KB_MATARRAY = q.get('matarray');   // override level: 1=build-only, 2=parity (default), 3=parity+per-instance-layer+setup-skip
           if (q.has('noskip'))           ENV.KB_NOSKIP = '1';        // bisect: at level 3, disable the 3b stable-args setup-skip (keep step-1 instanced layer)
           if (q.get('matcap'))           ENV.KB_MATCAP = q.get('matcap');   // matarray GPU-mem budget MB (default 320); greedy builds biggest buckets up to it
-          if (q.has('modelmat'))         ENV.KB_MODELMAT = '1';      // extend matarray texture-array consolidation to static-MODEL materials (default off; cuts model texture-rebind batch breaks)
+          if (q.has('nomodelmat'))       ENV.KB_MODELMAT = '0';      // escape: disable model-material texture-array consolidation (default ON — cuts model texture-rebind batch breaks)
+          if (q.get('modelmat'))         ENV.KB_MODELMAT = q.get('modelmat');   // override: 0=off, 1=on (default)
           if (q.get('rigidvb') === '1')  ENV.KB_RIGIDVB = '1';        // rigid props: bind static vb0/IB instead of per-frame vertex memcpy (kills the tess-invoke cost)
           if (q.has('lmarray'))          ENV.KB_LMARRAY = '1';       // lit-world lightmap texture array (stage 1 parity test)
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device

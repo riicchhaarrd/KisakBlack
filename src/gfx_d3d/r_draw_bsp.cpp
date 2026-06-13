@@ -829,12 +829,14 @@ static std::map<const Material *, std::pair<unsigned, unsigned>> g_kbMatArrayLay
 // cap so world + model arrays share one budget. World STAGE1 sets it; model build adds to it.
 static unsigned long long g_kbMatArrayUsedBytes = 0;
 int g_kbMatArrayEnable = -1;   // level: 0 off, 1 build-only, 2 parity (route bucketed mats -> arrays)
-// ?modelmat: extend texture-array consolidation to static-MODEL materials (default off — opt-in
-// to FPS-test the model-batch texture-rebind collapse; world consolidation stays independent).
+// ?modelmat: extend texture-array consolidation to static-MODEL materials. DEFAULT ON (user-validated
+// on mp_nuked: renders correct + a few fps faster, collapsing the per-model texture-rebind batch
+// breaks). ?nomodelmat (KB_MODELMAT=0) is the escape. At ?matarray=3 the per-model setup-skip rides
+// on top automatically (KB_MatArrayHasC now covers model mats too).
 static int g_kbModelMatEnable = -1;
 static bool KB_ModelMatEnabled()
 {
-    if ( g_kbModelMatEnable < 0 ) { const char *e = getenv("KB_MODELMAT"); g_kbModelMatEnable = e ? atoi(e) : 0; }
+    if ( g_kbModelMatEnable < 0 ) { const char *e = getenv("KB_MODELMAT"); g_kbModelMatEnable = e ? atoi(e) : 1; }
     return g_kbModelMatEnable > 0;
 }
 static int R_MatArrayLevel()
