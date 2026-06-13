@@ -170,6 +170,8 @@ public:
     // draws stop breaking batches. Built once; no-op if already built. void* = IDirect3DBaseTexture9*.
     void KB_BuildLightmapArray(void *const *basemaps, int count);
     void KB_SetLightmapLayer(int layer);
+    // ?matarray stage 2b: set/clear the active bucketed-draw state (mask 0 = clear).
+    void KB_SetMatArrayDraw(unsigned mask, float layer, const unsigned *stageTex, int nStages);
 private:
     bool applyTextures();         // bind stage-0 texture + sampler state; returns true if sampling
     void applyStageSampler(unsigned stage, unsigned target); // apply stage's filter/wrap to bound tex
@@ -215,6 +217,13 @@ private:
     // ?lmarray lit-world lightmap texture array (see KB_BuildLightmapArray).
     unsigned kbLmArrayTex_ = 0;   // GL_TEXTURE_2D_ARRAY name; 0 = not built
     float    kbLmLayer_    = 0.0f; // current per-draw lightmap page (-> uLmLayer)
+
+    // ?matarray stage 2b: per-draw material texture-array state, set by KB_SetMatArrayDrawC
+    // before a bucketed draw and cleared after. kbMatArrayMask_==0 = inactive (the default;
+    // no caller until stage 3), so all of this is dead weight until the merge walker drives it.
+    unsigned kbMatArrayMask_        = 0;     // stages riding bucket arrays this draw (0 = none)
+    float    kbMatLayer_            = 0.0f;  // this material's layer in its bucket (-> uMatLayer)
+    unsigned kbMatStageTex_[kMaxStages] = {}; // per-stage GL_TEXTURE_2D_ARRAY name
 
     // Redundant-state elimination (WebGL hates per-draw state changes; each is a marshaled
     // call on the proxied context). curProgram_ skips redundant glUseProgram; rsCache_/rsSet_
@@ -315,6 +324,8 @@ private:
                            int upAlphaFunc = -999; float upAlphaRef = -999.0f;
                            // ?lmarray: location + last value of uLmLayer (the per-draw lightmap page).
                            int lmLayerLoc = -1; float upLmLayer = -999.0f;
+                           // ?matarray: location + last value of uMatLayer (per-draw bucket layer).
+                           int matLayerLoc = -1; float upMatLayer = -999.0f;
                            // Versions of the constant arrays last uploaded to this
                            // program — constants change per material/pass, not per
                            // draw, so most of the per-draw glUniform4fv pairs (the

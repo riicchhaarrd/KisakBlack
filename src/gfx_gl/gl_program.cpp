@@ -261,6 +261,7 @@ bool GLDevice::finalizeProgram(LinkedProgram &lp) {
     lp.alphaFuncLoc = KB_glGetUniformLocation(lp.prog, "uAlphaTestFunc");
     lp.alphaRefLoc  = KB_glGetUniformLocation(lp.prog, "uAlphaRef");
     lp.lmLayerLoc   = KB_glGetUniformLocation(lp.prog, "uLmLayer");   // ?lmarray (-1 if shader has no lightmap array)
+    lp.matLayerLoc  = KB_glGetUniformLocation(lp.prog, "uMatLayer");  // ?matarray (-1 if not a mat-array variant)
 #endif
     for (int i = 0; i < kMaxStages; ++i) {
         char name[4]; snprintf(name, sizeof(name), "s%d", i);
@@ -312,7 +313,12 @@ bool GLDevice::useDrawProgram() {
     // instanced attributes. Distinct GL shader id => the program cache links it as its own entry.
     unsigned vsN = g_kbInstActive ? vs_->glShaderInstanced(g_kbInstMatBase, g_kbInstMatCount, g_kbInstLocs)
                                   : vs_->glShader();
-    unsigned psN = ps_->glShader(shadowMask);
+    // ?matarray stage 2b: when a bucketed draw is active, use the variant whose masked
+    // stages sample their bucket arrays at uMatLayer. Distinct GL shader id -> the program
+    // cache (keyed on shader ids) links it as its own entry. Inert until a caller sets the
+    // mask (stage 3); glShaderMat(0,..) falls through to the plain shader.
+    unsigned psN = kbMatArrayMask_ ? ps_->glShaderMat(kbMatArrayMask_, shadowMask)
+                                   : ps_->glShader(shadowMask);
     if (!vsN || !psN) {
         // Engine-supplied shaders degraded to the builtin passthrough: world geometry
         // drawn this way lands at garbage clip coords = INVISIBLE for the frame.
@@ -469,6 +475,7 @@ bool GLDevice::useDrawProgram() {
         int loc = lp.samplerLoc[i];
         if (loc < 0) continue;
         if (lmArray12 && i == 12) continue;   // ?lmarray: unit 12 is the lightmap array (bound below)
+        if ((kbMatArrayMask_ >> i) & 1) continue;   // ?matarray: this stage is a bucket array (bound below)
         // (sampler->unit binding now done once at link, see finalizeProgram)
         if (boundTexName_[i]) {
             // Per-unit cache: rebinding the same texture (the common case inside a
@@ -489,6 +496,19 @@ bool GLDevice::useDrawProgram() {
         if (lp.lmLayerLoc >= 0 && lp.upLmLayer != kbLmLayer_) {
             glUniform1f(lp.lmLayerLoc, kbLmLayer_);
             lp.upLmLayer = kbLmLayer_;
+        }
+    }
+    // ?matarray stage 2b: bind each masked stage's bucket array + set the per-draw layer.
+    if (kbMatArrayMask_) {
+        for (int i = 0; i < kMaxStages; ++i) {
+            if (!((kbMatArrayMask_ >> i) & 1) || lp.samplerLoc[i] < 0 || !kbMatStageTex_[i]) continue;
+            glActiveTexture(GL_TEXTURE0 + i);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, kbMatStageTex_[i]);
+            unitTex_[i] = 0;                     // array bind: invalidate the 2D per-unit cache
+        }
+        if (lp.matLayerLoc >= 0 && lp.upMatLayer != kbMatLayer_) {
+            glUniform1f(lp.matLayerLoc, kbMatLayer_);
+            lp.upMatLayer = kbMatLayer_;
         }
     }
 #endif

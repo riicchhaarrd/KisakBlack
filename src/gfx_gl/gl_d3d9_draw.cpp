@@ -402,6 +402,24 @@ extern "C" void KB_BuildLightmapArrayC(void *dev, void *const *basemaps, int cou
 extern "C" void KB_SetLightmapLayerC(void *dev, int layer) {
     static_cast<GLDevice *>(reinterpret_cast<IDirect3DDevice9 *>(dev))->KB_SetLightmapLayer(layer);
 }
+
+// ?matarray stage 2b bridge (driven by stage 3): set the active bucketed-draw state, or
+// clear it (mask 0). stageTex[i] is the GL_TEXTURE_2D_ARRAY for stage i (only masked stages
+// read). The next useDrawProgram picks the mat-array PS variant, binds these arrays, and
+// sets uMatLayer; pass mask 0 after the bucketed run to return to plain draws.
+void GLDevice::KB_SetMatArrayDraw(unsigned mask, float layer, const unsigned *stageTex, int nStages) {
+    kbMatArrayMask_ = mask;
+    kbMatLayer_ = layer;
+    if (mask && stageTex) {
+        int n = nStages < kMaxStages ? nStages : kMaxStages;
+        for (int i = 0; i < n; ++i) kbMatStageTex_[i] = stageTex[i];
+    }
+}
+extern "C" void KB_SetMatArrayDrawC(void *dev, unsigned mask, float layer,
+                                    const unsigned *stageTex, int nStages) {
+    static_cast<GLDevice *>(reinterpret_cast<IDirect3DDevice9 *>(dev))
+        ->KB_SetMatArrayDraw(mask, layer, stageTex, nStages);
+}
 #endif
 
 namespace {
