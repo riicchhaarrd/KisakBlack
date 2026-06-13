@@ -239,6 +239,18 @@
             Module.arguments.push('+set', 'r_picmip_manual', '1', '+set', 'r_picmip', '0',
               '+set', 'r_picmip_bump', '0', '+set', 'r_picmip_spec', '0', '+set', 'r_picmip_water', '0');
           }
+          // Specular-intensity bisect (ISSUES.txt "spec INTENSITY too high on SOME surfaces"):
+          // the engine's own override replaces every material's envMapParms globally.
+          //   ?nospec=1     -> kill environment-map specular entirely (is envmap the culprit at all?)
+          //   ?envmax=N     -> r_envMapOverride with max intensity N (try 0.5, 0.25; default max is ~?)
+          //   ?envexp=N     -> override exponent (with ?envmax)
+          if (q.get('nospec') === '1') Module.arguments.push('+set', 'r_envMapSpecular', '0');
+          { var em = q.get('envmax');
+            if (em && /^[\d.]+$/.test(em)) {
+              Module.arguments.push('+set', 'r_envMapOverride', '1', '+set', 'r_envMapMaxIntensity', em);
+              var ee = q.get('envexp');
+              if (ee && /^[\d.]+$/.test(ee)) Module.arguments.push('+set', 'r_envMapExponent', ee);
+            } }
           if (q.get('perfms') === '1')   ENV.KB_PERFMS = '1';    // [perf/ms] frame split
           if (q.has('perflog'))          ENV.KB_PERFLOG = '1';   // enable ALL periodic diagnostics ([perf/*], [heartbeat]); default = quiet console
           if (q.has('kbprof'))           ENV.KB_KBPROF = '1';   // [kbprof] per-thread self-time profiler (parse on main thread; workers can't see location.search)
