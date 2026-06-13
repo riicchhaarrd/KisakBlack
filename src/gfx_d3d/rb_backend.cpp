@@ -1705,6 +1705,7 @@ unsigned long g_kbTrArrayable = 0;
 // ...of which the two materials also share identical local constants -> mergeable with JUST the
 // per-instance layer (step 2 as planned). The rest would need per-instance constants too.
 unsigned long g_kbTrArrSameConst = 0;
+extern "C" int KB_MatArrayLevelC();   // ?matarray level (r_draw_bsp.cpp): 3 gates the 3b skip
 #endif
 
 unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *listArgs, GfxCmdBufContext prepassContext)
@@ -1735,6 +1736,8 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
     ScopedShaderConstantSetUndo shaderConstantUndo(listArgs->context.source, v3); // [esp+30h] [ebp-98h] BYREF
     //ScopedShaderConstantSetUndo::ScopedShaderConstantSetUndo(&shaderConstantUndo, listArgs->context.source, v3);
 
+    bool kbEquivToPrev = false;   // ?matarray=3 stage 3b: this material's per-pass setup is
+                                  // redundant with the previous (skip the stable-args walk)
     if ( R_SetTechnique(listArgs->context, &prepassContext, listArgs->info, drawSurf) )
     {
 #if defined(__EMSCRIPTEN__)
@@ -1786,11 +1789,9 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                     if ( arr )
                     {
                         ++g_kbTrArrayable;
-                        // Step-2 correctness probe: an arrayable boundary is LAYER-ONLY
-                        // mergeable (one merged draw, per-instance layer, shared uploaded
-                        // constants) iff the two materials' LOCAL CONSTANT tables are identical.
-                        // If they differ, merging needs per-instance constants (a much bigger
-                        // subsystem). arrSameConst sizes the layer-only-correct population.
+                        // An arrayable boundary is LAYER-ONLY mergeable / setup-skippable iff the
+                        // two materials' LOCAL CONSTANT tables are identical (else they'd need
+                        // per-instance constants). arrSameConst sizes that population.
                         extern unsigned long g_kbTrArrSameConst;
                         bool sameC = kbM->constantCount == kbPrevMatPtr->constantCount;
                         for ( unsigned int ci = 0; sameC && ci < kbM->constantCount; ++ci )
@@ -1803,8 +1804,20 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                         }
                         if ( sameC )
                             ++g_kbTrArrSameConst;
+                        // Stage 3b skip: a NEW material that is arrayable + same constants AND under
+                        // the SAME light (the light/sun code consts live in the stable args; a light
+                        // change must re-upload them) is setup-equivalent to the previous -> its
+                        // stable-args walk is all no-ops, skip it. The first material of a run isn't
+                        // equivalent (prev differs) so it sets up fully.
+                        if ( sameC && kbLight == kbPrevLight )
+                            kbEquivToPrev = true;
                     }
                 }
+            }
+            else if ( kbLight == kbPrevLight )
+            {
+                // Same material AND same light = fully redundant per-pass setup -> skippable.
+                kbEquivToPrev = true;
             }
             kbPrevMat = kbMat; kbPrevLight = kbLight; kbPrevTech = kbTech; kbPrevMatPtr = kbM;
         }
@@ -1825,10 +1838,19 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
         passPrepassContext = prepassContext.source;
         subListCount = 0;
         passCount = listArgs->context.state->technique->passCount;
+#if defined(__EMSCRIPTEN__)
+        // ?matarray=3 stage 3b: the stable-args skip is correct ONLY at level 3, where the
+        // material's textures are shared bucket arrays (so a skipped sampler/constant upload is
+        // a guaranteed no-op for a run-equivalent material). Never skip the prepass pass.
+        { static int lv = -2; if (lv == -2) lv = KB_MatArrayLevelC();
+          if (lv < 3) kbEquivToPrev = false; }
+#else
+        kbEquivToPrev = false;
+#endif
         for ( passIndex = 0; passIndex < passCount; ++passIndex )
         {
             R_UpdateMaterialTime(listArgs->context.source, 0.0, 0.0, 0.0, 0.0);
-            R_SetupPass(listArgs->context, passIndex);
+            R_SetupPass(listArgs->context, passIndex, kbEquivToPrev);
             if ( passIndex || !prepassContext.state )
             {
                 passPrepassContext_4 = 0;

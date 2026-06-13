@@ -1046,7 +1046,7 @@ void __cdecl R_SetVertexShader(GfxCmdBufState *state, const MaterialVertexShader
     }
 }
 
-void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex)
+void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex, bool skipStableArgs)
 {
     PROF_SCOPED("R_SetupPass");
 
@@ -1076,7 +1076,12 @@ void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex)
     stateBits[1] = refStateBits->loadBits[1];
     R_SetState(context.state, stateBits);
     R_SetPixelShader(context.state, pass->pixelShader);
-    if ( pass->stableArgCount )
+    // ?matarray=3 stage 3b: skip the stable-args walk for a run-equivalent material — every
+    // upload (constants equal, textures shared arrays, code consts global) would be a no-op,
+    // so skipping just removes the wasted per-material CPU. R_SetState/R_SetPixelShader above
+    // still run (cheap, internally redundancy-checked), and context.state->pass is set, so the
+    // tess + R_MatArrayBindForBatch (per-material layer) downstream are unaffected.
+    if ( !skipStableArgs && pass->stableArgCount )
     {
         PROF_SCOPED("stable args")   // shader-constant upload per pass — splits R_SetupPass self
         R_SetPassShaderStableArguments(context, pass->stableArgCount, &pass->localArgs[pass->perPrimArgCount + pass->perObjArgCount]);
