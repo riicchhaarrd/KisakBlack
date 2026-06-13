@@ -307,6 +307,22 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
         }
         offsets = kbOffs.data(); baseVerts = kbBases.data();
     }
+    // ?matarray=3 (stage 3b): bind the per-instance material layer attribute around this call's
+    // draws. STEP 1 = one layer for the whole call (a 1-float buffer; every sub-draw reads
+    // element 0 via divisor 1 -> renders like the =2 uniform parity, proving the
+    // attr->varying->PS chain). STEP 2 will upload per-entry layers + baseInstance=i. Lifecycle
+    // is contained here (enable -> draw -> disable + reset divisor), mirroring flushInstanceRun,
+    // so no VAO/divisor leak to other draws. kbMatLayerLoc_ was set by useDrawProgram above.
+    bool kbMatLayerOn = (kbMatArrayMask_ && kbMatLayerLoc_ >= 0);
+    if (kbMatLayerOn) {
+        if (!kbMatLayerVbo_) glGenBuffers(1, &kbMatLayerVbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, kbMatLayerVbo_);
+        float lay = kbMatLayer_;
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float), &lay, GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(kbMatLayerLoc_);
+        glVertexAttribPointer(kbMatLayerLoc_, 1, GL_FLOAT, GL_FALSE, 0, (const void *)0);
+        glVertexAttribDivisor(kbMatLayerLoc_, 1);
+    }
     // ?wmtier: force the submission tier for A/B. 0=multi-draw ext, 1=per-entry baseVertex
     // ext, 2=CPU index-merge into ONE plain draw. Default: best available (0 > 1 > 2).
     // Tier 2 is always valid (every IB keeps a CPU shadow) — it trades per-entry GL calls
@@ -354,6 +370,10 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, merged.size() * sizeof(unsigned), merged.data(), GL_STREAM_DRAW);
         glDrawElements(GL_TRIANGLES, (GLsizei)merged.size(), GL_UNSIGNED_INT, nullptr);
         if (curVaoEnt_) curVaoEnt_->elem = scratch;   // scratch bind landed in the current VAO
+    }
+    if (kbMatLayerOn) {   // ?matarray=3: tear down the layer attr (no VAO/divisor leak)
+        glDisableVertexAttribArray(kbMatLayerLoc_);
+        glVertexAttribDivisor(kbMatLayerLoc_, 0);
     }
 #else
     (void)counts; (void)offsets; (void)baseVerts;   // native path unused (engine gates ?worldmerge2 to web)

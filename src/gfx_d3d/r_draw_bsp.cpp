@@ -832,6 +832,7 @@ static int R_MatArrayLevel()
     return g_kbMatArrayEnable;
 }
 static bool R_MatArrayEnabled() { return R_MatArrayLevel() > 0; }
+extern "C" int KB_MatArrayLevelC() { return R_MatArrayLevel(); }   // GL layer queries the level
 // GPU-memory ceiling for the bucket arrays (extra VRAM beyond the originals). A heavy map could
 // otherwise OOM the GPU process now that parity is default-on; over the cap, stay plain (logged).
 static const unsigned long long KB_MATARRAY_CAP_MB = 320;

@@ -8,6 +8,7 @@
 #include <GL/glew.h>
 extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
 extern "C" void KB_FlushTagged(int cause); // same, +flush-cause telemetry
+extern "C" int  KB_MatArrayLevelC();     // ?matarray level (r_draw_bsp.cpp): 3 = instanced layer
 
 #include <cstdio>
 #include <cstring>
@@ -313,11 +314,29 @@ bool GLDevice::useDrawProgram() {
     // instanced attributes. Distinct GL shader id => the program cache links it as its own entry.
     unsigned vsN = g_kbInstActive ? vs_->glShaderInstanced(g_kbInstMatBase, g_kbInstMatCount, g_kbInstLocs)
                                   : vs_->glShader();
-    // ?matarray stage 2b: when a bucketed draw is active, use the variant whose masked
-    // stages sample their bucket arrays at uMatLayer. Distinct GL shader id -> the program
-    // cache (keyed on shader ids) links it as its own entry. Inert until a caller sets the
-    // mask (stage 3); glShaderMat(0,..) falls through to the plain shader.
-    unsigned psN = kbMatArrayMask_ ? ps_->glShaderMat(kbMatArrayMask_, shadowMask)
+    // ?matarray: when a bucketed draw is active, use the variant whose masked stages sample their
+    // bucket arrays. Level 2 = uMatLayer uniform (parity, default). Level 3 = per-instance layer:
+    // PS reads vMatLayer (flat varying), VS carries it from an instanced attr at a free decl slot
+    // (KB_DrawWorldMulti binds the buffer + sets baseInstance). Distinct shader ids -> the program
+    // cache links each combo independently.
+    static int s_matLevel = -2;
+    if (s_matLevel == -2) s_matLevel = KB_MatArrayLevelC();
+    bool matInstanced = false;
+    kbMatLayerLoc_ = -1;
+    if (kbMatArrayMask_ && s_matLevel >= 3 && !g_kbInstActive) {   // (?inst owns vsN when active)
+        bool used[16] = {};
+        if (decl_) for (const D3DVERTEXELEMENT9 &e : decl_->elements()) {
+            int l = GLAttribLocation(e.Usage, e.UsageIndex); if (l >= 0 && l < 16) used[l] = true;
+        }
+        int loc = -1;
+        for (int l = 15; l >= 0; --l) if (!used[l]) { loc = l; break; }
+        if (loc >= 0) {
+            unsigned vsL = vs_->glShaderMatLayer(loc);
+            if (vsL) { vsN = vsL; kbMatLayerLoc_ = loc; matInstanced = true; }
+        }
+        // No free slot or VS variant failed -> fall through to the level-2 uniform path below.
+    }
+    unsigned psN = kbMatArrayMask_ ? ps_->glShaderMat(kbMatArrayMask_, shadowMask, matInstanced)
                                    : ps_->glShader(shadowMask);
     if (!vsN || !psN) {
         // Engine-supplied shaders degraded to the builtin passthrough: world geometry

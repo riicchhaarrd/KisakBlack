@@ -171,6 +171,11 @@ struct Ctx {
         return emitES && ((matArrayMask >> sN) & 1) && !((shadowMask >> sN) & 1) && !lmA(sN)
             && (samplerDim.count(sN) ? samplerDim.at(sN) : 2) == 2;
     }
+    // ?matarray=3 (stage 3b): deliver the layer as a per-instance flat varying (vMatLayer, fed by
+    // the VS instanced attribute) instead of the uniform uMatLayer — lets one merged multi-draw
+    // carry a different layer per sub-draw via baseInstance. Level 2 keeps the uniform.
+    bool matLayerInstanced = false;
+    const char *matLayerVar() const { return matLayerInstanced ? "vMatLayer" : "uMatLayer"; }
     std::map<int, std::pair<int,int>> inputs;   // reg -> (usage, usageIndex)
     std::map<int, std::pair<int,int>> outputs;  // reg -> (usage, usageIndex)  (vertex)
     std::set<int> samplers;
@@ -325,9 +330,9 @@ void emitInstr(Ctx &c, int op, const Operand *src, int nsrc, const Operand &dst,
                 // (lit lightmap lookups are plain 2D fetches — never projective/biased here.)
                 expr = "texture(" + samp + ", vec3((" + s(0) + ").xy, uLmLayer))";
             } else if (c.matA(sreg)) {
-                // ?matarray stage 2: material stage rides its bucket's texture array; the
-                // per-draw layer (this material's index in the bucket) comes via uMatLayer.
-                expr = "texture(" + samp + ", vec3((" + s(0) + ").xy, uMatLayer))";
+                // ?matarray stage 2/3: material stage rides its bucket's texture array; the
+                // per-draw layer comes via uMatLayer (uniform, =2) or vMatLayer (per-instance, =3).
+                expr = "texture(" + samp + ", vec3((" + s(0) + ").xy, " + c.matLayerVar() + "))";
             } else if (ctrl == 1) {
                 expr = std::string(c.emitES ? "textureProj" : "texture2DProj") + "(" + samp + ", " + s(0) + ")";
             } else {
@@ -453,6 +458,9 @@ unsigned KB_LmArrayMask() {
 // translate path — the GL thread). 0 = plain translation.
 static unsigned g_kbMatTranslateMask = 0;
 extern "C" void KB_SetMatArrayTranslateMask(unsigned mask) { g_kbMatTranslateMask = mask; }
+// ?matarray=3: when set, the PS matarray variant emits the layer as a flat varying (vMatLayer)
+// rather than the uMatLayer uniform. Set around the translate by glShaderMat's instanced path.
+static bool s_matInstancedTranslate = false;
 
 bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
                          unsigned shadowSamplerMask, unsigned *outSamplerMask) {
@@ -466,6 +474,7 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
     c.shadowMask = shadowSamplerMask;
     if (c.isPixel) c.lmArrayMask = KB_LmArrayMask();   // lightmaps are sampled in the pixel shader
     if (c.isPixel) c.matArrayMask = g_kbMatTranslateMask;   // ?matarray stage-2 variant (0 = plain)
+    if (c.isPixel) c.matLayerInstanced = s_matInstancedTranslate;   // ?matarray=3 per-instance layer
     if (outIsPixel) *outIsPixel = c.isPixel;
 
     std::ostringstream body;
@@ -588,7 +597,10 @@ bool TranslateD3D9Shader(const DWORD *tok, std::string &out, bool *outIsPixel,
                 o << "precision highp sampler2DArray;\n";
             }
             if (anyLmArray)  o << "uniform float uLmLayer;\n";    // per-draw lightmap page (state layer)
-            if (anyMatArray) o << "uniform float uMatLayer;\n";   // per-draw bucket layer (?matarray stage 2)
+            if (anyMatArray) {
+                if (c.matLayerInstanced) o << "flat in float vMatLayer;\n";   // ?matarray=3 per-instance layer (from VS)
+                else                     o << "uniform float uMatLayer;\n";   // ?matarray=2 per-draw bucket layer
+            }
             for (int sN : c.samplers)
             {
                 int dim = c.samplerDim.count(sN) ? c.samplerDim.at(sN) : 2;
@@ -886,6 +898,27 @@ unsigned GLVertexShader::glShaderInstanced(unsigned matBase, int matCount, const
     instVariants_[key] = sh;
     return sh;
 }
+// ?matarray=3: VS variant that carries the per-instance material layer to the PS. Injects an
+// instanced float attribute at `loc` (the caller's free decl slot) + a flat varying, and the
+// passthrough assignment at the top of main(). Cached per loc. Pairs with the PS instanced
+// matarray variant (vMatLayer) and the layer attribute bound in KB_DrawWorldMulti.
+unsigned GLVertexShader::glShaderMatLayer(int loc) {
+    if (!translatedOk_ || loc < 0) return 0;
+    auto it = matLayerVariants_.find(loc);
+    if (it != matLayerVariants_.end()) return it->second;
+    std::string src = glsl_;
+    size_t nl = src.find('\n');
+    if (nl == std::string::npos) { matLayerVariants_[loc] = 0; return 0; }
+    src.insert(nl + 1, "layout(location=" + std::to_string(loc) + ") in float aMatLayer;\n"
+                       "flat out float vMatLayer;\n");
+    size_t mb = src.find("void main()");
+    size_t br = (mb != std::string::npos) ? src.find('{', mb) : std::string::npos;
+    if (br == std::string::npos) { matLayerVariants_[loc] = 0; return 0; }
+    src.insert(br + 1, "\n  vMatLayer = aMatLayer;");
+    unsigned sh = compileGL(GL_VERTEX_SHADER, src, "vertex shader (matlayer)");
+    matLayerVariants_[loc] = sh;
+    return sh;
+}
 GLVertexShader::~GLVertexShader() { if (shader_) glDeleteShader(shader_); }
 HRESULT WINAPI GLVertexShader::GetDevice(IDirect3DDevice9 **pp) { if (!pp) return E_INVALIDARG; *pp = device_; if (device_) device_->AddRef(); return D3D_OK; }
 
@@ -932,20 +965,26 @@ unsigned GLPixelShader::glShader(unsigned shadowMask) {
     }
     return v.gl;
 }
-unsigned GLPixelShader::glShaderMat(unsigned matMask, unsigned shadowMask) {
+unsigned GLPixelShader::glShaderMat(unsigned matMask, unsigned shadowMask, bool instanced) {
     matMask &= samplerMask_;             // only samplers this shader actually reads
     if (matMask == 0 || func_.empty())
         return glShader(shadowMask);
-    Variant &v = matVariants_[((unsigned long long)matMask << 32) | (shadowMask & samplerMask_)];
+    // Key includes the instanced bit so the =2 (uniform) and =3 (per-instance) variants cache
+    // separately. matMask fits in 16 bits (sampler regs) so bit 31 is free for the flag.
+    unsigned long long key = ((unsigned long long)(matMask | (instanced ? 0x80000000u : 0u)) << 32)
+                           | (shadowMask & samplerMask_);
+    Variant &v = matVariants_[key];
     if (kbCompileGate(v.gl, v.tries, v.lastPres)) {
         v.lastPres = g_kbPresentEnter;
-        // Retranslate with matMask's stages typed sampler2DArray (layer = uMatLayer) on top
-        // of any shadow typing — the pending-mask global (defined above) routes it into
-        // the translator.
+        // Retranslate with matMask's stages typed sampler2DArray (layer = uMatLayer uniform, or
+        // the vMatLayer flat varying when instanced) on top of any shadow typing — the pending
+        // globals (defined above) route it into the translator.
         KB_SetMatArrayTranslateMask(matMask);
+        s_matInstancedTranslate = instanced;
         std::string glsl; bool isPix = false;
         bool ok = TranslateD3D9Shader(func_.data(), glsl, &isPix, shadowMask) && isPix;
         KB_SetMatArrayTranslateMask(0);
+        s_matInstancedTranslate = false;
         if (ok)
             v.gl = compileGL(GL_FRAGMENT_SHADER, glsl, "pixel shader (matarray variant)");
         v.tries = v.gl ? 0 : v.tries + 1;

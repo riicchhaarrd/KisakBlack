@@ -61,6 +61,9 @@ public:
     // constant array, so many copies of this mesh draw in ONE glDrawElementsInstanced. Same
     // bytecode-derived GLSL, textually rewired + recompiled, cached per (matBase,matCount,locs).
     unsigned glShaderInstanced(unsigned matBase, int matCount, const int *locs);
+    // ?matarray=3: variant carrying the per-instance material layer (instanced attr at `loc` ->
+    // flat varying vMatLayer). Cached per loc. loc 0 falls through to nothing (returns 0).
+    unsigned glShaderMatLayer(int loc);
     bool ok() const { return translatedOk_; }
     const std::string &glsl() const { return glsl_; }
 private:
@@ -71,6 +74,7 @@ private:
     bool              translatedOk_ = false;
     std::string       glsl_;
     std::map<unsigned long long, unsigned> instVariants_;   // (matBase<<32|matCount<<24|loc0) -> GL shader
+    std::map<int, unsigned> matLayerVariants_;              // ?matarray=3: loc -> GL shader
 };
 
 class GLPixelShader final : public GLObject<IDirect3DPixelShader9> {
@@ -89,7 +93,7 @@ public:
     // sampling layer uMatLayer (the material's bucket layer). Cached per (matMask,
     // shadowMask); matMask 0 falls through to glShader(shadowMask). Default-inert —
     // nothing calls this until the stage-3 bind plumbing lands.
-    unsigned glShaderMat(unsigned matMask, unsigned shadowMask);
+    unsigned glShaderMat(unsigned matMask, unsigned shadowMask, bool instanced = false);
     bool ok() const { return translatedOk_; }
 private:
     IDirect3DDevice9 *device_;

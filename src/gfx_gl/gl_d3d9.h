@@ -224,6 +224,8 @@ private:
     unsigned kbMatArrayMask_        = 0;     // stages riding bucket arrays this draw (0 = none)
     float    kbMatLayer_            = 0.0f;  // this material's layer in its bucket (-> uMatLayer)
     unsigned kbMatStageTex_[kMaxStages] = {}; // per-stage GL_TEXTURE_2D_ARRAY name
+    int      kbMatLayerLoc_         = -1;    // ?matarray=3: free decl attr slot for the layer (set in useDrawProgram)
+    unsigned kbMatLayerVbo_         = 0;     // ?matarray=3: 1-float instanced layer buffer
 
     // Redundant-state elimination (WebGL hates per-draw state changes; each is a marshaled
     // call on the proxied context). curProgram_ skips redundant glUseProgram; rsCache_/rsSet_
