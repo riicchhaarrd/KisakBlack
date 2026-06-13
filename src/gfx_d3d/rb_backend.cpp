@@ -1698,6 +1698,10 @@ unsigned long g_kbTrBatches = 0, g_kbTrSameMatDiffLight = 0, g_kbTrSameMatDiffTe
 // batches differ only in textures/constants — the population a texture-array material
 // consolidation (uber-batch per technique+light run) could merge. Sizes that lever.
 unsigned long g_kbTrDiffMatSameTech = 0;
+// And of THOSE, how many are actually array-compatible: same per-stage sampler slots with
+// matching texture dims/mips (texture arrays require uniform layer geometry). Dims+mips is a
+// PROXY (format not reachable engine-side) — slight over-count if DXT1/DXT5 mix at same dims.
+unsigned long g_kbTrArrayable = 0;
 #endif
 
 unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *listArgs, GfxCmdBufContext prepassContext)
@@ -1752,14 +1756,35 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                     else                        ++g_kbTrSameMatDiffTech;
                 }
             }
-            else
+            static const Material *kbPrevMatPtr = 0;
+            const Material *kbM = listArgs->context.state->material;
+            if ( kbMat != kbPrevMat )
             {
-                extern unsigned long g_kbTrDiffMatSameTech;
+                extern unsigned long g_kbTrDiffMatSameTech, g_kbTrArrayable;
                 ++g_kbTrDiffMat;
                 if ( kbTech == kbPrevTech )
+                {
                     ++g_kbTrDiffMatSameTech;
+                    bool arr = kbM && kbPrevMatPtr && kbM->textureCount == kbPrevMatPtr->textureCount;
+                    for ( unsigned int ti = 0; arr && ti < kbM->textureCount; ++ti )
+                    {
+                        const MaterialTextureDef *ta = &kbM->textureTable[ti];
+                        const MaterialTextureDef *tb = &kbPrevMatPtr->textureTable[ti];
+                        arr = ta->nameHash == tb->nameHash && ta->semantic == tb->semantic
+                           && ta->samplerState == tb->samplerState
+                           && ta->semantic != 11;   // 11 = water (u.water, not an image)
+                        if ( arr )
+                        {
+                            const GfxImage *ia = ta->u.image, *ib = tb->u.image;
+                            arr = ia && ib && ia->width == ib->width && ia->height == ib->height
+                               && ia->levelCount == ib->levelCount && ia->mapType == ib->mapType;
+                        }
+                    }
+                    if ( arr )
+                        ++g_kbTrArrayable;
+                }
             }
-            kbPrevMat = kbMat; kbPrevLight = kbLight; kbPrevTech = kbTech;
+            kbPrevMat = kbMat; kbPrevLight = kbLight; kbPrevTech = kbTech; kbPrevMatPtr = kbM;
         }
 #endif
         R_SetPixPrimarySortKey(listArgs->context.state, (drawSurf.packed >> 58) & 0x3F);
