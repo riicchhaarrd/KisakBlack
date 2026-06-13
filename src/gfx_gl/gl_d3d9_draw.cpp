@@ -291,6 +291,8 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
         if (curVaoEnt_) curVaoEnt_->elem = elem;
     }
     GLenum idxType = (ib_->format() == D3DFMT_INDEX16) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+    // Raw (engine, buffer-relative) inputs — the CPU-merge tier reads the IB shadow with these.
+    const void *const *rawOffs = offsets; const int *rawBases = baseVerts;
     // ?vbarena: the engine's inputs are buffer-relative — bias index byte offsets by the
     // IB placement and baseVertex by the stream-0 fold (zero when multi-stream: the
     // un-fold above moved the placement into the VAO offset).
@@ -305,28 +307,38 @@ void GLDevice::KB_DrawWorldMulti(const int *counts, const void *const *offsets, 
         }
         offsets = kbOffs.data(); baseVerts = kbBases.data();
     }
-    if (g_kbHasMultiDraw == 1) {
+    // ?wmtier: force the submission tier for A/B. 0=multi-draw ext, 1=per-entry baseVertex
+    // ext, 2=CPU index-merge into ONE plain draw. Default: best available (0 > 1 > 2).
+    // Tier 2 is always valid (every IB keeps a CPU shadow) — it trades per-entry GL calls
+    // for an index upload, which can win where the instanced-baseVertex entry is slow.
+    static int wmTierEnv = -2;
+    if (wmTierEnv == -2) { const char *e = getenv("KB_WMTIER"); wmTierEnv = e ? atoi(e) : -1; }
+    int tier = wmTierEnv;
+    if (tier == 0 && g_kbHasMultiDraw != 1) tier = -1;
+    if (tier == 1 && g_kbHasBaseVertexExt != 1) tier = -1;
+    if (tier < 0 || tier > 2) tier = (g_kbHasMultiDraw == 1) ? 0 : (g_kbHasBaseVertexExt == 1 ? 1 : 2);
+    if (tier == 0) {
         static std::vector<GLsizei> inst; static std::vector<GLuint> binst;
         if ((int)inst.size() < n) { inst.assign(n, 1); binst.assign(n, 0); }
         glMultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL(
             GL_TRIANGLES, counts, idxType, offsets, inst.data(), baseVerts, binst.data(), n);
-    } else if (g_kbHasBaseVertexExt == 1) {
+    } else if (tier == 1) {
         for (int i = 0; i < n; ++i)
             kbDrawElementsBV(GL_TRIANGLES, counts[i], idxType, offsets[i], baseVerts[i]);
     } else {
-        // NEITHER extension (headless Chromium): the core glDrawElementsBaseVertex stub drops
-        // the base, so rebase on CPU from the IB shadow into ONE u32 draw from a scratch IB —
-        // the batch flush's merge trick. Validation-grade speed; never taken where an ext
-        // exists. ?vbarena gates on the base-vertex ext, so offsets/baseVerts here are
-        // buffer-relative (kbIbBias=kbVBias=0) and match the shadow's addressing.
+        // CPU INDEX MERGE: rebase from the IB shadow into ONE u32 draw from a scratch IB —
+        // the batch flush's merge trick. Reads the RAW buffer-relative offsets (the shadow
+        // has no arena bias); each index adds rawBase + kbVBias so the fetch matches the
+        // biased GPU path: folded single-stream attribs sit at chunk offset 0 (fold rides
+        // the index), un-folded multi-stream attribs carry their full offsets (kbVBias=0).
         static std::vector<unsigned> merged;
         merged.clear();
         size_t total = 0; for (int i = 0; i < n; ++i) total += (size_t)counts[i];
         merged.reserve(total);
         const unsigned char *src = ib_->shadowData();
         for (int i = 0; i < n; ++i) {
-            size_t off = (size_t)offsets[i];
-            GLint bv = baseVerts[i];
+            size_t off = (size_t)rawOffs[i];
+            GLint bv = rawBases[i] + kbVBias;
             GLsizei cnt = counts[i];
             if (idxType == GL_UNSIGNED_SHORT) {
                 const unsigned short *p = (const unsigned short *)(src + off);

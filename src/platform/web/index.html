@@ -257,6 +257,7 @@
           if (q.has('novbarena'))        ENV.KB_NOVBARENA = '1';     // disable the arena (escape hatch)
           if (q.has('nosminst'))         ENV.KB_NOSMINST = '1';      // disable the smodel instanced fast path (escape hatch)
           if (q.has('nolitmerge'))       ENV.KB_NOLITMERGE = '1';    // disable the lit-world multi-draw merge (escape hatch)
+          if (q.get('wmtier'))           ENV.KB_WMTIER = q.get('wmtier'); // world-merge submit tier A/B: 0=multidraw 1=per-entry-bv 2=cpu-merge
           if (q.has('lmarray'))          ENV.KB_LMARRAY = '1';       // lit-world lightmap texture array (stage 1 parity test)
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)
