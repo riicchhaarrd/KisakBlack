@@ -20,6 +20,9 @@ void R_LmArraySetLayer(unsigned lmapIndex);   // ?lmarray: defined in r_state.cp
 // Lit-world multi-draw merge (?nolitmerge escape) — defined after the worldmerge2 helpers below.
 extern "C" int KB_WorldBaseVertexOK();        // gl_d3d9_draw.cpp: multi-draw or base-vertex ext live
 extern "C" int KB_PerfLogEnabled(void);       // linux_main.cpp: ?perflog=1 diagnostics gate
+extern "C" void KB_SetMatArrayDrawC(void *dev, unsigned mask, float layer,
+                                    const unsigned *stageTex, int nStages);   // gl_d3d9_draw.cpp
+static bool R_MatArrayBindForBatch(GfxCmdBufContext context);   // ?matarray=2 parity (defined below)
 static bool R_LitMergeEnabled();
 static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *primState);
 // [perf/lit] counters (printed once a second in glcontext_sdl.cpp)
@@ -146,10 +149,19 @@ void __cdecl R_DrawBspDrawSurfsLit(
     drawStream.primDrawSurfPos = primDrawSurfPos;
     drawStream.customSamplerFlags = pass->customSamplerFlags;
     drawStream.hasSunDirChanged = context.source->input.data->prim.hasSunDirChanged;
+#if defined(__EMSCRIPTEN__)
+    // ?matarray=2 parity: route this material's stages through its bucket arrays (own layer) for
+    // the duration of its draws; the GL layer picks the array variant + binds. Cleared after.
+    bool kbMatBound = R_MatArrayBindForBatch(context);
+#endif
     if ( prepassContext.state )
         R_DrawTrianglesLit(&drawStream, &context.state->prim, &prepassContext.state->prim);
     else
         R_DrawTrianglesLit(&drawStream, &context.state->prim, 0);
+#if defined(__EMSCRIPTEN__)
+    if ( kbMatBound )
+        KB_SetMatArrayDrawC(context.state->prim.device, 0, 0.0f, 0, 0);   // clear -> next batch plain
+#endif
     context.state->samplerTexture[15] = drawStream.reflectionProbeTexture;
     context.state->samplerTexture[12] = drawStream.lightmapPrimaryTexture;
     context.state->samplerTexture[13] = drawStream.lightmapSecondaryTexture;
@@ -807,13 +819,54 @@ static const void *g_kbMatReportWorld = 0;
 // ?matarray stage-1 outputs (consumed by stages 2-3 in a later build): per-bucket
 // per-stage GL array names + each bucketed material's (bucket, layer).
 extern "C" unsigned KB_BuildMatStageArray(void *const *basemaps, int count);   // gl_resources.cpp
-static std::vector<std::vector<unsigned>> g_kbMatArrayBuckets;
-static std::map<const Material *, std::pair<unsigned, unsigned>> g_kbMatArrayLayer;
-int g_kbMatArrayEnable = -1;
-static bool R_MatArrayEnabled()
+extern "C" void KB_SetMatArrayDrawC(void *dev, unsigned mask, float layer,
+                                    const unsigned *stageTex, int nStages);    // gl_d3d9_draw.cpp
+static std::vector<std::vector<unsigned>> g_kbMatArrayBuckets;   // [bucket][texIdx] = GL array name
+static std::map<const Material *, std::pair<unsigned, unsigned>> g_kbMatArrayLayer;  // mat -> (bucket, layer)
+int g_kbMatArrayEnable = -1;   // level: 0 off, 1 build-only, 2 parity (route bucketed mats -> arrays)
+static int R_MatArrayLevel()
 {
-    if ( g_kbMatArrayEnable < 0 ) { const char *e = getenv("KB_MATARRAY"); g_kbMatArrayEnable = (e && *e == '1') ? 1 : 0; }
-    return g_kbMatArrayEnable != 0;
+    if ( g_kbMatArrayEnable < 0 ) { const char *e = getenv("KB_MATARRAY"); g_kbMatArrayEnable = e ? atoi(e) : 0; }
+    return g_kbMatArrayEnable;
+}
+static bool R_MatArrayEnabled() { return R_MatArrayLevel() > 0; }
+
+// ?matarray=2 PARITY: route a bucketed world material's draws through its bucket's texture
+// arrays sampling its own layer — identical pixels, proving the array/variant/layer/bind path
+// end-to-end before the stage-3b draw-count merge. Computes the REGISTER-space mask from the
+// pass's stable sampler args (arg->dest = sampler register sN; matched texDef -> textureTable
+// index -> the bucket's per-stage array), then drives the GL bridge. mask 0 (non-bucketed or
+// level<2) clears it. Returns true if a bucket bind was set (caller clears after the draws).
+static bool R_MatArrayBindForBatch(GfxCmdBufContext context)
+{
+    IDirect3DDevice9 *dev = context.state->prim.device;
+    if ( R_MatArrayLevel() < 2 )
+        return false;
+    const Material *m = context.state->material;
+    auto it = g_kbMatArrayLayer.find(m);
+    if ( it == g_kbMatArrayLayer.end() ) { KB_SetMatArrayDrawC(dev, 0, 0.0f, 0, 0); return false; }
+    const std::vector<unsigned> &stageArr = g_kbMatArrayBuckets[it->second.first];   // per-texIdx arrays
+    const MaterialPass *pass = context.state->pass;
+    const MaterialShaderArgument *arg = &pass->localArgs[pass->perPrimArgCount + pass->perObjArgCount];
+    unsigned mask = 0, stageTex[16] = {0};
+    const MaterialTextureDef *texDef = m->textureTable;
+    const MaterialTextureDef *texEnd = &m->textureTable[m->textureCount];
+    for ( unsigned i = 0; i < pass->stableArgCount; ++i )
+    {
+        if ( arg[i].type != 2 )   // 2 = material-texture sampler (R_SetPixelSamplerFromMaterial)
+            continue;
+        while ( texDef != texEnd && texDef->nameHash != arg[i].u.codeSampler )
+            ++texDef;             // monotone forward scan, mirrors the bind walk
+        if ( texDef == texEnd )
+            break;
+        unsigned texIdx = (unsigned)(texDef - m->textureTable);
+        unsigned reg = arg[i].dest;
+        unsigned tex = texIdx < stageArr.size() ? stageArr[texIdx] : 0u;
+        if ( tex && reg < 16 ) { mask |= 1u << reg; stageTex[reg] = tex; }
+    }
+    if ( !mask ) { KB_SetMatArrayDrawC(dev, 0, 0.0f, 0, 0); return false; }
+    KB_SetMatArrayDrawC(dev, mask, (float)it->second.second, stageTex, 16);
+    return true;
 }
 static void R_MatArrayReport()
 {
