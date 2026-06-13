@@ -171,6 +171,11 @@ public:
     // ?lmarray: upload this texture's level-0 pixels into one layer of a GL_TEXTURE_2D_ARRAY,
     // using its retained CPU shadow + the same D3D->GL format mapping as a normal 2D upload.
     void      KB_UploadIntoArrayLayer(unsigned arrayTex, int layer);
+    // ?matarray: upload EVERY mip level into a texStorage3D-allocated array layer —
+    // compressed via glCompressedTexSubImage3D (the entry points the lmarray attempt
+    // lacked). Returns false on a missing shadow level. Non-virtual: no layout change.
+    bool      KB_UploadAllLevelsIntoArray(unsigned arrayTex, int layer);
+    UINT      levels() const { return levels_; }
 
 private:
     void createGL();              // glGen + storage/placeholder (GL thread only)

@@ -804,9 +804,22 @@ static bool R_LitMergeEnabled()
 // baseSize = the image's loaded bytes incl. mips, so est-MB ≈ the EXTRA GPU memory the
 // arrays would add (originals must stay for non-bucketed techniques).
 static const void *g_kbMatReportWorld = 0;
+// ?matarray stage-1 outputs (consumed by stages 2-3 in a later build): per-bucket
+// per-stage GL array names + each bucketed material's (bucket, layer).
+extern "C" unsigned KB_BuildMatStageArray(void *const *basemaps, int count);   // gl_resources.cpp
+static std::vector<std::vector<unsigned>> g_kbMatArrayBuckets;
+static std::map<const Material *, std::pair<unsigned, unsigned>> g_kbMatArrayLayer;
+int g_kbMatArrayEnable = -1;
+static bool R_MatArrayEnabled()
+{
+    if ( g_kbMatArrayEnable < 0 ) { const char *e = getenv("KB_MATARRAY"); g_kbMatArrayEnable = (e && *e == '1') ? 1 : 0; }
+    return g_kbMatArrayEnable != 0;
+}
 static void R_MatArrayReport()
 {
-    if ( !rgp.world || g_kbMatReportWorld == (const void *)rgp.world || !KB_PerfLogEnabled() )
+    // Runs for ?perflog=1 (sizing report) and/or ?matarray=1 (stage-1 array build).
+    if ( !rgp.world || g_kbMatReportWorld == (const void *)rgp.world
+        || (!KB_PerfLogEnabled() && !R_MatArrayEnabled()) )
         return;
     g_kbMatReportWorld = rgp.world;
     std::set<const Material *> seen;
@@ -854,10 +867,55 @@ static void R_MatArrayReport()
                 break;
             }
     }
-    fprintf(stderr, "[matarray] world mats=%u buckets>=2: %u covering %u mats, est extra MB=%llu, top layers: %u %u %u %u %u\n",
-            (unsigned)seen.size(), (unsigned)multiBuckets, (unsigned)arrMats,
-            arrBytes >> 20, (unsigned)topLayers[0], (unsigned)topLayers[1],
-            (unsigned)topLayers[2], (unsigned)topLayers[3], (unsigned)topLayers[4]);
+    if ( KB_PerfLogEnabled() )
+        fprintf(stderr, "[matarray] world mats=%u buckets>=2: %u covering %u mats, est extra MB=%llu, top layers: %u %u %u %u %u\n",
+                (unsigned)seen.size(), (unsigned)multiBuckets, (unsigned)arrMats,
+                arrBytes >> 20, (unsigned)topLayers[0], (unsigned)topLayers[1],
+                (unsigned)topLayers[2], (unsigned)topLayers[3], (unsigned)topLayers[4]);
+
+    // ?matarray=1 — STAGE 1 (build-only, nothing consumes the arrays yet): for every
+    // bucket, build one GL_TEXTURE_2D_ARRAY per texture stage and keep the handles +
+    // the material->(bucket,layer) table for stages 2-3 (sampler2DArray variant + merge).
+    if ( R_MatArrayEnabled() )
+    {
+        unsigned built = 0, failedStages = 0, skippedBuckets = 0;
+        g_kbMatArrayBuckets.clear();
+        g_kbMatArrayLayer.clear();
+        static std::vector<void *> basemaps;
+        for ( auto &b : buckets )
+        {
+            size_t layers = b.second.size();
+            if ( layers < 2 )
+                continue;
+            const Material *m0 = b.second[0];
+            std::vector<unsigned> stageTex(m0->textureCount, 0u);
+            bool anyStage = false, bad = false;
+            for ( unsigned int t = 0; t < m0->textureCount && !bad; ++t )
+            {
+                basemaps.clear();
+                for ( size_t i = 0; i < layers; ++i )
+                {
+                    IDirect3DBaseTexture9 *bm = b.second[i]->textureTable[t].u.image
+                        ? b.second[i]->textureTable[t].u.image->texture.basemap : 0;
+                    if ( !bm ) { bad = true; break; }
+                    basemaps.push_back(bm);
+                }
+                if ( bad )
+                    break;
+                unsigned tex = KB_BuildMatStageArray(basemaps.data(), (int)layers);
+                stageTex[t] = tex;
+                if ( tex ) { ++built; anyStage = true; }
+                else ++failedStages;
+            }
+            if ( bad || !anyStage ) { ++skippedBuckets; continue; }
+            unsigned bucketIdx = (unsigned)g_kbMatArrayBuckets.size();
+            g_kbMatArrayBuckets.push_back(stageTex);
+            for ( size_t i = 0; i < layers; ++i )
+                g_kbMatArrayLayer[b.second[i]] = std::make_pair(bucketIdx, (unsigned)i);
+        }
+        fprintf(stderr, "[matarray] STAGE1: %u stage-arrays built (%u stage failures, %u buckets skipped), %u materials mapped\n",
+                built, failedStages, skippedBuckets, (unsigned)g_kbMatArrayLayer.size());
+    }
 }
 
 static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *primState)

@@ -697,6 +697,73 @@ void GLTexture::uploadLevel(UINT Level) {
 // ?lmarray: copy this texture's level-0 pixels into one layer of a GL_TEXTURE_2D_ARRAY, reusing the
 // retained CPU shadow (no readback / renderability needed). Stage 1a = primary lightmap (D3DFMT_L8 ->
 // R8/RED, no swizzle). Secondary G16R16 (s13/s14) will need the RG8 down-convert applied here first.
+#if defined(__EMSCRIPTEN__)
+// ?matarray stage 1: build ONE per-stage GL_TEXTURE_2D_ARRAY for a material bucket.
+// basemaps = each bucket material's IDirect3DBaseTexture9* for this stage (same
+// dims/mips by bucket construction; format verified here — the engine-side proxy can't
+// see it). texStorage3D + per-layer all-level uploads. Returns the GL name, 0 on any
+// mismatch or GL error (caller just skips the bucket stage — build-only, no consumers).
+extern "C" int KB_PerfLogEnabled(void);
+extern "C" void KB_EnsureCtxOnThread();
+extern "C" unsigned KB_BuildMatStageArray(void *const *basemaps, int count) {
+    if (count <= 0 || !basemaps || !basemaps[0]) return 0;
+    KB_EnsureCtxOnThread();
+    IDirect3DBaseTexture9 *b0 = reinterpret_cast<IDirect3DBaseTexture9 *>(basemaps[0]);
+    if (b0->GetType() != D3DRTYPE_TEXTURE) return 0;   // 2D only (no cube/volume stages)
+    GLTexture *t0 = static_cast<GLTexture *>(b0);
+    int blockBytes = 0; unsigned cfmt = D3DCompressedGLFormat(t0->format(), &blockBytes);
+    unsigned internal = cfmt, fmtGL = 0, typeGL = 0; int bpp = 0;
+    if (!cfmt && !D3DToGLFormat(t0->format(), &internal, &fmtGL, &typeGL, &bpp)) return 0;
+    while (glGetError()) {}
+    unsigned tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, (GLsizei)t0->levels(), internal,
+                   (GLsizei)t0->width(), (GLsizei)t0->height(), count);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER,
+                    t0->levels() > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, (GLint)t0->levels() - 1);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    if (glGetError()) { glDeleteTextures(1, &tex); return 0; }
+    for (int i = 0; i < count; ++i) {
+        IDirect3DBaseTexture9 *bi = reinterpret_cast<IDirect3DBaseTexture9 *>(basemaps[i]);
+        GLTexture *ti = (bi && bi->GetType() == D3DRTYPE_TEXTURE) ? static_cast<GLTexture *>(bi) : nullptr;
+        if (!ti || ti->width() != t0->width() || ti->height() != t0->height()
+            || ti->format() != t0->format() || ti->levels() != t0->levels()
+            || !ti->KB_UploadAllLevelsIntoArray(tex, i)) {
+            glDeleteTextures(1, &tex);
+            return 0;
+        }
+    }
+    if (glGetError()) { glDeleteTextures(1, &tex); return 0; }
+    return tex;
+}
+#endif
+
+bool GLTexture::KB_UploadAllLevelsIntoArray(unsigned arrayTex, int layer) {
+    glName();   // ensure uploaded + shadows current
+    int blockBytes = 0; unsigned cfmt = D3DCompressedGLFormat(format_, &blockBytes);
+    unsigned internal = 0, fmtGL = 0, typeGL = 0; int bpp = 0;
+    if (!cfmt && !D3DToGLFormat(format_, &internal, &fmtGL, &typeGL, &bpp))
+        return false;
+    glBindTexture(GL_TEXTURE_2D_ARRAY, arrayTex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    bool ok = true;
+    for (UINT L = 0; L < levels_; ++L) {
+        if (levelShadow_[L].empty()) { ok = false; continue; }
+        UINT w = width_ >> L ? width_ >> L : 1, h = height_ >> L ? height_ >> L : 1;
+        if (cfmt)
+            glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, L, 0, 0, layer, w, h, 1,
+                                      cfmt, (GLsizei)levelShadow_[L].size(), levelShadow_[L].data());
+        else
+            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, L, 0, 0, layer, w, h, 1,
+                            fmtGL, typeGL, levelShadow_[L].data());
+    }
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    return ok;
+}
+
 void GLTexture::KB_UploadIntoArrayLayer(unsigned arrayTex, int layer) {
     glName();   // ensure the GL texture exists; the level-0 CPU shadow persists after upload
     if (levelShadow_.empty() || levelShadow_[0].empty()) return;
