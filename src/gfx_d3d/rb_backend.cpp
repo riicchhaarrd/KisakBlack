@@ -1694,6 +1694,10 @@ void __cdecl R_DrawSurfs(GfxCmdBufContext context, GfxCmdBufState *prepassState,
 // [perf/tr] adjacent-batch transition counters — see the classifier inside
 // R_RenderDrawSurfListMaterial and the printer in gfx_gl/glcontext_sdl.cpp.
 unsigned long g_kbTrBatches = 0, g_kbTrSameMatDiffLight = 0, g_kbTrSameMatDiffTech = 0, g_kbTrDiffMat = 0;
+// Of the real material boundaries, how many keep the SAME technique (= same shaders)? Those
+// batches differ only in textures/constants — the population a texture-array material
+// consolidation (uber-batch per technique+light run) could merge. Sizes that lever.
+unsigned long g_kbTrDiffMatSameTech = 0;
 #endif
 
 unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *listArgs, GfxCmdBufContext prepassContext)
@@ -1750,7 +1754,10 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
             }
             else
             {
+                extern unsigned long g_kbTrDiffMatSameTech;
                 ++g_kbTrDiffMat;
+                if ( kbTech == kbPrevTech )
+                    ++g_kbTrDiffMatSameTech;
             }
             kbPrevMat = kbMat; kbPrevLight = kbLight; kbPrevTech = kbTech;
         }

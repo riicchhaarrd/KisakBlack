@@ -68,6 +68,7 @@ extern int g_kbHasMultiDraw;                              // multi-draw ext avai
 extern int g_kbHasBaseVertexExt;                          // single-draw base-vertex ext (kbDrawElementsBV / ?vbarena gate)
 // [perf/tr] adjacent-batch transition counters (rb_backend.cpp R_RenderDrawSurfListMaterial)
 extern unsigned long g_kbTrBatches, g_kbTrSameMatDiffLight, g_kbTrSameMatDiffTech, g_kbTrDiffMat;
+extern unsigned long g_kbTrDiffMatSameTech;   // texture-array consolidation candidates
 // [perf/lit] lit-world multi-draw merge counters (r_draw_bsp.cpp) — file scope: a block-scope
 // extern inside the anon-namespace class would declare (anonymous namespace)::g_kbLit* (link error)
 extern unsigned long g_kbLitSurfs, g_kbLitDraws, g_kbLitFlushes, g_kbLitS2Fallback, g_kbLitBailStock;
@@ -113,7 +114,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: H17 (H16 + ?wmtier submit-tier A/B + vbarena-correct CPU-merge tier)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: H18 (H17 + [perf/tr] matChange sameTech split — texture-array consolidation sizing)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -517,12 +518,13 @@ public:
             // only light constants differ) vs need a shader change vs are real
             // material boundaries — sizes the cross-light batch-merge lever.
             {
-                static unsigned long tb0 = 0, tl0 = 0, tt0 = 0, tm0 = 0;
-                fprintf(stderr, "[perf/tr] batches=%lu mergeable(sameMat+light)=%lu techChange=%lu matChange=%lu\n",
+                static unsigned long tb0 = 0, tl0 = 0, tt0 = 0, tm0 = 0, ts0 = 0;
+                fprintf(stderr, "[perf/tr] batches=%lu mergeable(sameMat+light)=%lu techChange=%lu matChange=%lu(sameTech=%lu)\n",
                         (g_kbTrBatches - tb0) / frames, (g_kbTrSameMatDiffLight - tl0) / frames,
-                        (g_kbTrSameMatDiffTech - tt0) / frames, (g_kbTrDiffMat - tm0) / frames);
+                        (g_kbTrSameMatDiffTech - tt0) / frames, (g_kbTrDiffMat - tm0) / frames,
+                        (g_kbTrDiffMatSameTech - ts0) / frames);
                 tb0 = g_kbTrBatches; tl0 = g_kbTrSameMatDiffLight;
-                tt0 = g_kbTrSameMatDiffTech; tm0 = g_kbTrDiffMat;
+                tt0 = g_kbTrSameMatDiffTech; tm0 = g_kbTrDiffMat; ts0 = g_kbTrDiffMatSameTech;
             }
             // [perf/lit] lit-world multi-draw merge (r_draw_bsp.cpp): surfs accumulated, entries
             // submitted, multi-draw submissions (~texture runs), per-surface fallbacks (stream2 /
