@@ -6,6 +6,7 @@
 #include "r_dvars.h"
 #include "r_shade.h"
 #include "r_buffers.h"   // R_AllocStaticIndexBuffer/R_FinishStaticIndexBuffer (static world IB)
+#include <xanim/xmodel.h>   // XModel fields (numsurfs/materialHandles) for the model-matarray sizing report
 #include <string.h>
 #include <stdio.h>
 #if defined(__EMSCRIPTEN__)
@@ -1015,12 +1016,87 @@ static void R_MatArrayReport()
     }
 }
 
+// ---- MODEL-material consolidation sizing report (?perflog) -------------------------------
+// The matarray texture-array consolidation that already runs for WORLD surfaces is the proven
+// fix for texture-change batch breaks ([perf/fc] tex=N). But it's world-only; static-model
+// materials still each force a texture rebind -> ~half the frame's batch flushes. This sizes
+// whether extending the SAME consolidation to model materials is worth the build: it buckets
+// every static-model material by the identical key the world report uses (techniqueSet +
+// per-stage {nameHash,semantic,dims,mips}) and logs how many models collapse into shared
+// arrays. Read-only — no draw-path change, parity untouched. Mirrors R_MatArrayReport().
+static const void *g_kbMatReportModelWorld = 0;
+static void R_MatArrayReportModels()
+{
+    if ( !rgp.world || g_kbMatReportModelWorld == (const void *)rgp.world || !KB_PerfLogEnabled() )
+        return;
+    g_kbMatReportModelWorld = rgp.world;
+    std::set<const XModel *> seenModels;
+    std::set<const Material *> seen;
+    std::map<std::vector<unsigned>, std::vector<const Material *>> buckets;
+    unsigned instCount = rgp.world->dpvs.smodelCount;
+    GfxStaticModelDrawInst *insts = rgp.world->dpvs.smodelDrawInsts;
+    for ( unsigned int i = 0; i < instCount; ++i )
+    {
+        const XModel *model = insts[i].model;
+        if ( !model || !model->materialHandles || !seenModels.insert(model).second )
+            continue;                       // many insts share one XModel -> walk each model once
+        for ( unsigned int s = 0; s < model->numsurfs; ++s )
+        {
+            const Material *m = model->materialHandles[s];
+            if ( !m || !seen.insert(m).second )
+                continue;
+            std::vector<unsigned> key;
+            key.push_back((unsigned)(uintptr_t)m->techniqueSet);
+            key.push_back(m->textureCount);
+            bool ok = true;
+            for ( unsigned int t = 0; t < m->textureCount; ++t )
+            {
+                const MaterialTextureDef *td = &m->textureTable[t];
+                if ( td->semantic == 11 || !td->u.image ) { ok = false; break; }   // 11 = water
+                key.push_back(td->nameHash);
+                key.push_back(td->semantic);
+                key.push_back(((unsigned)td->u.image->width << 16) | td->u.image->height);
+                key.push_back(td->u.image->levelCount);
+            }
+            if ( ok )
+                buckets[key].push_back(m);
+        }
+    }
+    size_t arrMats = 0, multiBuckets = 0, topLayers[5] = {0};
+    unsigned long long arrBytes = 0;
+    for ( auto &b : buckets )
+    {
+        size_t layers = b.second.size();
+        if ( layers < 2 )
+            continue;
+        ++multiBuckets; arrMats += layers;
+        unsigned long long perLayer = 0;
+        const Material *m0 = b.second[0];
+        for ( unsigned int t = 0; t < m0->textureCount; ++t )
+            if ( m0->textureTable[t].u.image )
+                perLayer += m0->textureTable[t].u.image->baseSize;
+        arrBytes += perLayer * layers;
+        for ( int k = 0; k < 5; ++k )
+            if ( layers > topLayers[k] )
+            {
+                for ( int j = 4; j > k; --j ) topLayers[j] = topLayers[j - 1];
+                topLayers[k] = layers;
+                break;
+            }
+    }
+    fprintf(stderr, "[matarray] MODEL mats=%u (in %u models) buckets>=2: %u covering %u mats, est extra MB=%llu, top layers: %u %u %u %u %u\n",
+            (unsigned)seen.size(), (unsigned)seenModels.size(), (unsigned)multiBuckets,
+            (unsigned)arrMats, arrBytes >> 20, (unsigned)topLayers[0], (unsigned)topLayers[1],
+            (unsigned)topLayers[2], (unsigned)topLayers[3], (unsigned)topLayers[4]);
+}
+
 static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *primState)
 {
     IDirect3DIndexBuffer9 *wib = R_GetWorldStaticIb();
     if ( !wib )
         return false;                       // static-IB alloc failed -> stock walker (stream untouched)
     R_MatArrayReport();                     // one-shot sizing report at first lit draw
+    R_MatArrayReportModels();               // ?perflog: size the model-material consolidation lever
     unsigned int layerStride = g_layerDataStride[primState->vertDeclType];
 
     unsigned int reflectionProbeIndex = 255;
