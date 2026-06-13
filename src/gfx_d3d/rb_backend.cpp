@@ -1702,6 +1702,9 @@ unsigned long g_kbTrDiffMatSameTech = 0;
 // matching texture dims/mips (texture arrays require uniform layer geometry). Dims+mips is a
 // PROXY (format not reachable engine-side) — slight over-count if DXT1/DXT5 mix at same dims.
 unsigned long g_kbTrArrayable = 0;
+// ...of which the two materials also share identical local constants -> mergeable with JUST the
+// per-instance layer (step 2 as planned). The rest would need per-instance constants too.
+unsigned long g_kbTrArrSameConst = 0;
 #endif
 
 unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *listArgs, GfxCmdBufContext prepassContext)
@@ -1781,7 +1784,26 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                         }
                     }
                     if ( arr )
+                    {
                         ++g_kbTrArrayable;
+                        // Step-2 correctness probe: an arrayable boundary is LAYER-ONLY
+                        // mergeable (one merged draw, per-instance layer, shared uploaded
+                        // constants) iff the two materials' LOCAL CONSTANT tables are identical.
+                        // If they differ, merging needs per-instance constants (a much bigger
+                        // subsystem). arrSameConst sizes the layer-only-correct population.
+                        extern unsigned long g_kbTrArrSameConst;
+                        bool sameC = kbM->constantCount == kbPrevMatPtr->constantCount;
+                        for ( unsigned int ci = 0; sameC && ci < kbM->constantCount; ++ci )
+                        {
+                            const MaterialConstantDef *ca = &kbM->localConstantTable[ci];
+                            const MaterialConstantDef *cb = &kbPrevMatPtr->localConstantTable[ci];
+                            sameC = ca->nameHash == cb->nameHash
+                                 && ca->literal[0] == cb->literal[0] && ca->literal[1] == cb->literal[1]
+                                 && ca->literal[2] == cb->literal[2] && ca->literal[3] == cb->literal[3];
+                        }
+                        if ( sameC )
+                            ++g_kbTrArrSameConst;
+                    }
                 }
             }
             kbPrevMat = kbMat; kbPrevLight = kbLight; kbPrevTech = kbTech; kbPrevMatPtr = kbM;
