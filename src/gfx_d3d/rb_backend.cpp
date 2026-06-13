@@ -1712,6 +1712,13 @@ unsigned long g_kbTrArrSameConst = 0;
 extern "C" int KB_MatArrayLevelC();   // ?matarray level (r_draw_bsp.cpp): 3 gates the 3b skip
 extern "C" int KB_MatArrayHasC(const void *mat);   // is this material world-bucketed (array-drawn)?
 extern bool g_kbMatSkipStableArgs;    // r_shade.cpp: set around the main R_SetupPass to skip stable args
+// ?modelmat (r_draw_bsp.cpp): route static-MODEL material batches through the shared texture arrays
+// — bind the material's bucket arrays before the model tess, clear after. World binds inside its own
+// lit walker; the model paths (tess idx 2-9) have no such bind, so we add it here in the generic
+// dispatch. Direct call -> GfxCmdBufContext by value is ABI-safe.
+extern "C" int  KB_ModelMatEnabledC();
+extern "C" int  KB_MatArrayBindForBatchC(GfxCmdBufContext context);
+extern "C" void KB_MatArrayClearC(void *dev);
 #endif
 
 unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *listArgs, GfxCmdBufContext prepassContext)
@@ -1845,6 +1852,15 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
         subListCount = 0;
         passCount = listArgs->context.state->technique->passCount;
 #if defined(__EMSCRIPTEN__)
+        // ?modelmat: is this a static-MODEL batch (tess idx 2-9) whose material was consolidated
+        // into the shared texture arrays? If so, bind its bucket arrays around the tess (below) so
+        // the model draw samples sampler2DArray[layer] instead of its own 2D texture — collapsing
+        // the per-model texture rebind that breaks batches ([perf/fc] tex=N).
+        unsigned kbTessIdx = (unsigned)((drawSurf.packed >> 51) & 0xF);
+        bool kbModelMatOn = KB_ModelMatEnabledC() && kbTessIdx >= 2 && kbTessIdx <= 9
+                            && KB_MatArrayHasC(listArgs->context.state->material);
+#endif
+#if defined(__EMSCRIPTEN__)
         // ?matarray=3 stage 3b: the stable-args skip is correct ONLY at level 3, where the
         // material's textures are shared bucket arrays (so a skipped sampler/constant upload is
         // a guaranteed no-op for a run-equivalent material). Never skip the prepass pass.
@@ -1873,6 +1889,9 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                 R_SetupPass(prepassContext, 0);
                 passPrepassContext_4 = prepassContext.state;
             }
+#if defined(__EMSCRIPTEN__)
+            if ( kbModelMatOn ) KB_MatArrayBindForBatchC(listArgs->context);   // bind bucket arrays
+#endif
             { PROF_SCOPED("tess invoke")   // splits RenderMatBatch self: geometry emit + DrawIndexedPrimitive vs material setup
 #if defined(__EMSCRIPTEN__)
             subListCount = R_InvokeTessFunc(
@@ -1887,6 +1906,9 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
                                              passPrepassContext_4);
 #endif
             }  // tess invoke
+#if defined(__EMSCRIPTEN__)
+            if ( kbModelMatOn ) KB_MatArrayClearC(listArgs->context.state->prim.device);   // next batch plain
+#endif
         }
 
         if ( isPixelCostEnabled )

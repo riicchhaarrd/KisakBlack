@@ -825,7 +825,18 @@ extern "C" void KB_SetMatArrayDrawC(void *dev, unsigned mask, float layer,
                                     const unsigned *stageTex, int nStages);    // gl_d3d9_draw.cpp
 static std::vector<std::vector<unsigned>> g_kbMatArrayBuckets;   // [bucket][texIdx] = GL array name
 static std::map<const Material *, std::pair<unsigned, unsigned>> g_kbMatArrayLayer;  // mat -> (bucket, layer)
+// VRAM the world STAGE1 build consumed — the MODEL build (?modelmat) continues under the same
+// cap so world + model arrays share one budget. World STAGE1 sets it; model build adds to it.
+static unsigned long long g_kbMatArrayUsedBytes = 0;
 int g_kbMatArrayEnable = -1;   // level: 0 off, 1 build-only, 2 parity (route bucketed mats -> arrays)
+// ?modelmat: extend texture-array consolidation to static-MODEL materials (default off — opt-in
+// to FPS-test the model-batch texture-rebind collapse; world consolidation stays independent).
+static int g_kbModelMatEnable = -1;
+static bool KB_ModelMatEnabled()
+{
+    if ( g_kbModelMatEnable < 0 ) { const char *e = getenv("KB_MODELMAT"); g_kbModelMatEnable = e ? atoi(e) : 0; }
+    return g_kbModelMatEnable > 0;
+}
 static int R_MatArrayLevel()
 {
     // DEFAULT 2 (parity ON): user-validated identical + a few fps faster (texture-bind collapse on
@@ -889,6 +900,18 @@ static bool R_MatArrayBindForBatch(GfxCmdBufContext context)
     if ( !mask ) { KB_SetMatArrayDrawC(dev, 0, 0.0f, 0, 0); return false; }
     KB_SetMatArrayDrawC(dev, mask, (float)it->second.second, stageTex, 16);
     return true;
+}
+// ?modelmat bridges (called from the generic model dispatch in rb_backend.cpp). Direct calls —
+// GfxCmdBufContext by-value is ABI-safe here (NOT through a cast function pointer; see the
+// R_InvokeTessFunc note for why the indirect case needs direct-dispatch).
+extern "C" int KB_ModelMatEnabledC() { return KB_ModelMatEnabled() ? 1 : 0; }
+extern "C" int KB_MatArrayBindForBatchC(GfxCmdBufContext context)
+{
+    return R_MatArrayBindForBatch(context) ? 1 : 0;
+}
+extern "C" void KB_MatArrayClearC(void *dev)
+{
+    KB_SetMatArrayDrawC(dev, 0, 0.0f, 0, 0);   // next batch draws plain 2D
 }
 static void R_MatArrayReport()
 {
@@ -1010,6 +1033,7 @@ static void R_MatArrayReport()
             for ( size_t i = 0; i < layers; ++i )
                 g_kbMatArrayLayer[mats[i]] = std::make_pair(bucketIdx, (unsigned)i);
         }
+        g_kbMatArrayUsedBytes = usedBytes;   // MODEL build (?modelmat) continues under the shared cap
         fprintf(stderr, "[matarray] STAGE1: %u arrays built, %u MB used / %llu cap (%u over-budget, %u stage-fail, %u empty), %u mats mapped\n",
                 built, (unsigned)(usedBytes >> 20), capMB,
                 budgetSkipped, failedStages, skippedBuckets, (unsigned)g_kbMatArrayLayer.size());
@@ -1027,7 +1051,8 @@ static void R_MatArrayReport()
 static const void *g_kbMatReportModelWorld = 0;
 static void R_MatArrayReportModels()
 {
-    if ( !rgp.world || g_kbMatReportModelWorld == (const void *)rgp.world || !KB_PerfLogEnabled() )
+    if ( !rgp.world || g_kbMatReportModelWorld == (const void *)rgp.world
+        || (!KB_PerfLogEnabled() && !KB_ModelMatEnabled()) )
         return;
     g_kbMatReportModelWorld = rgp.world;
     std::set<const XModel *> seenModels;
@@ -1084,10 +1109,73 @@ static void R_MatArrayReportModels()
                 break;
             }
     }
-    fprintf(stderr, "[matarray] MODEL mats=%u (in %u models) buckets>=2: %u covering %u mats, est extra MB=%llu, top layers: %u %u %u %u %u\n",
-            (unsigned)seen.size(), (unsigned)seenModels.size(), (unsigned)multiBuckets,
-            (unsigned)arrMats, arrBytes >> 20, (unsigned)topLayers[0], (unsigned)topLayers[1],
-            (unsigned)topLayers[2], (unsigned)topLayers[3], (unsigned)topLayers[4]);
+    if ( KB_PerfLogEnabled() )
+        fprintf(stderr, "[matarray] MODEL mats=%u (in %u models) buckets>=2: %u covering %u mats, est extra MB=%llu, top layers: %u %u %u %u %u\n",
+                (unsigned)seen.size(), (unsigned)seenModels.size(), (unsigned)multiBuckets,
+                (unsigned)arrMats, arrBytes >> 20, (unsigned)topLayers[0], (unsigned)topLayers[1],
+                (unsigned)topLayers[2], (unsigned)topLayers[3], (unsigned)topLayers[4]);
+
+    // ?modelmat BUILD: greedy under the SHARED cap (continues from the world STAGE1's used bytes),
+    // biggest model-material families first, APPENDING to the same g_kbMatArrayBuckets/Layer the
+    // world uses — so R_MatArrayBindForBatch (material-generic) binds a model material's bucket
+    // arrays exactly as it does a world material's. Mirrors the world STAGE1 build.
+    if ( !KB_ModelMatEnabled() )
+        return;
+    struct Cand { const std::vector<const Material *> *mats; unsigned long long bytes; size_t layers; };
+    std::vector<Cand> cands;
+    for ( auto &b : buckets )
+    {
+        size_t layers = b.second.size();
+        if ( layers < 2 )
+            continue;
+        const Material *m0 = b.second[0];
+        unsigned long long perLayer = 0;
+        for ( unsigned int t = 0; t < m0->textureCount; ++t )
+            if ( m0->textureTable[t].u.image )
+                perLayer += m0->textureTable[t].u.image->baseSize;
+        cands.push_back({ &b.second, perLayer * layers, layers });
+    }
+    std::sort(cands.begin(), cands.end(),
+              [](const Cand &a, const Cand &c){ return a.layers > c.layers; });
+
+    unsigned built = 0, failedStages = 0, skippedBuckets = 0, budgetSkipped = 0;
+    const unsigned long long capBytes = R_MatArrayCapMB() << 20;
+    static std::vector<void *> basemaps;
+    for ( const Cand &c : cands )
+    {
+        if ( g_kbMatArrayUsedBytes + c.bytes > capBytes ) { ++budgetSkipped; continue; }
+        const std::vector<const Material *> &mats = *c.mats;
+        size_t layers = c.layers;
+        const Material *m0 = mats[0];
+        std::vector<unsigned> stageTex(m0->textureCount, 0u);
+        bool anyStage = false, bad = false;
+        for ( unsigned int t = 0; t < m0->textureCount && !bad; ++t )
+        {
+            basemaps.clear();
+            for ( size_t i = 0; i < layers; ++i )
+            {
+                IDirect3DBaseTexture9 *bm = mats[i]->textureTable[t].u.image
+                    ? mats[i]->textureTable[t].u.image->texture.basemap : 0;
+                if ( !bm ) { bad = true; break; }
+                basemaps.push_back(bm);
+            }
+            if ( bad )
+                break;
+            unsigned tex = KB_BuildMatStageArray(basemaps.data(), (int)layers);
+            stageTex[t] = tex;
+            if ( tex ) { ++built; anyStage = true; }
+            else ++failedStages;
+        }
+        if ( bad || !anyStage ) { ++skippedBuckets; continue; }
+        g_kbMatArrayUsedBytes += c.bytes;
+        unsigned bucketIdx = (unsigned)g_kbMatArrayBuckets.size();
+        g_kbMatArrayBuckets.push_back(stageTex);
+        for ( size_t i = 0; i < layers; ++i )
+            g_kbMatArrayLayer[mats[i]] = std::make_pair(bucketIdx, (unsigned)i);
+    }
+    fprintf(stderr, "[matarray] MODELBUILD: %u arrays built, %u MB used / %llu cap (%u over-budget, %u stage-fail, %u empty), %u mats mapped total\n",
+            built, (unsigned)(g_kbMatArrayUsedBytes >> 20), R_MatArrayCapMB(),
+            budgetSkipped, failedStages, skippedBuckets, (unsigned)g_kbMatArrayLayer.size());
 }
 
 static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *primState)
