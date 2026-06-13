@@ -1138,6 +1138,35 @@ void __cdecl R_DrawXModelSkinnedUncached(GfxCmdBufContext context, XSurface *xsu
     }
 }
 
+#if defined(__EMSCRIPTEN__)
+// ?rigidvb=1: kill the per-frame static-model vertex memcpy — the dominant "tess invoke" CPU cost
+// (kbprof: 43ms self). Rigid props have a STATIC vb0 + indexBuffer (XSurfaceOptimizeRigid builds
+// them once at load), but R_DrawXModelSkinnedUncached re-copies verts0/triIndices into the dynamic
+// buffer EVERY frame for geometry that never changes. Bind the static buffers directly (per-surface,
+// 0-based — verified) — zero per-frame copy, exactly what the world path already does.
+static int kbRigidVbEnabled() {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("KB_RIGIDVB"); v = (e && *e == '1') ? 1 : 0; }
+    return v;
+}
+void __cdecl R_DrawXModelRigidStatic(GfxCmdBufContext context, XSurface *xsurf)
+{
+    GfxDrawPrimArgs args;
+    args.triCount = XSurfaceGetNumTris(xsurf);
+    args.vertexCount = XSurfaceGetNumVerts(xsurf);
+    args.baseIndex = 0;                                  // per-surface static IB, 0-based
+    context.state->prim.frameStats.geoIndexCount += 3 * args.triCount;
+    if (context.state->prim.indexBuffer != xsurf->indexBuffer)
+        R_ChangeIndices(&context.state->prim, xsurf->indexBuffer);
+    R_SetStreamSource(&context.state->prim, xsurf->vb0, 0, 0x20u);   // static vb0 @ 0, stride 32
+    R_DrawIndexedPrimitive(&context.state->prim, &args);
+    if (context.state->prim.primStats) {
+        context.state->prim.primStats->staticIndexCount += 3 * args.triCount;
+        context.state->prim.primStats->staticVertexCount += args.vertexCount;
+    }
+}
+#endif
+
 unsigned int __cdecl R_TessXModelSkinnedDrawSurfList(
     const GfxDrawSurfListArgs *listArgs,
     GfxCmdBufContext prepassContext)
@@ -1890,7 +1919,17 @@ unsigned int __cdecl R_TessXModelRigidSkinnedDrawSurfList(
             }
             R_SetupPassPerObjectArgs(context);
             R_SetupPassPerPrimArgs(context);
+#if defined(__EMSCRIPTEN__)
+            // ?rigidvb: bind the rigid prop's STATIC vb0/indexBuffer (no per-frame copy) instead
+            // of re-tessellating into the dynamic buffer. Fallback to uncached if buffers absent.
+            { XSurface *xs = modelSurf->surf.xsurf;
+              if (kbRigidVbEnabled() && xs->vb0 && xs->indexBuffer)
+                  R_DrawXModelRigidStatic(context, xs);
+              else
+                  R_DrawXModelSkinnedUncached(context, xs, xs->verts0); }
+#else
             R_DrawXModelSkinnedUncached(context, modelSurf->surf.xsurf, modelSurf->surf.xsurf->verts0);
+#endif
             if (++drawSurfIndex == drawSurfCount)
                 break;
             //drawSurf.fields = (GfxDrawSurfFields)drawSurfList[drawSurfIndex];
