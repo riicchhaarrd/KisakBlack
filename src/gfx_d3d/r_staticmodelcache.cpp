@@ -733,6 +733,9 @@ void __cdecl R_InitStaticModelCache()
     SMC_ClearCache();
 }
 
+#if defined(__EMSCRIPTEN__)
+extern "C" void KB_NoteSmodelCacheVbC(void *vb);   // gl_d3d9_draw.cpp: identify the cache VB for the stream-0 offset fold (?smcachefold)
+#endif
 void *R_AllocStaticModelCache()
 {
     if ( gfxBuf.smodelCacheVb
@@ -745,7 +748,14 @@ void *R_AllocStaticModelCache()
     {
         __debugbreak();
     }
-    return R_AllocDynamicVertexBuffer(&gfxBuf.smodelCacheVb, 0x800000);
+    void *r = R_AllocDynamicVertexBuffer(&gfxBuf.smodelCacheVb, 0x800000);
+#if defined(__EMSCRIPTEN__)
+    // The smodel cache is ONE 8MB dynamic VB; cached-model draws rebind it at different per-model
+    // offsets (R_SetStaticModelCachedBuffer), each a vtx batch-break ([perf/fc] vtx). Tell the GL
+    // device which buffer it is so the stream-0 offset can fold into baseVertex (no rebind, no break).
+    KB_NoteSmodelCacheVbC(gfxBuf.smodelCacheVb);
+#endif
+    return r;
 }
 
 unsigned int SMC_ClearCache()

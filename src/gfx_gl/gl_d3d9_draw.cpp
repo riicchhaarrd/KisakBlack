@@ -199,6 +199,19 @@ static size_t   s_kbStreamIdent[4] = {0};
 static size_t   s_kbIbIdent = 0;
 static unsigned s_kbStream0Fold = 0;
 extern "C" int KB_VbArenaEnabled();   // gl_resources.cpp
+// ?smcachefold: the smodel cache is ONE dynamic VB (gfxBuf.smodelCacheVb) rebound at different
+// per-model offsets — each a vtx batch-break. Fold its stream-0 offset into baseVertex (like the
+// arena) so consecutive cached models share the bind. DEFAULT OFF (opt-in) until loc=1-validated:
+// the win + correctness need baseVertex (loc=1 only), so headless can't verify it — same gate as
+// modelmat. Promote to default once the user confirms cached models render right + fps.
+static void *g_kbSmodelCacheVb = nullptr;
+extern "C" void KB_NoteSmodelCacheVbC(void *vb) { g_kbSmodelCacheVb = vb; }
+static int g_kbSmCacheFold = -1;
+extern int g_kbHasBaseVertexExt;   // fold needs working baseVertex draws
+static inline bool KB_SmCacheFoldEnabled() {
+    if (g_kbSmCacheFold < 0) { const char *e = getenv("KB_SMCACHEFOLD"); g_kbSmCacheFold = (e && *e == '1') ? 1 : 0; }
+    return g_kbSmCacheFold && g_kbHasBaseVertexExt;
+}
 // Same vertex/index BUFFER + format as the run head (different index range allowed).
 static inline bool kbLooseGeom(const InstGeom &a, const InstGeom &b) {
     return a.decl == b.decl && a.vb == b.vb && a.ib == b.ib && a.off == b.off && a.stride == b.stride;
@@ -662,6 +675,11 @@ HRESULT WINAPI GLDevice::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffe
         unsigned total = vb->arenaOff() + OffsetInBytes;
         if (StreamNumber == 0 && Stride && (total % Stride) == 0) { fold = total / Stride; effOff = 0; }
         else effOff = total;     // unfoldable: VAO carries the arena offset (still correct)
+    } else if (StreamNumber == 0 && vb && (void *)pStreamData == g_kbSmodelCacheVb
+               && Stride && (OffsetInBytes % Stride) == 0 && KB_SmCacheFoldEnabled()) {
+        // smodel cache: normalize every bind to offset 0 + baseVertex fold, so consecutive
+        // cached models keep the SAME GL bind (ident + effOff) and don't break the batch.
+        fold = OffsetInBytes / Stride; effOff = 0;
     }
     // No-change fast path — by GL bind identity, so two arena co-residents don't flush.
     // A pending upload on a DIFFERENT object must take the slow path: the batch-start
