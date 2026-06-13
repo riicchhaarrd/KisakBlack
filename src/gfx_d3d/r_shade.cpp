@@ -23,13 +23,14 @@ static int kbSpecEnabled() {
 static void kbSpecLogCode(const GfxCmdBufContext &context, const MaterialShaderArgument *arg, const char *cls) {
     if (!kbSpecEnabled()) return;
     unsigned idx = arg->u.codeConst.index;
-    // 0x45 = envMapParms (proven unbound); 17/18/19 = the sun consts the world envmap
-    // term reads (c17 sun dir, c18/c19 sun colors) — runtime-value audit for the
-    // mirror-surfaces hunt. Log each (material, index) once.
-    if (idx != 0x45 && (idx < 17 || idx > 19)) return;
+    // 0x45 = envMapParms (proven unbound). The world envmap term reads REGISTERS
+    // psc[17..19] (sun dir + colors) — key on arg->dest, since any code-const INDEX can
+    // route there (the index-17..19 filter caught nothing). Log each (material, dest) once.
+    bool destSun = arg->dest >= 17 && arg->dest <= 19;
+    if (idx != 0x45 && !destSun) return;
     static std::set<std::pair<const void *, unsigned>> seen;
     const Material *m = context.state->material;
-    if (!seen.insert(std::make_pair((const void *)m, idx)).second) return;
+    if (!seen.insert(std::make_pair((const void *)m, arg->dest)).second) return;
     const float *v = R_GetCodeConstant(context, idx);
     fprintf(stderr, "[kbspec] %s idx=%u mat=%s dest=%u vals=%.3f %.3f %.3f %.3f\n",
             cls, idx, m && m->info.name ? m->info.name : "?", arg->dest, v[0], v[1], v[2], v[3]);
