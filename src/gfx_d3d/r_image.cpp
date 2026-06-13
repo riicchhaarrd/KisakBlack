@@ -860,7 +860,24 @@ void __cdecl Load_Texture(GfxTexture *remoteLoadDef, GfxImage *image)
                 image->cardMemory.platform[0] = 0;
                 image->cardMemory.platform[1] = 0;
                 if ( !Image_LoadFromFile(image, 0) )
+                {
+#if defined(__EMSCRIPTEN__)
+                    // Web: a "~~"-prefixed GENERATED image (e.g. ~~-gglobal_spec_256x256_gray5)
+                    // is an asset baked into a fastfile; if it doesn't resolve here it ERR_DROPs
+                    // the whole map (blocked mp_villa + other big maps from loading at all). These
+                    // are procedural DEFAULT maps (the name says gray spec) — generate a gray
+                    // fallback instead of crashing, so the map loads. Non-generated (real) textures
+                    // still hard-error. TODO root-cause: which fastfile carries it / why unresolved.
+                    if ( image->name && image->name[0] == '~' )
+                    {
+                        Image_LoadGray(image);
+                        static int warned = 0;
+                        if ( warned < 8 ) { ++warned; fprintf(stderr, "[img] generated image '%s' unresolved -> gray fallback\n", image->name); }
+                    }
+                    else
+#endif
                     Com_Error(ERR_DROP, "Couldn't load image '%s'\n", image->name);
+                }
                 DB_LoadedExternalData(externalDataSize);
             }
         }
