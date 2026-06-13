@@ -1707,6 +1707,7 @@ unsigned long g_kbTrArrayable = 0;
 unsigned long g_kbTrArrSameConst = 0;
 extern "C" int KB_MatArrayLevelC();   // ?matarray level (r_draw_bsp.cpp): 3 gates the 3b skip
 extern "C" int KB_MatArrayHasC(const void *mat);   // is this material world-bucketed (array-drawn)?
+extern bool g_kbMatSkipStableArgs;    // r_shade.cpp: set around the main R_SetupPass to skip stable args
 #endif
 
 unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *listArgs, GfxCmdBufContext prepassContext)
@@ -1856,7 +1857,9 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
         for ( passIndex = 0; passIndex < passCount; ++passIndex )
         {
             R_UpdateMaterialTime(listArgs->context.source, 0.0, 0.0, 0.0, 0.0);
-            R_SetupPass(listArgs->context, passIndex, kbEquivToPrev);
+            g_kbMatSkipStableArgs = kbEquivToPrev;        // skip the MAIN pass's stable-args walk
+            R_SetupPass(listArgs->context, passIndex);
+            g_kbMatSkipStableArgs = false;                // never skip the prepass below
             if ( passIndex || !prepassContext.state )
             {
                 passPrepassContext_4 = 0;

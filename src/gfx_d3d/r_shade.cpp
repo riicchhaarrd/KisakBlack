@@ -1046,7 +1046,13 @@ void __cdecl R_SetVertexShader(GfxCmdBufState *state, const MaterialVertexShader
     }
 }
 
-void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex, bool skipStableArgs)
+// ?matarray=3 stage 3b: when set, R_SetupPass skips the per-pass stable-args walk. A global
+// (not a parameter) so R_SetupPass's cross-TU signature never changes — a signature change here
+// is a frankenbuild hazard (any not-rebuilt caller -> wasm "function signature mismatch"). Set by
+// rb_backend around the MAIN context's call only (cleared before the prepass call), default false.
+bool g_kbMatSkipStableArgs = false;
+
+void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex)
 {
     PROF_SCOPED("R_SetupPass");
 
@@ -1081,7 +1087,7 @@ void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex, bool 
     // so skipping just removes the wasted per-material CPU. R_SetState/R_SetPixelShader above
     // still run (cheap, internally redundancy-checked), and context.state->pass is set, so the
     // tess + R_MatArrayBindForBatch (per-material layer) downstream are unaffected.
-    if ( !skipStableArgs && pass->stableArgCount )
+    if ( !g_kbMatSkipStableArgs && pass->stableArgCount )
     {
         PROF_SCOPED("stable args")   // shader-constant upload per pass — splits R_SetupPass self
         R_SetPassShaderStableArguments(context, pass->stableArgCount, &pass->localArgs[pass->perPrimArgCount + pass->perObjArgCount]);

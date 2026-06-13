@@ -56,10 +56,6 @@ int __cdecl R_SetIndexData(GfxCmdBufPrimState *state, unsigned __int8 *indices, 
 void __cdecl R_SetPixelShader(GfxCmdBufState *state, const MaterialPixelShader *pixelShader);
 void __cdecl R_UpdateVertexDecl(GfxCmdBufState *state);
 void __cdecl R_SetVertexShader(GfxCmdBufState *state, const MaterialVertexShader *vertexShader);
-// skipStableArgs (?matarray=3 stage 3b): skip the per-pass stable-args walk (constant/sampler
-// re-upload) — valid ONLY when this material is fully equivalent to the previous one in the run
-// (same technique + bucket + local constants) and its textures are shared arrays, so every skipped
-// upload would have been a redundant no-op. Cuts the per-material RenderMatBatch-self CPU.
-void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex, bool skipStableArgs = false);
+void __cdecl R_SetupPass(GfxCmdBufContext context, unsigned int passIndex);
 void __cdecl R_SetState(GfxCmdBufState *state, unsigned int *stateBits);
 int __cdecl R_SetVertexData(GfxCmdBufState *state, const void *data, int vertexCount, int stride);
