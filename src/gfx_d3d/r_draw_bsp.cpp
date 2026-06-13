@@ -826,10 +826,15 @@ static std::map<const Material *, std::pair<unsigned, unsigned>> g_kbMatArrayLay
 int g_kbMatArrayEnable = -1;   // level: 0 off, 1 build-only, 2 parity (route bucketed mats -> arrays)
 static int R_MatArrayLevel()
 {
-    if ( g_kbMatArrayEnable < 0 ) { const char *e = getenv("KB_MATARRAY"); g_kbMatArrayEnable = e ? atoi(e) : 0; }
+    // DEFAULT 2 (parity ON): user-validated identical + a few fps faster (texture-bind collapse on
+    // same-bucket batches). ?nomatarray (KB_MATARRAY=0) is the escape; ?matarray=N overrides.
+    if ( g_kbMatArrayEnable < 0 ) { const char *e = getenv("KB_MATARRAY"); g_kbMatArrayEnable = e ? atoi(e) : 2; }
     return g_kbMatArrayEnable;
 }
 static bool R_MatArrayEnabled() { return R_MatArrayLevel() > 0; }
+// GPU-memory ceiling for the bucket arrays (extra VRAM beyond the originals). A heavy map could
+// otherwise OOM the GPU process now that parity is default-on; over the cap, stay plain (logged).
+static const unsigned long long KB_MATARRAY_CAP_MB = 320;
 
 // ?matarray=2 PARITY: route a bucketed world material's draws through its bucket's texture
 // arrays sampling its own layer — identical pixels, proving the array/variant/layer/bind path
@@ -926,9 +931,18 @@ static void R_MatArrayReport()
                 arrBytes >> 20, (unsigned)topLayers[0], (unsigned)topLayers[1],
                 (unsigned)topLayers[2], (unsigned)topLayers[3], (unsigned)topLayers[4]);
 
-    // ?matarray=1 — STAGE 1 (build-only, nothing consumes the arrays yet): for every
-    // bucket, build one GL_TEXTURE_2D_ARRAY per texture stage and keep the handles +
-    // the material->(bucket,layer) table for stages 2-3 (sampler2DArray variant + merge).
+    // Memory guard (parity is default-on): a map whose bucket arrays would exceed the cap stays
+    // plain — every world material is then non-bucketed, the parity path is a no-op, no extra VRAM.
+    if ( R_MatArrayEnabled() && (arrBytes >> 20) > KB_MATARRAY_CAP_MB )
+    {
+        fprintf(stderr, "[matarray] SKIP: %llu MB exceeds %llu MB cap -> staying plain (?matarray to force)\n",
+                arrBytes >> 20, KB_MATARRAY_CAP_MB);
+        g_kbMatArrayBuckets.clear();
+        g_kbMatArrayLayer.clear();
+        return;
+    }
+    // STAGE 1: for every bucket, build one GL_TEXTURE_2D_ARRAY per texture stage and keep the
+    // handles + the material->(bucket,layer) table for the parity route / stage-3 merge.
     if ( R_MatArrayEnabled() )
     {
         unsigned built = 0, failedStages = 0, skippedBuckets = 0;
