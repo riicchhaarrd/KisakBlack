@@ -12,6 +12,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <algorithm>
 // GL bridge (gl_d3d9_draw.cpp): draw N single-stream world surfaces as ONE multi-draw from the bound
 // static IB, each with its own baseVertex. See GLDevice::KB_DrawWorldMulti.
 extern "C" void KB_DrawWorldMultiC(void *dev, const int *counts, const void *const *offsets,
@@ -939,30 +940,41 @@ static void R_MatArrayReport()
                 arrBytes >> 20, (unsigned)topLayers[0], (unsigned)topLayers[1],
                 (unsigned)topLayers[2], (unsigned)topLayers[3], (unsigned)topLayers[4]);
 
-    // Memory guard (parity is default-on): a map whose bucket arrays would exceed the cap stays
-    // plain — every world material is then non-bucketed, the parity path is a no-op, no extra VRAM.
-    if ( R_MatArrayEnabled() && (arrBytes >> 20) > KB_MATARRAY_CAP_MB )
-    {
-        fprintf(stderr, "[matarray] SKIP: %llu MB exceeds %llu MB cap -> staying plain (?matarray to force)\n",
-                arrBytes >> 20, KB_MATARRAY_CAP_MB);
-        g_kbMatArrayBuckets.clear();
-        g_kbMatArrayLayer.clear();
-        return;
-    }
-    // STAGE 1: for every bucket, build one GL_TEXTURE_2D_ARRAY per texture stage and keep the
-    // handles + the material->(bucket,layer) table for the parity route / stage-3 merge.
+    // STAGE 1, GREEDY under the memory cap: instead of all-or-nothing (a map over the cap forfeited
+    // ALL consolidation), build the BIGGEST material families first (most layers = most setup-skips)
+    // and take each whose arrays fit the running budget — so an over-cap map still gets PARTIAL
+    // consolidation. Materials in skipped buckets stay non-bucketed (plain, parity no-op, no VRAM).
     if ( R_MatArrayEnabled() )
     {
-        unsigned built = 0, failedStages = 0, skippedBuckets = 0;
-        g_kbMatArrayBuckets.clear();
-        g_kbMatArrayLayer.clear();
-        static std::vector<void *> basemaps;
+        struct Cand { const std::vector<const Material *> *mats; unsigned long long bytes; size_t layers; };
+        std::vector<Cand> cands;
         for ( auto &b : buckets )
         {
             size_t layers = b.second.size();
             if ( layers < 2 )
                 continue;
             const Material *m0 = b.second[0];
+            unsigned long long perLayer = 0;
+            for ( unsigned int t = 0; t < m0->textureCount; ++t )
+                if ( m0->textureTable[t].u.image )
+                    perLayer += m0->textureTable[t].u.image->baseSize;
+            cands.push_back({ &b.second, perLayer * layers, layers });
+        }
+        std::sort(cands.begin(), cands.end(),
+                  [](const Cand &a, const Cand &c){ return a.layers > c.layers; });   // most win first
+
+        unsigned built = 0, failedStages = 0, skippedBuckets = 0, budgetSkipped = 0;
+        unsigned long long usedBytes = 0;
+        const unsigned long long capBytes = KB_MATARRAY_CAP_MB << 20;
+        g_kbMatArrayBuckets.clear();
+        g_kbMatArrayLayer.clear();
+        static std::vector<void *> basemaps;
+        for ( const Cand &c : cands )
+        {
+            if ( usedBytes + c.bytes > capBytes ) { ++budgetSkipped; continue; }   // doesn't fit -> stay plain
+            const std::vector<const Material *> &mats = *c.mats;
+            size_t layers = c.layers;
+            const Material *m0 = mats[0];
             std::vector<unsigned> stageTex(m0->textureCount, 0u);
             bool anyStage = false, bad = false;
             for ( unsigned int t = 0; t < m0->textureCount && !bad; ++t )
@@ -970,8 +982,8 @@ static void R_MatArrayReport()
                 basemaps.clear();
                 for ( size_t i = 0; i < layers; ++i )
                 {
-                    IDirect3DBaseTexture9 *bm = b.second[i]->textureTable[t].u.image
-                        ? b.second[i]->textureTable[t].u.image->texture.basemap : 0;
+                    IDirect3DBaseTexture9 *bm = mats[i]->textureTable[t].u.image
+                        ? mats[i]->textureTable[t].u.image->texture.basemap : 0;
                     if ( !bm ) { bad = true; break; }
                     basemaps.push_back(bm);
                 }
@@ -983,13 +995,15 @@ static void R_MatArrayReport()
                 else ++failedStages;
             }
             if ( bad || !anyStage ) { ++skippedBuckets; continue; }
+            usedBytes += c.bytes;
             unsigned bucketIdx = (unsigned)g_kbMatArrayBuckets.size();
             g_kbMatArrayBuckets.push_back(stageTex);
             for ( size_t i = 0; i < layers; ++i )
-                g_kbMatArrayLayer[b.second[i]] = std::make_pair(bucketIdx, (unsigned)i);
+                g_kbMatArrayLayer[mats[i]] = std::make_pair(bucketIdx, (unsigned)i);
         }
-        fprintf(stderr, "[matarray] STAGE1: %u stage-arrays built (%u stage failures, %u buckets skipped), %u materials mapped\n",
-                built, failedStages, skippedBuckets, (unsigned)g_kbMatArrayLayer.size());
+        fprintf(stderr, "[matarray] STAGE1: %u arrays built, %u MB used / %llu cap (%u over-budget, %u stage-fail, %u empty), %u mats mapped\n",
+                built, (unsigned)(usedBytes >> 20), KB_MATARRAY_CAP_MB,
+                budgetSkipped, failedStages, skippedBuckets, (unsigned)g_kbMatArrayLayer.size());
     }
 }
 
