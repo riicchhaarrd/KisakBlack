@@ -120,6 +120,16 @@ int cbc_setiv(const unsigned char *, unsigned long, symmetric_CBC *) { return 0;
 const char *error_to_string(int) { return "ok"; }
 }
 
+// ---- Periodic-diagnostics gate ----------------------------------------------
+// ?perflog=1 (ENV KB_PERFLOG) enables ALL periodic console diagnostics ([perf/*],
+// [heartbeat], one-shot sizing reports). Default OFF: a presentable, quiet console.
+// The headless harness always passes it (run.mjs appends perflog=1).
+extern "C" int KB_PerfLogEnabled(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("KB_PERFLOG"); v = (e && *e == '1') ? 1 : 0; }
+    return v;
+}
+
 // ---- Entry point -----------------------------------------------------------
 int main(int argc, char **argv) {
 #if defined(__EMSCRIPTEN__)
@@ -133,6 +143,8 @@ int main(int argc, char **argv) {
     // Diagnostic heartbeat on the BROWSER (DOM) thread, independent of the engine. If it
     // keeps logging during a "freeze" the DOM thread is alive (the render thread is stuck);
     // if it stops, a proxied call is blocking the DOM thread itself. Decides where to look.
+    // Gated by ?perflog=1 — see KB_PerfLogEnabled above.
+    if (KB_PerfLogEnabled())
     MAIN_THREAD_EM_ASM({
         if (!globalThis.__kbHb) {
             var n = 0;

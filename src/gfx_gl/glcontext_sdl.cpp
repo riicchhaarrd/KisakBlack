@@ -78,6 +78,7 @@ extern unsigned long g_kbLitDeltaRuns, g_kbLitNegDelta;
 extern int g_kbCtxIsLocal;                                // 1 = worker-local context
 extern int g_kbBatchEnable, g_kbCoalesceEnable;           // opt-in perf toggles (ENV)
 extern unsigned long g_kbGLCtxHandle;                     // context handle for thread-attach
+extern "C" int KB_PerfLogEnabled(void);                   // ?perflog=1 gate (linux_main.cpp)
 unsigned long g_kbPresPosted = 0, g_kbPresDropped = 0;   // de-proxy present delivery
 unsigned long g_kbYields = 0;                            // render-thread event-loop yields
 
@@ -115,7 +116,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: H20 (H19 + [matarray] one-shot bucket/memory sizing report)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: H21 (presentable: ?perflog gates diagnostics; remembered game folder; CPU cube mip chain = specular gloss fix)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer
@@ -333,13 +334,12 @@ public:
         double kbT0 = g_kbTimeDraws ? emscripten_get_now() : 0.0;  // ?perfms=1
         ++g_kbPresentEnter;            // reached present (before commit_frame) this frame
         KB_DrawCompFrame();           // ?drawcomp=1 histogram (no-op unless enabled)
-        // Default draw-call readout: every ~120 rendered frames print draws/frame + ms/frame
-        // (ms/frame is the honest per-frame cost — call-bound, so draws/frame ~= the bottleneck).
-        // Stand in a dense area and read these off. KB_NODRAWLOG=1 silences it.
+        // Draw-call readout every ~120 rendered frames — now opt-in via ?perflog=1 like all
+        // periodic diagnostics (KB_NODRAWLOG can still silence it under perflog).
         {
             static int kbDrawLogOff = -1;
             if (kbDrawLogOff < 0) { const char *e = getenv("KB_NODRAWLOG"); kbDrawLogOff = (e && *e == '1') ? 1 : 0; }
-            if (!kbDrawLogOff) {
+            if (!kbDrawLogOff && KB_PerfLogEnabled()) {
                 static unsigned long s_lastDraws = 0; static int s_fc = 0; static double s_lastT = 0.0;
                 if (++s_fc >= 120) {
                     double now = emscripten_get_now();
@@ -466,7 +466,7 @@ public:
         if (t0 == 0) { t0 = now; occl0 = g_kbOcclGetData; dr0 = g_kbDraws; rb0 = g_kbReadbacks; buf0 = g_kbBufBytes; }
         ++frames;
         double dt = now - t0;
-        if (dt >= 1000.0) {   // time-based: also a render-thread heartbeat (stops if RB stalls)
+        if (dt >= 1000.0 && KB_PerfLogEnabled()) {   // time-based; ?perflog=1 gates all of it
             // Per-FRAME draws/occlusion/readbacks: draws ~50k => culling off; readbk>0 =>
             // a per-frame GPU-sync readback (GetRenderTargetData) stalling every frame.
             static unsigned long bd0 = 0, bf0 = 0, sk0 = 0, bi0 = 0, pl0 = 0, ir0 = 0, is0 = 0;

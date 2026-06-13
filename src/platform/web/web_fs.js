@@ -45,11 +45,61 @@
       // can intercept its file chooser, while showDirectoryPicker cannot be scripted.
       const noFsApi = new URLSearchParams(location.search).get("nofsapi") === "1";
       if (!noFsApi && window.isSecureContext && window.showDirectoryPicker) {
+        // Directory handles persist in IndexedDB — reuse the remembered folder so the
+        // picker dialog only ever appears once. requestPermission() needs a user gesture,
+        // which we have (pickFolder runs inside the #pick click).
+        try {
+          const cached = await this._idbGet("dir");
+          if (cached) {
+            let p = await cached.queryPermission({ mode: "read" });
+            if (p === "prompt") p = await cached.requestPermission({ mode: "read" });
+            if (p === "granted") {
+              this.rootHandle = cached;
+              this.rootName = cached.name;
+              this.index.clear(); this.dirs.clear();
+              await this._walk(cached, "");
+              this.ready = true;
+              console.log(`[KBFS] restored remembered folder "${this.rootName}" (${this.index.size} files)`);
+              return this.index.size;
+            }
+          }
+        } catch (e) { console.warn("[KBFS] remembered-folder restore failed; showing picker", e); }
         try { return await this.pick(); }
         catch (e) { if (e && e.name === "AbortError") throw e;
                     console.warn("[KBFS] showDirectoryPicker failed; falling back to <input webkitdirectory>", e); }
       }
       return await this.pickViaInput();
+    },
+
+    // Tiny IndexedDB store for the directory handle (File objects from the
+    // webkitdirectory fallback can NOT persist — secure-context path only).
+    _idb() {
+      return new Promise((res, rej) => {
+        const r = indexedDB.open("kbfs", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("kv");
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+    },
+    async _idbGet(key) {
+      const db = await this._idb();
+      try {
+        return await new Promise((res, rej) => {
+          const t = db.transaction("kv", "readonly").objectStore("kv").get(key);
+          t.onsuccess = () => res(t.result);
+          t.onerror = () => rej(t.error);
+        });
+      } finally { db.close(); }
+    },
+    async _idbPut(key, val) {
+      const db = await this._idb();
+      try {
+        await new Promise((res, rej) => {
+          const t = db.transaction("kv", "readwrite").objectStore("kv").put(val, key);
+          t.onsuccess = () => res();
+          t.onerror = () => rej(t.error);
+        });
+      } finally { db.close(); }
     },
 
     // Let the user pick the Steam game folder and build the path index (secure ctx).
@@ -60,6 +110,7 @@
       await this._walk(this.rootHandle, "");
       this.ready = true;
       console.log(`[KBFS] indexed ${this.index.size} files under "${this.rootName}"`);
+      this._idbPut("dir", this.rootHandle).catch((e) => console.warn("[KBFS] remember-folder save failed", e));
       return this.index.size;
     },
 

@@ -4,6 +4,7 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>   // emscripten_get_now — [perf/front] frontend cost probe
 #include <cstdio>
+extern "C" int KB_PerfLogEnabled(void);   // linux_main.cpp: ?perflog=1 diagnostics gate
 #endif
 #include "r_dvars.h"
 #include "r_warn.h"
@@ -3430,7 +3431,7 @@ void __cdecl R_GenerateSortedDrawSurfs(
             static double acc = 0.0; static int n = 0, off = -1;
             if (off < 0) { const char *e = getenv("KB_NODRAWLOG"); off = (e && *e == '1') ? 1 : 0; }
             acc += emscripten_get_now() - t0;
-            if (!off && ++n >= 120) {
+            if (!off && KB_PerfLogEnabled() && ++n >= 120) {
                 fprintf(stderr, "[perf/front] R_GenerateSortedDrawSurfs %.2f ms/call (avg/%d)\n", acc / n, n);
                 acc = 0.0; n = 0;
             }

@@ -19,6 +19,7 @@ extern "C" void KB_DrawWorldMultiC(void *dev, const int *counts, const void *con
 void R_LmArraySetLayer(unsigned lmapIndex);   // ?lmarray: defined in r_state.cpp (build + set page)
 // Lit-world multi-draw merge (?nolitmerge escape) — defined after the worldmerge2 helpers below.
 extern "C" int KB_WorldBaseVertexOK();        // gl_d3d9_draw.cpp: multi-draw or base-vertex ext live
+extern "C" int KB_PerfLogEnabled(void);       // linux_main.cpp: ?perflog=1 diagnostics gate
 static bool R_LitMergeEnabled();
 static bool R_DrawTrianglesLitMulti(GfxTrianglesDrawStream *drawStream, GfxCmdBufPrimState *primState);
 // [perf/lit] counters (printed once a second in glcontext_sdl.cpp)
@@ -450,8 +451,9 @@ static IDirect3DIndexBuffer9 *R_GetWorldStaticIb()
     R_FinishStaticIndexBuffer(g_worldStaticIb);
     g_worldStaticIbSrc = g_worldDraw->indices;
     g_worldStaticIbCount = count;
-    fprintf(stderr, "[worldStaticIb] built: %d indices (%d KB) — world draws now skip per-draw R_SetIndexData\n",
-            count, (count * 2) / 1024);
+    if ( KB_PerfLogEnabled() )
+        fprintf(stderr, "[worldStaticIb] built: %d indices (%d KB) — world draws now skip per-draw R_SetIndexData\n",
+                count, (count * 2) / 1024);
     return g_worldStaticIb;
 }
 #endif
@@ -804,7 +806,7 @@ static bool R_LitMergeEnabled()
 static const void *g_kbMatReportWorld = 0;
 static void R_MatArrayReport()
 {
-    if ( !rgp.world || g_kbMatReportWorld == (const void *)rgp.world )
+    if ( !rgp.world || g_kbMatReportWorld == (const void *)rgp.world || !KB_PerfLogEnabled() )
         return;
     g_kbMatReportWorld = rgp.world;
     std::set<const Material *> seen;

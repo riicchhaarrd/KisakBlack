@@ -810,6 +810,88 @@ void GLCubeTexture::createGL() {
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
 }
 
+#if defined(__EMSCRIPTEN__)
+// ---- CPU DXT decode + box-filter mip build (cube reflection probes) ----------------
+// glGenerateMipmap WEDGES the ANGLE-GL context service-side (compressed AND uncompressed),
+// so single-mip probe cubes get their chain built on the CPU instead.
+static inline void kbRGB565(unsigned v, unsigned char *o) {
+    o[0] = (unsigned char)(((v >> 11) & 31) * 255 / 31);
+    o[1] = (unsigned char)(((v >> 5) & 63) * 255 / 63);
+    o[2] = (unsigned char)((v & 31) * 255 / 31);
+}
+static void kbDecodeColorBlock(const unsigned char *b, bool dxt1, unsigned char out[16][4]) {
+    unsigned c0 = b[0] | (b[1] << 8), c1 = b[2] | (b[3] << 8);
+    unsigned char col[4][4];
+    kbRGB565(c0, col[0]); col[0][3] = 255;
+    kbRGB565(c1, col[1]); col[1][3] = 255;
+    if (!dxt1 || c0 > c1) {
+        for (int i = 0; i < 3; ++i) {
+            col[2][i] = (unsigned char)((2 * col[0][i] + col[1][i]) / 3);
+            col[3][i] = (unsigned char)((col[0][i] + 2 * col[1][i]) / 3);
+        }
+        col[2][3] = col[3][3] = 255;
+    } else {                       // DXT1 3-color + transparent-black mode
+        for (int i = 0; i < 3; ++i) {
+            col[2][i] = (unsigned char)((col[0][i] + col[1][i]) / 2);
+            col[3][i] = 0;
+        }
+        col[2][3] = 255; col[3][3] = 0;
+    }
+    unsigned bits = b[4] | (b[5] << 8) | (b[6] << 16) | ((unsigned)b[7] << 24);
+    for (int i = 0; i < 16; ++i) {
+        const unsigned char *c = col[(bits >> (2 * i)) & 3];
+        out[i][0] = c[0]; out[i][1] = c[1]; out[i][2] = c[2]; out[i][3] = c[3];
+    }
+}
+static void kbDecodeAlphaDXT5(const unsigned char *b, unsigned char a[16]) {
+    unsigned a0 = b[0], a1 = b[1];
+    unsigned char pal[8];
+    pal[0] = (unsigned char)a0; pal[1] = (unsigned char)a1;
+    if (a0 > a1) { for (int i = 1; i < 7; ++i) pal[1 + i] = (unsigned char)(((7 - i) * a0 + i * a1) / 7); }
+    else { for (int i = 1; i < 5; ++i) pal[1 + i] = (unsigned char)(((5 - i) * a0 + i * a1) / 5); pal[6] = 0; pal[7] = 255; }
+    unsigned long long bits = 0;
+    for (int i = 0; i < 6; ++i) bits |= (unsigned long long)b[2 + i] << (8 * i);
+    for (int i = 0; i < 16; ++i) a[i] = pal[(bits >> (3 * i)) & 7];
+}
+static void kbDecodeDXT(const unsigned char *src, unsigned fourcc, unsigned w, unsigned h,
+                        std::vector<unsigned char> &out) {
+    out.assign((size_t)w * h * 4, 0);
+    unsigned bw = (w + 3) / 4, bh = (h + 3) / 4;
+    int bb = (fourcc == 0x31545844u) ? 8 : 16;   // 'DXT1' : DXT3/5
+    for (unsigned by = 0; by < bh; ++by)
+        for (unsigned bx = 0; bx < bw; ++bx) {
+            const unsigned char *b = src + ((size_t)by * bw + bx) * bb;
+            unsigned char texel[16][4], alpha[16];
+            bool hasA = false;
+            if (fourcc == 0x35545844u)      { kbDecodeAlphaDXT5(b, alpha); hasA = true; b += 8; }   // 'DXT5'
+            else if (fourcc == 0x33545844u) { for (int i = 0; i < 16; ++i) alpha[i] = (unsigned char)(((b[i / 2] >> ((i & 1) * 4)) & 15) * 17); hasA = true; b += 8; }   // 'DXT3'
+            kbDecodeColorBlock(b, fourcc == 0x31545844u, texel);
+            for (int i = 0; i < 16; ++i) {
+                unsigned x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+                if (x >= w || y >= h) continue;
+                unsigned char *d = &out[((size_t)y * w + x) * 4];
+                d[0] = texel[i][0]; d[1] = texel[i][1]; d[2] = texel[i][2];
+                d[3] = hasA ? alpha[i] : texel[i][3];
+            }
+        }
+}
+static void kbBoxHalve(const std::vector<unsigned char> &src, unsigned w, unsigned h,
+                       std::vector<unsigned char> &dst, unsigned &ow, unsigned &oh) {
+    ow = w > 1 ? w >> 1 : 1; oh = h > 1 ? h >> 1 : 1;
+    dst.assign((size_t)ow * oh * 4, 0);
+    for (unsigned y = 0; y < oh; ++y)
+        for (unsigned x = 0; x < ow; ++x) {
+            unsigned x0 = x * 2, y0 = y * 2;
+            unsigned x1 = (x0 + 1 < w) ? x0 + 1 : x0, y1 = (y0 + 1 < h) ? y0 + 1 : y0;
+            for (int c = 0; c < 4; ++c) {
+                unsigned s = src[((size_t)y0 * w + x0) * 4 + c] + src[((size_t)y0 * w + x1) * 4 + c]
+                           + src[((size_t)y1 * w + x0) * 4 + c] + src[((size_t)y1 * w + x1) * 4 + c];
+                dst[((size_t)y * ow + x) * 4 + c] = (unsigned char)(s / 4);
+            }
+        }
+}
+#endif
+
 void GLCubeTexture::maybeGenMips() {
     // Single-mip cubes (reflection probes shipped without a chain) make the shader's
     // gloss->LOD blur (textureLod) a no-op: everything reflects MIRROR SHARP (the
@@ -817,28 +899,76 @@ void GLCubeTexture::maybeGenMips() {
     if (mipsGenned_ || levels_ != 1 || level0Faces_ != 0x3F || !tex_) return;
     mipsGenned_ = true;
     KB_OpTag("genMips", edge_, 0, 0);
-    // ?nomips=1 kill switch: the three "auto-generated mip chain" lines are the last
-    // GL ops before the deproxy context's GPU channel wedges on NVIDIA/ANGLE-GL
-    // (every later compile/link returns false/empty). Also: with S3TC working these
-    // cubes are COMPRESSED, where GenerateMipmap is invalid anyway.
-    // DISABLED on web: glGenerateMipmap on cube maps WEDGES the NVIDIA/ANGLE-GL
-    // context service-side (compressed AND uncompressed — the 64x64 RGBA probe cube
-    // reproduced it with the compressed guard already in place). The gloss blur loses
-    // its mip chain until a CPU-side mip build replaces this (TODO). ?mips=1 re-enables
-    // for experiments.
-    { static int wantMips = -1;
-      if (wantMips < 0) { const char *v = getenv("KB_MIPS"); wantMips = (v && *v == '1') ? 1 : 0; }
-      if (!wantMips) return; }
+#if defined(__EMSCRIPTEN__)
+    // CPU mip build (default ON): decode DXT level 0 -> RGBA8, box-filter halves, upload
+    // the chain manually. All levels must share one internal format, so a DXT level 0 is
+    // re-specified as RGBA8 too (probes are small; exact decode, no quality loss).
+    // KB_NOCUBEMIPS=1 disables (back to sharp probes); KB_MIPS=1 forces the legacy GPU
+    // glGenerateMipmap experiment (KNOWN to wedge ANGLE-GL service-side — diagnosis only).
+    { static int off = -1;
+      if (off < 0) { const char *v = getenv("KB_NOCUBEMIPS"); off = (v && *v == '1') ? 1 : 0; }
+      if (off) return; }
+    { static int wantGpu = -1;
+      if (wantGpu < 0) { const char *v = getenv("KB_MIPS"); wantGpu = (v && *v == '1') ? 1 : 0; }
+      if (wantGpu) {
+          int blockBytes = 0;
+          if (D3DCompressedGLFormat(format_, &blockBytes) != 0) return;  // compressed: invalid for GenerateMipmap
+          glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
+          int maxLvl = 0; for (UINT e = edge_; e > 1; e >>= 1) ++maxLvl;
+          glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, maxLvl);
+          glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+          glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+          glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+          return;
+      } }
+    int blockBytes = 0; unsigned cfmt = D3DCompressedGLFormat(format_, &blockBytes);
+    unsigned internal = GL_RGBA8, fmtGL = GL_RGBA, typeGL = GL_UNSIGNED_BYTE; int bpp = 4;
+    if (!cfmt) {
+        // Uncompressed: box-filter the existing byte layout channel-wise and upload the
+        // chain in the SAME format as level 0 — only 4-byte byte-typed formats qualify.
+        if (!D3DToGLFormat(format_, &internal, &fmtGL, &typeGL, &bpp) || bpp != 4 || typeGL != GL_UNSIGNED_BYTE)
+            return;
+    }
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    int maxLvl = 0; for (UINT e = edge_; e > 1; e >>= 1) ++maxLvl;
+    for (unsigned f = 0; f < 6; ++f) {
+        if (levelShadow_[f][0].empty()) continue;   // level0Faces_ says uploaded; be safe
+        std::vector<unsigned char> rgba;
+        if (cfmt) {
+            kbDecodeDXT(levelShadow_[f][0].data(), (unsigned)format_, edge_, edge_, rgba);
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA8, edge_, edge_, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());   // re-spec level 0 uncompressed
+        } else {
+            rgba = levelShadow_[f][0];
+        }
+        unsigned w = edge_, h = edge_;
+        std::vector<unsigned char> next;
+        for (int L = 1; L <= maxLvl; ++L) {
+            unsigned ow, oh;
+            kbBoxHalve(rgba, w, h, next, ow, oh);
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, L,
+                         cfmt ? GL_RGBA8 : internal, ow, oh, 0,
+                         cfmt ? GL_RGBA : fmtGL, GL_UNSIGNED_BYTE, next.data());
+            rgba.swap(next); w = ow; h = oh;
+        }
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, maxLvl);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    static int prints = 0;
+    if (prints < 3) { ++prints; fprintf(stderr, "[gl] cube %ux%u: CPU-built mip chain (%s, gloss blur enabled)\n", edge_, edge_, cfmt ? "DXT->RGBA8" : "raw"); }
+#else
+    // Native: glGenerateMipmap works; compressed cubes keep level 0 only.
     { int blockBytes = 0;
-      if (D3DCompressedGLFormat(format_, &blockBytes) != 0) return; }  // compressed: no GenerateMipmap
+      if (D3DCompressedGLFormat(format_, &blockBytes) != 0) return; }
     glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
     int maxLvl = 0; for (UINT e = edge_; e > 1; e >>= 1) ++maxLvl;
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, maxLvl);
     glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
-    static int prints = 0;
-    if (prints < 3) { ++prints; fprintf(stderr, "[gl] cube %ux%u: auto-generated mip chain (gloss blur enabled)\n", edge_, edge_); }
+#endif
 }
 
 void GLCubeTexture::sync() {
