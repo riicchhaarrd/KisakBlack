@@ -280,7 +280,8 @@
           if (q.has('nolitmerge'))       ENV.KB_NOLITMERGE = '1';    // disable the lit-world multi-draw merge (escape hatch)
           if (q.get('wmtier'))           ENV.KB_WMTIER = q.get('wmtier'); // world-merge submit tier A/B: 0=multidraw 1=per-entry-bv 2=cpu-merge
           if (q.has('nomatarray'))       ENV.KB_MATARRAY = '0';   // escape: disable material texture-array consolidation (default is parity ON)
-          if (q.get('matarray'))         ENV.KB_MATARRAY = q.get('matarray');   // override level: 1=build-only, 2=parity (default). Routes bucketed world mats through arrays (same pixels, fewer texture binds)
+          if (q.get('matarray'))         ENV.KB_MATARRAY = q.get('matarray');   // override level: 1=build-only, 2=parity (default), 3=parity+per-instance-layer+setup-skip
+          if (q.has('noskip'))           ENV.KB_NOSKIP = '1';        // bisect: at level 3, disable the 3b stable-args setup-skip (keep step-1 instanced layer)
           if (q.has('lmarray'))          ENV.KB_LMARRAY = '1';       // lit-world lightmap texture array (stage 1 parity test)
           if (q.get('nosnd') === '1')    ENV.KB_NOSND = '1';     // headless: no audio device
           if (q.get('mips') === '1')     ENV.KB_MIPS = '1';      // re-enable cube GenerateMipmap (wedges ANGLE-GL)

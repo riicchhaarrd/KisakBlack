@@ -117,7 +117,7 @@ public:
     bool init(const GLContextDesc &desc) {
         // Loud build marker: lets us confirm the browser is running THIS build (not a
         // cached older one) on every test. Bump the tag each rebuild.
-        fprintf(stderr, "\n==== KB BUILD MARKER: H34 (H33 + matarray STAGE 3b: per-material stable-args skip for run-equivalent mats, ?matarray=3)  ====\n\n");
+        fprintf(stderr, "\n==== KB BUILD MARKER: H35 (H34 + ?noskip bisect toggle for the 3b setup-skip)  ====\n\n");
         // The page <canvas> has no width/height attributes, so it defaults to 300x150;
         // creating the (offscreen-backed) context on it would render at that size and
         // the CSS stretch to the window makes it badly pixelated. Size the backbuffer

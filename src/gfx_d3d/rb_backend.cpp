@@ -1843,7 +1843,8 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
         // material's textures are shared bucket arrays (so a skipped sampler/constant upload is
         // a guaranteed no-op for a run-equivalent material). Never skip the prepass pass.
         { static int lv = -2; if (lv == -2) lv = KB_MatArrayLevelC();
-          if (lv < 3) kbEquivToPrev = false; }
+          static int noSkip = -1; if (noSkip < 0) { const char *e = getenv("KB_NOSKIP"); noSkip = (e && *e == '1') ? 1 : 0; }
+          if (lv < 3 || noSkip) kbEquivToPrev = false; }   // ?noskip bisects the 3b skip vs step-1 instanced
 #else
         kbEquivToPrev = false;
 #endif
