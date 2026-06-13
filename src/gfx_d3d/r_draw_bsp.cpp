@@ -842,8 +842,15 @@ extern "C" int KB_MatArrayHasC(const void *mat)
     return g_kbMatArrayLayer.find((const Material *)mat) != g_kbMatArrayLayer.end();
 }
 // GPU-memory ceiling for the bucket arrays (extra VRAM beyond the originals). A heavy map could
-// otherwise OOM the GPU process now that parity is default-on; over the cap, stay plain (logged).
-static const unsigned long long KB_MATARRAY_CAP_MB = 320;
+// otherwise OOM the GPU process; the greedy build takes biggest-win buckets up to this budget.
+// ?matcap=N (KB_MATCAP) overrides the 320MB default — raise it on a high-VRAM machine, or lower
+// it to exercise the partial-build path on a small map.
+static unsigned long long R_MatArrayCapMB()
+{
+    static long long v = -1;
+    if ( v < 0 ) { const char *e = getenv("KB_MATCAP"); v = (e && atoi(e) > 0) ? atoi(e) : 320; }
+    return (unsigned long long)v;
+}
 
 // ?matarray=2 PARITY: route a bucketed world material's draws through its bucket's texture
 // arrays sampling its own layer — identical pixels, proving the array/variant/layer/bind path
@@ -965,7 +972,8 @@ static void R_MatArrayReport()
 
         unsigned built = 0, failedStages = 0, skippedBuckets = 0, budgetSkipped = 0;
         unsigned long long usedBytes = 0;
-        const unsigned long long capBytes = KB_MATARRAY_CAP_MB << 20;
+        const unsigned long long capMB = R_MatArrayCapMB();
+        const unsigned long long capBytes = capMB << 20;
         g_kbMatArrayBuckets.clear();
         g_kbMatArrayLayer.clear();
         static std::vector<void *> basemaps;
@@ -1002,7 +1010,7 @@ static void R_MatArrayReport()
                 g_kbMatArrayLayer[mats[i]] = std::make_pair(bucketIdx, (unsigned)i);
         }
         fprintf(stderr, "[matarray] STAGE1: %u arrays built, %u MB used / %llu cap (%u over-budget, %u stage-fail, %u empty), %u mats mapped\n",
-                built, (unsigned)(usedBytes >> 20), KB_MATARRAY_CAP_MB,
+                built, (unsigned)(usedBytes >> 20), capMB,
                 budgetSkipped, failedStages, skippedBuckets, (unsigned)g_kbMatArrayLayer.size());
     }
 }
