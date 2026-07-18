@@ -1,0 +1,133 @@
+name: Build and deploy
+
+on:
+  push:
+    branches:
+      - github-actions
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux x86
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Install 32-bit dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            g++-multilib \
+            libglew-dev:i386 \
+            libjpeg62-turbo:i386 \
+            libopenal-dev:i386 \
+            libsdl2-dev:i386 \
+            libspeex-dev:i386 \
+            libvpx-dev:i386
+
+      - name: Build
+        run: ./build_linux.sh
+
+      - name: Upload Linux executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: kisakblack-linux-x86
+          path: build_linux/blackops
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Prepare DirectX SDK (June 2010)
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "DXSDK_Jun10.exe"
+          $extract = Join-Path $env:RUNNER_TEMP "DXSDK-extract"
+          $dxsdk = Join-Path $env:RUNNER_TEMP "DXSDK"
+          Invoke-WebRequest -Uri "https://download.microsoft.com/download/A/E/7/AE743F1F-632B-4809-87A9-AA1BB3458E31/DXSDK_Jun10.exe" -OutFile $archive
+          & 7z x $archive "DXSDK/Include/*" "DXSDK/Lib/x86/*" "-o$extract" -y
+          if ($LASTEXITCODE -ne 0) { throw "DirectX SDK extraction failed" }
+          New-Item -ItemType Directory -Force -Path $dxsdk | Out-Null
+          Copy-Item -Recurse (Join-Path $extract "DXSDK/Include") $dxsdk
+          Copy-Item -Recurse (Join-Path $extract "DXSDK/Lib") $dxsdk
+          "DXSDK_DIR=$dxsdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure
+        run: cmake -S . -B build_windows -G "Visual Studio 17 2022" -A Win32
+
+      - name: Build
+        run: cmake --build build_windows --config Release --parallel
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: kisakblack-windows-x86
+          path: |
+            build_windows/Release/KisakBlack.exe
+            build_windows/Release/KisakBlack.pdb
+          if-no-files-found: error
+
+  web:
+    name: WebAssembly
+    runs-on: ubuntu-24.04
+    container:
+      image: emscripten/emsdk:3.1.69
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: web-port
+
+      - name: Build deployable single-threaded WebAssembly
+        run: |
+          ./build_web.sh
+          test ! -s build_web/fail.txt
+          ./link_web.sh
+          test "$(stat -c %s build_web/web/blackops.wasm)" -lt 104857600
+          test ! -e build_web/web/link.log
+
+      - name: Upload WebAssembly build
+        uses: actions/upload-artifact@v7
+        with:
+          name: kisakblack-web
+          path: build_web/web
+          if-no-files-found: error
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: build_web/web
+
+  deploy-pages:
+    name: Deploy GitHub Pages
+    needs: web
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
