@@ -252,7 +252,9 @@ HRESULT WINAPI GLVertexBuffer::Unlock() {
     { std::lock_guard<std::mutex> g(lockMu_); if (outDiscard_) KB_FlushTagged(11); }
     UINT upMin = ~0u, upMax = 0;
     bool upDiscard = false, uploadNow = false;
+#if defined(__EMSCRIPTEN__)
     extern int g_kbCoalesceEnable;
+#endif
     {
         std::lock_guard<std::mutex> g(lockMu_);
         if (lockDepth_) --lockDepth_;
@@ -268,7 +270,11 @@ HRESULT WINAPI GLVertexBuffer::Unlock() {
         // them into the pending range and uploading ONCE at next bind replaces N
         // bind+upload call pairs with one (the in-game bufKB/f was ~11MB across
         // hundreds of calls). Off the GL thread sync() replays it at next bind.
-        uploadNow = kbOnGLThread() && vbo_ && !(g_kbCoalesceEnable && (usage_ & D3DUSAGE_DYNAMIC));
+        uploadNow = kbOnGLThread() && vbo_
+#if defined(__EMSCRIPTEN__)
+                    && !(g_kbCoalesceEnable && (usage_ & D3DUSAGE_DYNAMIC))
+#endif
+                    ;
         if (uploadNow) {
             upMin = pendMin_; upMax = pendMax_; upDiscard = pendDiscard_;
             pendMin_ = ~0u; pendMax_ = 0; pendDiscard_ = false;
@@ -394,7 +400,9 @@ HRESULT WINAPI GLIndexBuffer::Unlock() {
     { std::lock_guard<std::mutex> g(lockMu_); if (outDiscard_) KB_FlushTagged(11); }
     UINT upMin = ~0u, upMax = 0;
     bool upDiscard = false, uploadNow = false;
+#if defined(__EMSCRIPTEN__)
     extern int g_kbCoalesceEnable;
+#endif
     {
         std::lock_guard<std::mutex> g(lockMu_);
         if (lockDepth_) --lockDepth_;
@@ -402,7 +410,11 @@ HRESULT WINAPI GLIndexBuffer::Unlock() {
         if (outMin_ < pendMin_) pendMin_ = outMin_;
         if (outMax_ > pendMax_) pendMax_ = outMax_;
         if (!lockDepth_) { outMin_ = ~0u; outMax_ = 0; outDiscard_ = false; }
-        uploadNow = kbOnGLThread() && ibo_ && !(g_kbCoalesceEnable && (usage_ & D3DUSAGE_DYNAMIC));
+        uploadNow = kbOnGLThread() && ibo_
+#if defined(__EMSCRIPTEN__)
+                    && !(g_kbCoalesceEnable && (usage_ & D3DUSAGE_DYNAMIC))
+#endif
+                    ;
         if (uploadNow) {
             upMin = pendMin_; upMax = pendMax_; upDiscard = pendDiscard_;
             pendMin_ = ~0u; pendMax_ = 0; pendDiscard_ = false;

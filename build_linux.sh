@@ -28,6 +28,12 @@ for f in $(git ls-files 'src/jpeg/*.c' | grep -vE 'jmemansi|jmemname'); do
   gcc $CFLAGS -I. -Isrc -Isrc/jpeg -Isrc/platform/winsdk "$f" -o "build_linux/obj/$(echo "$f"|tr / _).o"
 done
 
+# Rockbox-derived WMAv2 decoder used by the OpenAL xWMA path.
+for f in wmadeci wmafixed mdct mdct_lookup fft-ffmpeg ffmpeg_bitstream wma_decode; do
+  src="src/audio_openal/libwma/${f}.c"
+  gcc $CFLAGS -Isrc/audio_openal/libwma "$src" -o "build_linux/obj/$(echo "$src"|tr / _).o"
+done
+
 echo "linking..."
 g++ -m32 -rdynamic build_linux/obj/*.o -o build_linux/blackops -L/usr/lib/i386-linux-gnu \
     -lSDL2 -lGLEW -lGL -lopenal -lspeex -lvpx -l:libjpeg.so.62 -lpthread -lm -ldl

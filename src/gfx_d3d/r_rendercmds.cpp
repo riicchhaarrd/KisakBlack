@@ -9,6 +9,7 @@
 #include "r_dvars.h"
 #include <qcommon/threads.h>
 #include <universal/com_workercmds.h>
+#include "r_singlethreaded_device_pc.h"
 #include "rb_backend.h"
 #include <win32/win_net.h>
 #include "r_ui3d.h"

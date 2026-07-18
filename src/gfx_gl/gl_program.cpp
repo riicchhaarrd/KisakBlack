@@ -8,7 +8,9 @@
 #include <GL/glew.h>
 extern "C" void KB_FlushBatchedDraws();  // batched-draw flush (gl_d3d9_draw.cpp)
 extern "C" void KB_FlushTagged(int cause); // same, +flush-cause telemetry
+#if defined(__EMSCRIPTEN__)
 extern "C" int  KB_MatArrayLevelC();     // ?matarray level (r_draw_bsp.cpp): 3 = instanced layer
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -46,8 +48,10 @@ HRESULT WINAPI GLDevice::SetPixelShader(IDirect3DPixelShader9 *pShader) {
 
 // Instancing (gl_d3d9_draw.cpp): the per-object matrix candidate = the vs-const range changed
 // since the last draw, tracked here.
+#if defined(__EMSCRIPTEN__)
 extern int g_kbInstEnable, g_kbVscCalls; extern unsigned g_kbVscChangedMin, g_kbVscChangedMax;
 extern int g_kbInstActive, g_kbInstMatCount, g_kbInstLocs[8]; extern unsigned g_kbInstMatBase;
+#endif
 
 HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const float *pData, UINT Vec4Count) {
     // No-change fast path: the engine re-sets identical constants around most draws.
@@ -63,11 +67,13 @@ HRESULT WINAPI GLDevice::SetVertexShaderConstantF(UINT StartRegister, const floa
             if (StartRegister < vsDirtyMin_) vsDirtyMin_ = StartRegister;
             if (StartRegister + Vec4Count - 1 > vsDirtyMax_) vsDirtyMax_ = StartRegister + Vec4Count - 1;
             ++vsVer_;
+#if defined(__EMSCRIPTEN__)
             if (g_kbInstEnable > 0) {            // record the changed range for instance detection
                 if (StartRegister < g_kbVscChangedMin) g_kbVscChangedMin = StartRegister;
                 if (StartRegister + Vec4Count - 1 > g_kbVscChangedMax) g_kbVscChangedMax = StartRegister + Vec4Count - 1;
                 ++g_kbVscCalls;
             }
+#endif
         }
     }
     return D3D_OK;
@@ -312,6 +318,7 @@ bool GLDevice::useDrawProgram() {
     }
     // Instanced draw (flushInstanceRun): use the variant whose per-object matrix reads from
     // instanced attributes. Distinct GL shader id => the program cache links it as its own entry.
+#if defined(__EMSCRIPTEN__)
     unsigned vsN = g_kbInstActive ? vs_->glShaderInstanced(g_kbInstMatBase, g_kbInstMatCount, g_kbInstLocs)
                                   : vs_->glShader();
     // ?matarray: when a bucketed draw is active, use the variant whose masked stages sample their
@@ -338,6 +345,10 @@ bool GLDevice::useDrawProgram() {
     }
     unsigned psN = kbMatArrayMask_ ? ps_->glShaderMat(kbMatArrayMask_, shadowMask, matInstanced)
                                    : ps_->glShader(shadowMask);
+#else
+    unsigned vsN = vs_->glShader();
+    unsigned psN = ps_->glShader(shadowMask);
+#endif
     if (!vsN || !psN) {
         // Engine-supplied shaders degraded to the builtin passthrough: world geometry
         // drawn this way lands at garbage clip coords = INVISIBLE for the frame.

@@ -840,6 +840,7 @@ extern "C" void KB_DrawCompFrame() {
     g_kbDrawCompMap.clear();
 }
 
+#if defined(__EMSCRIPTEN__)
 void GLDevice::flushInstanceRun() {
     int n = s_iN; s_iN = 0;                       // close first (re-entrancy safe)
     if (n < 1) return;
@@ -923,6 +924,9 @@ void GLDevice::flushInstanceRun() {
     for (int i = 0; i < mc; ++i) { glDisableVertexAttribArray(locs[i]); glVertexAttribDivisor(locs[i], 0); }
     g_kbInstActive = 0;
 }
+#else
+void GLDevice::flushInstanceRun() {}
+#endif
 
 #if defined(__EMSCRIPTEN__)
 // KB smodel instanced fast path (engine side: r_draw_staticmodel.cpp KB_TryDrawSmodelInstanced).
@@ -1129,7 +1133,11 @@ void GLDevice::applyVertexState() {
             }
             if (erasedCur) {
                 // The live VAO (and the merge code's s_bElemSlot pointer into it) was erased.
-                curVaoEnt_ = nullptr; curVao_ = 0; s_bElemSlot = nullptr; glBindVertexArray(0);
+                curVaoEnt_ = nullptr; curVao_ = 0;
+#if defined(__EMSCRIPTEN__)
+                s_bElemSlot = nullptr;
+#endif
+                glBindVertexArray(0);
             }
         }
     }
@@ -1137,7 +1145,10 @@ void GLDevice::applyVertexState() {
     if (vaoCache_.size() > 4096) {
         for (auto &kv : vaoCache_) glDeleteVertexArrays(1, &kv.second.vao);
         vaoCache_.clear();
-        curVaoEnt_ = nullptr; curVao_ = 0; s_bElemSlot = nullptr;
+        curVaoEnt_ = nullptr; curVao_ = 0;
+#if defined(__EMSCRIPTEN__)
+        s_bElemSlot = nullptr;
+#endif
         glBindVertexArray(0);
     }
 

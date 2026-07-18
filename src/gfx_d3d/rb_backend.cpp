@@ -10,6 +10,7 @@
 #include "r_foliage.h"
 #include "r_state.h"
 #include "r_dvars.h"
+#include "r_singlethreaded_device_pc.h"
 #include "rb_logfile.h"
 #include "rb_draw3d.h"
 #include <EffectsCore/fx_sprite.h>
@@ -1877,9 +1878,13 @@ unsigned int __cdecl R_RenderDrawSurfListMaterial(const GfxDrawSurfListArgs *lis
         for ( passIndex = 0; passIndex < passCount; ++passIndex )
         {
             R_UpdateMaterialTime(listArgs->context.source, 0.0, 0.0, 0.0, 0.0);
+#if defined(__EMSCRIPTEN__)
             g_kbMatSkipStableArgs = kbEquivToPrev;        // skip the MAIN pass's stable-args walk
+#endif
             R_SetupPass(listArgs->context, passIndex);
+#if defined(__EMSCRIPTEN__)
             g_kbMatSkipStableArgs = false;                // never skip the prepass below
+#endif
             if ( passIndex || !prepassContext.state )
             {
                 passPrepassContext_4 = 0;
@@ -5739,6 +5744,13 @@ void __cdecl RB_RenderCommandFrame(const GfxBackEndData *data)
     
     rb_swapMS = Sys_Milliseconds() - renderStartMS - rb_execCmdsMS;
 }
+
+#if defined(__EMSCRIPTEN__)
+bool __cdecl RB_BackendTimeout(int gpuIndex)
+{
+    return !R_HW_IsFencePending(&dx.swapFence[gpuIndex]);
+}
+#endif
 
 void __cdecl RB_InitBackendGlobalStructs()
 {

@@ -634,6 +634,9 @@ void __cdecl RB_CallExecuteRenderCommands();
 void __cdecl RB_UpdateDynamicBuffers(GfxBackEndData *backendData);
 void     RB_RenderThread(unsigned int threadContext);
 void __cdecl RB_RenderCommandFrame(const GfxBackEndData *data);
+#if defined(__EMSCRIPTEN__)
+bool __cdecl RB_BackendTimeout(int gpuIndex);
+#endif
 void __cdecl RB_InitBackendGlobalStructs();
 void __cdecl RB_SetBspImages();
 void __cdecl RB_InitCodeImages();
