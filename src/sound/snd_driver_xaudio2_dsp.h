@@ -291,13 +291,3 @@ struct SDXA2MasterNoVoiceBusEffect : SDXA2Effect // sizeof=0xB900
         float *data);
     void STDMETHODCALLTYPE SetParameters(const void *pParams, unsigned int cbParams);
 };
-
-
-
-
-
-
-
-
-
-
