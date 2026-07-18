@@ -142,6 +142,18 @@ if [ "$#" -eq 0 ]; then
   done
 fi
 
+# Standalone WMAv2 decoder used by the OpenAL xWMA path.
+echo "sweeping libwma (WMAv2 decoder) C..."
+for f in wmadeci wmafixed mdct mdct_lookup fft-ffmpeg ffmpeg_bitstream wma_decode; do
+  src="src/audio_openal/libwma/${f}.c"; tag="$(echo "$src" | tr / _)"
+  if emcc $CFLAGS $EMFLAGS -Isrc/audio_openal/libwma "$src" -o "build_web/obj/${tag}.o" 2> "build_web/logs/${tag}.log"; then
+    echo "$src" >> build_web/pass.txt; printf 'PASS %s\n' "$src"
+  else
+    printf '%s\t%s\n' "$src" "$(grep -m1 -E 'error:|fatal error:' build_web/logs/${tag}.log)" >> build_web/fail.txt
+    printf 'FAIL %s\n' "$src"
+  fi
+done
+
 # --- summary ---
 P=$(wc -l < build_web/pass.txt); F=$(wc -l < build_web/fail.txt)
 echo "================================================================"

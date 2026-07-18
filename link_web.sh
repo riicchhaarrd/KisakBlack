@@ -2,7 +2,7 @@
 # link_web.sh — Milestone-2 LINK step: link the WASM objects produced by
 # build_web.sh into blackops.wasm / .js / .html.
 #
-# Prereq: run ./build_web.sh first so build_web/obj/*.o exists (743 objects).
+# Prereq: run ./build_web.sh first so build_web/obj/*.o exists.
 # This script does NOT recompile; it only links. It reuses the same writable
 # Emscripten cache + un-frozen config that build_web.sh provisions.
 #
@@ -36,7 +36,9 @@ fi
 
 OBJDIR="build_web/obj"
 OUTDIR="build_web/web"
+LINK_LOG="build_web/link.log"
 mkdir -p "$OUTDIR"
+rm -f "$OUTDIR/link.log"
 if ! ls "$OBJDIR"/*.o >/dev/null 2>&1; then
   echo "no objects in $OBJDIR — run ./build_web.sh first" >&2; exit 1
 fi
@@ -50,6 +52,7 @@ echo "linking $NOBJ objects -> $OUTDIR/blackops.{js,wasm,html} ..."
 #   * EXPORTED_RUNTIME_METHODS for the JS harness (FS bridge in M4).
 #   * ASYNCIFY is intentionally OFF here (single-threaded inline seam in M3); the
 #     FS-Access sync bridge lands in M4 and may flip it on or move to pthreads.
+: "${WEB_LINK_FLAGS:=-O2}"
 LINKFLAGS="\
   -sUSE_SDL=2 \
   -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
@@ -62,7 +65,7 @@ LINKFLAGS="\
   -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=262144 \
   -sEMULATE_FUNCTION_POINTER_CASTS=1 \
   -sINVOKE_RUN=0 \
-  -O0 -g"
+  $WEB_LINK_FLAGS"
 # ASYNCIFY: the File System Access reads are async (web_fs.js); the EM_ASYNC_JS
 # bridge in web_fs.cpp suspends/resumes the wasm stack around them so the engine's
 # synchronous file I/O blocks. INVOKE_RUN=0 lets the harness call main() only
@@ -92,12 +95,12 @@ fi
 set -o pipefail
 # Emit blackops.js + blackops.wasm (NOT the default .html shell — our harness
 # index.html drives the run after a data folder is granted).
-em++ $LINKFLAGS "$OBJDIR"/*.o -o "$OUTDIR/blackops.js" 2> "$OUTDIR/link.log"
+em++ $LINKFLAGS "$OBJDIR"/*.o -o "$OUTDIR/blackops.js" 2> "$LINK_LOG"
 rc=$?
 if [ $rc -ne 0 ]; then
   echo "LINK FAILED (rc=$rc). Undefined symbols (unique):"
-  grep -oE "undefined symbol: [^ ]+" "$OUTDIR/link.log" | sort -u | sed 's/^/  /'
-  echo "full log: $OUTDIR/link.log"
+  grep -oE "undefined symbol: [^ ]+" "$LINK_LOG" | sort -u | sed 's/^/  /'
+  echo "full log: $LINK_LOG"
   exit $rc
 fi
 
