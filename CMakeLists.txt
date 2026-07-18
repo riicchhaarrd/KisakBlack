@@ -4,7 +4,9 @@ project(KisakBlack)
 set(BIN_NAME "KisakBlack")
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_GENERATOR_PLATFORM "WIN32")
+if (NOT CMAKE_GENERATOR_PLATFORM)
+    set(CMAKE_GENERATOR_PLATFORM "Win32")
+endif()
 
 set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(TL_DIR  "${CMAKE_CURRENT_SOURCE_DIR}/tl")
@@ -46,10 +48,16 @@ target_include_directories(KisakBlack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/li
 target_include_directories(KisakBlack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/libs/libtomcrypt-1.17/src/headers")
 target_include_directories(KisakBlack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/libs/libtommath-1.0")
 target_include_directories(KisakBlack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/libs/libvpx-1.5.0/include")
-target_include_directories(KisakBlack PUBLIC "C:\\Program Files (x86)\\Microsoft DirectX SDK (June 2010)\\Include")
+
+set(DIRECTX_SDK_DIR "$ENV{DXSDK_DIR}")
+if (NOT DIRECTX_SDK_DIR)
+    set(DIRECTX_SDK_DIR "C:/Program Files (x86)/Microsoft DirectX SDK (June 2010)")
+endif()
+file(TO_CMAKE_PATH "${DIRECTX_SDK_DIR}" DIRECTX_SDK_DIR)
+target_include_directories(KisakBlack PUBLIC "${DIRECTX_SDK_DIR}/Include")
 
 # ----- Library directories -----
-target_link_directories(KisakBlack PUBLIC "C:\\Program Files (x86)\\Microsoft DirectX SDK (June 2010)\\Lib\\x86")
+target_link_directories(KisakBlack PUBLIC "${DIRECTX_SDK_DIR}/Lib/x86")
 target_link_directories(KisakBlack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/libs/libvpx-1.5.0")
 target_link_directories(KisakBlack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/steam/redistributable_bin")
 target_link_directories(KisakBlack PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/binklib")
