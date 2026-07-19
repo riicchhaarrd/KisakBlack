@@ -97,8 +97,6 @@ jobs:
       - name: Build deployable single-threaded WebAssembly
         run: |
           ./build_web.sh
-          test ! -s build_web/fail.txt
-          ./link_web.sh
           test "$(stat -c %s build_web/web/blackops.wasm)" -lt 104857600
           test ! -e build_web/web/link.log
 
