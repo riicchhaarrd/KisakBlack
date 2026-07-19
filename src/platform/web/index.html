@@ -12,7 +12,8 @@
      serve with any static server (python3 -m http.server).
    * Multithreaded + pthreads (build_web_mt/link_web_mt): REQUIRES cross-origin
      isolation (COOP: same-origin, COEP: require-corp) + a secure context for
-     SharedArrayBuffer. Serve with serve_web_mt.py (over HTTPS on a LAN). The render
+     SharedArrayBuffer. GitHub Pages gets those policies from coi-serviceworker.js;
+     custom/local hosting can send them directly (serve_web_mt.py does). The render
      backend runs on its own Web Worker and owns the WebGL2 context (proxied to this
      canvas); main() runs on a proxied worker. The <canvas id="canvas"> below stays on
      this DOM thread — the worker's GL context targets "#canvas" and proxies to it.
@@ -21,6 +22,9 @@
 <head>
 <meta charset="utf-8" />
 <title>KisakBlack (WebGL2)</title>
+<!-- GitHub Pages cannot set COOP/COEP response headers. This service worker
+     supplies them and reloads once so the pthread build can use SharedArrayBuffer. -->
+<script src="coi-serviceworker.js"></script>
 <style>
   body { margin: 0; background: #111; color: #ddd; font-family: system-ui, sans-serif; }
   #bar { padding: 8px 12px; background: #1c1c1c; display: flex; gap: 12px; align-items: center; }
