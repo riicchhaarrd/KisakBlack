@@ -33,6 +33,18 @@ Install the 32-bit GCC, SDL2, GLEW, OpenAL, Speex, VPX, and JPEG development pac
 
 The executable is written to `build_linux/blackops`.
 
+### WebAssembly / WebGL2 (`web-port`)
+
+With Emscripten 3.1.69 installed, run:
+
+```sh
+./build_web.sh
+./link_web.sh
+python3 -m http.server --directory build_web/web 8000
+```
+
+Open `http://localhost:8000` and select the original game-data folder when prompted.
+
 
 ```
 Keep in Mind: This is a ~20 year old game with some known exploits. We will try to fix these as we become aware of them.
