@@ -28,6 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             g++-multilib \
+            libglu1-mesa-dev:i386 \
             libopenal-dev:i386 \
             libsdl2-dev:i386 \
             libspeex-dev:i386 \
