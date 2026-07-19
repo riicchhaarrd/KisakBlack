@@ -1,5 +1,8 @@
 #include "r_cinematic.h"
 #include <qcommon/common.h>
+#ifdef _WIN32
+#include <mmreg.h>
+#endif
 #include <dsound.h>
 #include <win32/win_wndproc.h>
 #include "r_init.h"
