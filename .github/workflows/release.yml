@@ -1,0 +1,113 @@
+name: Publish release from successful build
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to create (for example v0.1.0)
+        required: true
+        type: string
+      run_id:
+        description: Successful build run ID (blank uses the latest successful github-actions run)
+        required: false
+        type: string
+      draft:
+        description: Create a draft release for review
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  release:
+    name: Package artifacts and publish release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve successful build run
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          run_id="$REQUESTED_RUN_ID"
+          if [ -n "$run_id" ] && ! [[ "$run_id" =~ ^[0-9]+$ ]]; then
+            echo "run_id must be numeric" >&2
+            exit 1
+          fi
+          if [ -z "$run_id" ]; then
+            run_id="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow build.yml \
+              --branch github-actions \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')"
+          fi
+          if [ -z "$run_id" ]; then
+            echo "No successful github-actions build was found" >&2
+            exit 1
+          fi
+
+          run_details="$(gh run view "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json conclusion,headBranch,workflowName)"
+          if [ "$(jq -r .conclusion <<< "$run_details")" != "success" ] || \
+             [ "$(jq -r .headBranch <<< "$run_details")" != "github-actions" ] || \
+             [ "$(jq -r .workflowName <<< "$run_details")" != "Build and deploy" ]; then
+            echo "Run $run_id is not a successful Build and deploy run from github-actions" >&2
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download Linux artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.build.outputs.run_id }}
+        run: gh run download "$RUN_ID" --name kisakblack-linux-x86 --dir release/linux
+
+      - name: Download Windows artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.build.outputs.run_id }}
+        run: gh run download "$RUN_ID" --name kisakblack-windows-x86 --dir release/windows
+
+      - name: Download WebAssembly artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.build.outputs.run_id }}
+        run: gh run download "$RUN_ID" --name kisakblack-web --dir release/web
+
+      - name: Package Linux artifact
+        run: tar -C release/linux -czf kisakblack-linux-x86.tar.gz .
+
+      - name: Package Windows artifact
+        working-directory: release/windows
+        run: 7z a -tzip "$GITHUB_WORKSPACE/kisakblack-windows-x86.zip" .
+
+      - name: Package WebAssembly artifact
+        working-directory: release/web
+        run: 7z a -tzip "$GITHUB_WORKSPACE/kisakblack-web.zip" .
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DRAFT_RELEASE: ${{ inputs.draft }}
+        run: |
+          release_options=()
+          if [ "$DRAFT_RELEASE" = "true" ]; then
+            release_options+=(--draft)
+          fi
+          gh release create "$RELEASE_TAG" \
+            kisakblack-linux-x86.tar.gz \
+            kisakblack-windows-x86.zip \
+            kisakblack-web.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target master \
+            --title "KisakBlack $RELEASE_TAG" \
+            --generate-notes \
+            "${release_options[@]}"
