@@ -52,7 +52,6 @@ target_link_libraries(${BIN_NAME} PRIVATE
     openal
     speex
     vpx
-    "-l:libjpeg.so.62"
     pthread
     m
     dl
