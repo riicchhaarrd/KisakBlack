@@ -29,6 +29,7 @@ set_source_files_properties(
 target_compile_definitions(KisakBlack PUBLIC
     WIN32
     WIN32_LEAN_AND_MEAN
+    NOMINMAX
     _CONSOLE
     KISAK_MP
     _CRT_SECURE_NO_WARNINGS

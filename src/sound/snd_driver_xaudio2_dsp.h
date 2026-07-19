@@ -9,6 +9,7 @@
 // XAPOBase.h — so they now compile on every platform; the OpenAL backend
 // (src/audio_openal) supplies the XAudio2/XAPO runtime that drives them.
 #ifdef _WIN32
+#include <Windows.h>
 #include <mmreg.h>
 #endif
 #include <XAPOBase.h>
