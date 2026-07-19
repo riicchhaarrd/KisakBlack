@@ -15,7 +15,7 @@ concurrency:
 jobs:
   linux:
     name: Linux x86
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -59,6 +59,8 @@ jobs:
             install
 
       - name: Build
+        env:
+          KISAK_STATIC_RUNTIME_DEPS: ON
         run: ./build_linux.sh
 
       - name: Upload Linux executable
