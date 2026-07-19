@@ -158,6 +158,9 @@ if (EMSCRIPTEN)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${SRC_DIR}/platform/web/web_fs.js"
             "$<TARGET_FILE_DIR:${BIN_NAME}>/web_fs.js"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${SRC_DIR}/platform/web/coi-serviceworker.js"
+            "$<TARGET_FILE_DIR:${BIN_NAME}>/coi-serviceworker.js"
         VERBATIM
     )
     if (KISAK_WEB_THREADS)

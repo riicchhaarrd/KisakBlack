@@ -42,7 +42,7 @@ With Emscripten 3.1.69 installed, run:
 python3 -m http.server --directory build_web/web 8000
 ```
 
-Open `http://localhost:8000` and select the original game-data folder when prompted. Use `./build_web_mt.sh` for the experimental pthread build.
+Open `http://localhost:8000` and select the original game-data folder when prompted. Use `./build_web_mt.sh` for the experimental pthread build; serve it with `serve_web_mt.py` so the browser receives the cross-origin-isolation policies required by `SharedArrayBuffer`.
 
 ## Automation
 
