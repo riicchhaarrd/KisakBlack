@@ -45,6 +45,10 @@ python3 -m http.server --directory build_web/web 8000
 
 Open `http://localhost:8000` and select the original game-data folder when prompted.
 
+## Automation
+
+Pushing `github-actions` builds `master` for Windows and Linux, builds `web-port` for WebAssembly, and deploys the web artifact to GitHub Pages. No `gh-pages` branch is required.
+
 
 ```
 Keep in Mind: This is a ~20 year old game with some known exploits. We will try to fix these as we become aware of them.
