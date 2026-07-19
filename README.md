@@ -1,5 +1,7 @@
 # KisakBlack
 
+[![Build and deploy](https://github.com/riicchhaarrd/KisakBlack/actions/workflows/build.yml/badge.svg?branch=github-actions)](https://github.com/riicchhaarrd/KisakBlack/actions/workflows/build.yml?query=branch%3Agithub-actions)
+
 ## About the project
 An open source fully-buildable reimplementation of Call of Duty Black ops's Multi-Player .exe
 
