@@ -185,7 +185,6 @@ else()
         openal
         speex
         vpx
-        "-l:libjpeg.so.62"
         pthread
         m
         dl

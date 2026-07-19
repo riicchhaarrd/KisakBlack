@@ -28,12 +28,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             g++-multilib \
-            libglew-dev:i386 \
-            libjpeg62-turbo:i386 \
             libopenal-dev:i386 \
             libsdl2-dev:i386 \
             libspeex-dev:i386 \
             libvpx-dev:i386
+
+      - name: Build 32-bit GLEW
+        env:
+          GLEW_VERSION: 2.2.0
+          GLEW_SHA256: d4fc82893cfb00109578d0a1a2337fb8ca335b3ceccf97b97e5cc7f08e4353e1
+        run: |
+          archive="$RUNNER_TEMP/glew-$GLEW_VERSION.tgz"
+          source_dir="$RUNNER_TEMP/glew-$GLEW_VERSION"
+          curl --fail --location --silent --show-error \
+            "https://github.com/nigels-com/glew/releases/download/glew-$GLEW_VERSION/glew-$GLEW_VERSION.tgz" \
+            --output "$archive"
+          echo "$GLEW_SHA256  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          make -C "$source_dir" \
+            SYSTEM=linux M_ARCH=i386 \
+            "CC=cc -m32" "LD=cc -m32" STRIP= \
+            glew.lib
+          sudo make -C "$source_dir" \
+            SYSTEM=linux M_ARCH=i386 \
+            "CC=cc -m32" "LD=cc -m32" STRIP= \
+            GLEW_DEST=/usr \
+            LIBDIR=/usr/lib/i386-linux-gnu \
+            PKGDIR=/usr/lib/i386-linux-gnu/pkgconfig \
+            install
 
       - name: Build
         run: ./build_linux.sh
