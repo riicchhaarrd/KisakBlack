@@ -10,7 +10,7 @@ Learn about the Development of KisakBlack here: [https://lwss.github.io/Kisak-Bl
 
 ## Building
 
-Both native targets require a Steam copy of [Call of Duty: Black Ops](https://store.steampowered.com/app/42700/Call_of_Duty_Black_Ops/) and its game data.
+All targets require a Steam copy of [Call of Duty: Black Ops](https://store.steampowered.com/app/42700/Call_of_Duty_Black_Ops/) and its game data.
 
 ### Windows x86
 
@@ -39,11 +39,10 @@ With Emscripten 3.1.69 installed, run:
 
 ```sh
 ./build_web.sh
-./link_web.sh
 python3 -m http.server --directory build_web/web 8000
 ```
 
-Open `http://localhost:8000` and select the original game-data folder when prompted.
+Open `http://localhost:8000` and select the original game-data folder when prompted. Use `./build_web_mt.sh` for the experimental pthread build.
 
 
 ```
