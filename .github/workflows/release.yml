@@ -67,19 +67,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.build.outputs.run_id }}
-        run: gh run download "$RUN_ID" --name kisakblack-linux-x86 --dir release/linux
+        run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name kisakblack-linux-x86 --dir release/linux
 
       - name: Download Windows artifact
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.build.outputs.run_id }}
-        run: gh run download "$RUN_ID" --name kisakblack-windows-x86 --dir release/windows
+        run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name kisakblack-windows-x86 --dir release/windows
 
       - name: Download WebAssembly artifact
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.build.outputs.run_id }}
-        run: gh run download "$RUN_ID" --name kisakblack-web --dir release/web
+        run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name kisakblack-web --dir release/web
 
       - name: Package Linux artifact
         run: tar -C release/linux -czf kisakblack-linux-x86.tar.gz .
