@@ -32,11 +32,11 @@ char CBBoxInt32::Empty(void)
        (m_minCoord[1] > m_maxCoord[1]) ||
        (m_minCoord[2] > m_maxCoord[2]) )
    {
-      return TRUE;
+      return 1;
    }
    else
    {
-      return FALSE;    
+      return 0;
    }
 }
 
