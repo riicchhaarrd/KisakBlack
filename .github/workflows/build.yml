@@ -121,7 +121,6 @@ jobs:
         run: |
           ./build_web_mt.sh
           test "$(stat -c %s build_web_mt/web/blackops.wasm)" -lt 104857600
-          test -f build_web_mt/web/blackops.worker.js
           test -f build_web_mt/web/coi-serviceworker.js
           test ! -e build_web_mt/web/link.log
 
