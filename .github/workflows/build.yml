@@ -117,23 +117,25 @@ jobs:
         with:
           ref: web-port
 
-      - name: Build deployable single-threaded WebAssembly
+      - name: Build deployable multithreaded WebAssembly
         run: |
-          ./build_web.sh
-          test "$(stat -c %s build_web/web/blackops.wasm)" -lt 104857600
-          test ! -e build_web/web/link.log
+          ./build_web_mt.sh
+          test "$(stat -c %s build_web_mt/web/blackops.wasm)" -lt 104857600
+          test -f build_web_mt/web/blackops.worker.js
+          test -f build_web_mt/web/coi-serviceworker.js
+          test ! -e build_web_mt/web/link.log
 
       - name: Upload WebAssembly build
         uses: actions/upload-artifact@v7
         with:
           name: kisakblack-web
-          path: build_web/web
+          path: build_web_mt/web
           if-no-files-found: error
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: build_web/web
+          path: build_web_mt/web
 
   deploy-pages:
     name: Deploy GitHub Pages
